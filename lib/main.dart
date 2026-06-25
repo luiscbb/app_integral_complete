@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -26,9 +27,27 @@ void main() async {
   };
 
   debugPrint('[MAIN] Supabase init start');
+  // Cargar credenciales desde .env (no versionado). Fallback a --dart-define.
+  try {
+    await dotenv.load(fileName: '.env');
+  } catch (e) {
+    debugPrint('[MAIN] .env no encontrado, usando dart-define si existe: $e');
+  }
+  final supabaseUrl = dotenv.maybeGet('SUPABASE_URL') ??
+      const String.fromEnvironment('SUPABASE_URL');
+  final supabaseAnonKey = dotenv.maybeGet('SUPABASE_ANON_KEY') ??
+      const String.fromEnvironment('SUPABASE_ANON_KEY');
+
+  if (supabaseUrl.isEmpty || supabaseAnonKey.isEmpty) {
+    throw StateError(
+      'Faltan credenciales de Supabase. Crea un archivo .env con '
+      'SUPABASE_URL y SUPABASE_ANON_KEY (ver .env.example).',
+    );
+  }
+
   await Supabase.initialize(
-    url: 'https://lxsikbxeuktwufhmsucs.supabase.co',
-    anonKey: 'sb_publishable_55e5z0F8Nnk-rUsvTSTV8A_uusxlMgq',
+    url: supabaseUrl,
+    anonKey: supabaseAnonKey,
   );
   debugPrint('[MAIN] Supabase init done');
 

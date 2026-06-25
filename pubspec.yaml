@@ -25,6 +25,7 @@ dependencies:
   blue_thermal_printer: ^1.1.1
   mobile_scanner: ^7.0.0
   cached_network_image: ^3.4.1
+  flutter_dotenv: ^5.2.1
 
 dev_dependencies:
   flutter_test:
@@ -44,3 +45,4 @@ flutter:
   assets:
     - assets/app_logo.png
     - assets/baumar_8_personal-sf.png
+    - .env
