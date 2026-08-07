@@ -376,14 +376,14 @@ Luego abre el `.exe` e inicia sesión con el **mismo correo/usuario** del celula
 - Verificar que el bucket sea público.
 - Probar la URL en navegador.
 
-### Pendientes para siguiente sesión (orden sugerido para mañana)
-1. **Probar consistencia de stock entre Venta Rápida y Mesas de Billar.** (Prioridad alta: afecta ventas e inventario en producción)
-2. Probar módulo de Informes.
-3. **Sincronización en tiempo real de mesas de billar entre dispositivos** (Realtime en `billiard_tables`). (Feature nuevo, más complejo; se abordará después de validar stock e informes. **Nota informativa:** esta funcionalidad requiere análisis previo de concurrencia, estados de mesa y resolución de conflictos antes de implementarse; se documentará como parte del seguimiento.)
-4. Decidir si se construye pantalla de Corte Parcial/Total de Caja.
-5. Documentar/planear botón para limpiar base local.
-6. Investigar y corregir ANR en arranque del celular. (En observación, no se ha reproducido hoy)
-7. Opcional: limpiar 6 avisos de lint restantes.
+### Nota de cierre de sesión
+- Código subido a Git en commit `a22e8f2`.
+- La app queda en estado funcional. Los cambios de hoy corrigen flujos críticos (stock, logo, guardar, banner).
+- La línea de trabajo de aquí en adelante es **seguir hacia adelante**, no regresar a rehacer lo mismo.
+- Próxima sesión: continuar con pruebas de stock y avanzar a módulo de Informes una vez validado.
+
+### Palabra clave para retomar mañana
+**"RETOMAMOS STOCK"**
 
 ---
 
