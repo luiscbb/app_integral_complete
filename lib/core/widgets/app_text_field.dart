@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 class AppTextField extends StatelessWidget {
   final TextEditingController controller;
@@ -13,6 +14,10 @@ class AppTextField extends StatelessWidget {
   final bool enabled;
   final FocusNode? focusNode;
   final bool selectAllOnTap;
+  final int? maxLines;
+  final TextCapitalization textCapitalization;
+  final List<TextInputFormatter>? inputFormatters;
+  final TextInputType? keyboardType;
 
   const AppTextField({
     super.key,
@@ -28,6 +33,10 @@ class AppTextField extends StatelessWidget {
     this.enabled = true,
     this.focusNode,
     this.selectAllOnTap = false,
+    this.maxLines = 1,
+    this.textCapitalization = TextCapitalization.none,
+    this.inputFormatters,
+    this.keyboardType,
   });
 
   @override
@@ -49,9 +58,13 @@ class AppTextField extends StatelessWidget {
         onChanged: onChanged,
         obscureText: obscure,
         enabled: enabled,
+        maxLines: maxLines,
+        textCapitalization: textCapitalization,
+        inputFormatters: inputFormatters,
         style: const TextStyle(color: Colors.white),
         keyboardType:
-            isNumber ? const TextInputType.numberWithOptions(decimal: true) : TextInputType.text,
+            keyboardType ??
+            (isNumber ? const TextInputType.numberWithOptions(decimal: true) : TextInputType.text),
         decoration: InputDecoration(
           labelText: label,
           hintText: hint,

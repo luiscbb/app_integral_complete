@@ -27,16 +27,23 @@ class _PlayerComparisonPageState extends State<PlayerComparisonPage> {
           ),
         ),
         body: Consumer<PlayersProvider>(
-          builder: (_, provider, __) {
+          builder: (_, provider, _) {
             if (provider.isLoading) return Center(child: CircularProgressIndicator(color: primary));
             if (provider.players.length < 2) {
               return Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(Icons.compare_arrows, size: 64, color: Colors.white.withValues(alpha: 0.06)),
+                    Icon(
+                      Icons.compare_arrows,
+                      size: 64,
+                      color: Colors.white.withValues(alpha: 0.06),
+                    ),
                     const SizedBox(height: 16),
-                    Text('Necesitas al menos 2 jugadores', style: TextStyle(color: Colors.white.withValues(alpha: 0.2), fontSize: 15)),
+                    Text(
+                      'Necesitas al menos 2 jugadores',
+                      style: TextStyle(color: Colors.white.withValues(alpha: 0.2), fontSize: 15),
+                    ),
                   ],
                 ),
               );
@@ -76,7 +83,12 @@ class _PlayerSelector extends StatelessWidget {
   final PlayerEntity? selected;
   final ValueChanged<PlayerEntity> onSelected;
   final String label;
-  const _PlayerSelector({required this.players, required this.selected, required this.onSelected, required this.label});
+  const _PlayerSelector({
+    required this.players,
+    required this.selected,
+    required this.onSelected,
+    required this.label,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -84,9 +96,13 @@ class _PlayerSelector extends StatelessWidget {
       child: ListTile(
         leading: CircleAvatar(
           backgroundColor: Colors.white10,
-          child: selected == null
-              ? const Icon(Icons.person, color: Colors.white54)
-              : Text(selected!.initials, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          child:
+              selected == null
+                  ? const Icon(Icons.person, color: Colors.white54)
+                  : Text(
+                    selected!.initials,
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  ),
         ),
         title: Text(selected?.displayName ?? label, style: const TextStyle(color: Colors.white)),
         trailing: const Icon(Icons.arrow_drop_down, color: Colors.white54),
@@ -94,21 +110,28 @@ class _PlayerSelector extends StatelessWidget {
           final picked = await showModalBottomSheet<PlayerEntity>(
             context: context,
             backgroundColor: const Color(0xFF1A1A1A),
-            builder: (_) => SafeArea(
-              child: ListView.builder(
-                padding: const EdgeInsets.all(16),
-                itemCount: players.length,
-                itemBuilder: (_, i) {
-                  final p = players[i];
-                  return ListTile(
-                    leading: CircleAvatar(backgroundColor: Colors.white10, child: Text(p.initials, style: const TextStyle(color: Colors.white))),
-                    title: Text(p.displayName, style: const TextStyle(color: Colors.white)),
-                    trailing: Text('${p.stats.wins}V', style: TextStyle(color: Colors.greenAccent)),
-                    onTap: () => Navigator.pop(context, p),
-                  );
-                },
-              ),
-            ),
+            builder:
+                (_) => SafeArea(
+                  child: ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: players.length,
+                    itemBuilder: (_, i) {
+                      final p = players[i];
+                      return ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: Colors.white10,
+                          child: Text(p.initials, style: const TextStyle(color: Colors.white)),
+                        ),
+                        title: Text(p.displayName, style: const TextStyle(color: Colors.white)),
+                        trailing: Text(
+                          '${p.stats.wins}V',
+                          style: TextStyle(color: Colors.greenAccent),
+                        ),
+                        onTap: () => Navigator.pop(context, p),
+                      );
+                    },
+                  ),
+                ),
           );
           if (picked != null) onSelected(picked);
         },
@@ -129,17 +152,37 @@ class _ComparisonTable extends StatelessWidget {
       _ComparisonRow('Victorias', '${p1.stats.wins}', '${p2.stats.wins}', greaterIsBetter: true),
       _ComparisonRow('Derrotas', '${p1.stats.losses}', '${p2.stats.losses}'),
       _ComparisonRow('Empates', '${p1.stats.draws}', '${p2.stats.draws}'),
-      _ComparisonRow('Win Rate', p1.stats.formattedWinRate, p2.stats.formattedWinRate, greaterIsBetter: true),
-      _ComparisonRow('Golden Breaks', '${p1.stats.goldenBreaks}', '${p2.stats.goldenBreaks}', greaterIsBetter: true),
-      _ComparisonRow('Break & Run', '${p1.stats.breakAndRun}', '${p2.stats.breakAndRun}', greaterIsBetter: true),
-      _ComparisonRow('Mejor Racha', '${p1.stats.bestStreak}', '${p2.stats.bestStreak}', greaterIsBetter: true),
+      _ComparisonRow(
+        'Win Rate',
+        p1.stats.formattedWinRate,
+        p2.stats.formattedWinRate,
+        greaterIsBetter: true,
+      ),
+      _ComparisonRow(
+        'Golden Breaks',
+        '${p1.stats.goldenBreaks}',
+        '${p2.stats.goldenBreaks}',
+        greaterIsBetter: true,
+      ),
+      _ComparisonRow(
+        'Break & Run',
+        '${p1.stats.breakAndRun}',
+        '${p2.stats.breakAndRun}',
+        greaterIsBetter: true,
+      ),
+      _ComparisonRow(
+        'Mejor Racha',
+        '${p1.stats.bestStreak}',
+        '${p2.stats.bestStreak}',
+        greaterIsBetter: true,
+      ),
       _ComparisonRow('Tiempo Total', p1.formattedTime, p2.formattedTime),
     ];
 
     return ListView.separated(
       padding: const EdgeInsets.only(top: 8, bottom: 24),
       itemCount: stats.length,
-      separatorBuilder: (_, __) => const Divider(color: Colors.white10),
+      separatorBuilder: (_, _) => const Divider(color: Colors.white10),
       itemBuilder: (_, i) => stats[i],
     );
   }

@@ -1,14 +1,17 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:sqflite/sqflite.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../../../core/database/database_helper.dart';
 import '../../../../core/routes/app_routes.dart';
 import '../../../../core/services/config_remote_repository.dart';
 import '../../../../core/storage/preferences_service.dart';
 import '../../../../core/theme/theme_provider.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
-import '../../../sales/data/repositories/sales_repository.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../../sales/data/repositories/billiard_table_repository.dart';
 
 class InitialSetupPage extends StatefulWidget {
   const InitialSetupPage({super.key});
@@ -120,9 +123,29 @@ class _InitialSetupPageState extends State<InitialSetupPage> {
       context.read<ThemeProvider>().setPrimaryColor(Color(_selectedColor));
     }
 
-    // Crear mesas en la base de datos local
-    final repo = SalesRepository();
-    await repo.ensureTablesExist(tables.clamp(1, 100));
+    // Crear mesas en la base de datos local y en Supabase
+    final tableCount = tables.clamp(1, 100);
+    final tableRepo = BilliardTableRepository();
+    final db = await DatabaseHelper.instance.database;
+
+    for (int i = 1; i <= tableCount; i++) {
+      await db.insert('billiard_tables', {
+        'id': i,
+        'billar_id': _generatedBillarId,
+        'name': 'Mesa $i',
+        'table_type': 'Billar',
+        'is_occupied': 0,
+        'orders': '[]',
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+      // Sube cada mesa a Supabase (fire-and-forget)
+      unawaited(tableRepo.insert(
+        id: i,
+        billarId: _generatedBillarId,
+        name: 'Mesa $i',
+        tableType: 'Billar',
+      ));
+    }
 
     // Subir config a Supabase si hay sesion activa
     try {

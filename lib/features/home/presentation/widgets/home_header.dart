@@ -1,10 +1,13 @@
+import 'dart:developer';
 import 'dart:io';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 class HomeHeader extends StatelessWidget {
   final String businessName;
   final String userName;
   final String logoPath;
+  final String logoUrl;
   final Color primaryColor;
   final bool isDesktop;
   final TextEditingController searchController;
@@ -18,6 +21,7 @@ class HomeHeader extends StatelessWidget {
     required this.businessName,
     required this.userName,
     required this.logoPath,
+    this.logoUrl = '',
     required this.primaryColor,
     required this.isDesktop,
     required this.searchController,
@@ -27,6 +31,44 @@ class HomeHeader extends StatelessWidget {
     required this.onSearchClear,
   });
 
+  bool get _hasLogo => logoPath.isNotEmpty || logoUrl.isNotEmpty;
+
+  ImageProvider? _buildLogoImage() {
+    log('[HomeHeader] logoUrl: "$logoUrl", logoPath: "$logoPath", hasLogo: $_hasLogo');
+    if (logoUrl.isNotEmpty) {
+      log('[HomeHeader] Usando CachedNetworkImageProvider con URL: $logoUrl');
+      return CachedNetworkImageProvider(logoUrl);
+    }
+    if (logoPath.isNotEmpty && File(logoPath).existsSync()) {
+      log('[HomeHeader] Usando FileImage con path: $logoPath');
+      return FileImage(File(logoPath));
+    }
+    log('[HomeHeader] No se encontró logo válido');
+    return null;
+  }
+
+  Widget _buildLogoCircle(double radius) {
+    final image = _buildLogoImage();
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: primaryColor.withValues(alpha: 0.5), width: 2),
+      ),
+      child: CircleAvatar(
+        radius: radius,
+        backgroundColor: const Color(0xFF1A1A1A),
+        backgroundImage: image,
+        onBackgroundImageError: image != null
+            ? (exception, stackTrace) {
+                log('[HomeHeader] Error cargando imagen de logo: $exception');
+              }
+            : null,
+        child: _hasLogo ? null : Icon(Icons.sports_bar_outlined, color: primaryColor, size: radius * 0.9),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (isDesktop) {
@@ -34,6 +76,11 @@ class HomeHeader extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
         child: Row(
           children: [
+            if (_hasLogo)
+              Padding(
+                padding: const EdgeInsets.only(right: 14),
+                child: _buildLogoCircle(24),
+              ),
             Expanded(
               child: Text(
                 'PANEL DE CONTROL — $businessName',
@@ -83,21 +130,7 @@ class HomeHeader extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 22),
       child: Row(
         children: [
-          Container(
-            padding: const EdgeInsets.all(2),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: primaryColor.withValues(alpha: 0.5), width: 2),
-            ),
-            child: CircleAvatar(
-              radius: 28,
-              backgroundColor: const Color(0xFF1A1A1A),
-              backgroundImage: logoPath.isNotEmpty ? FileImage(File(logoPath)) : null,
-              child: logoPath.isEmpty
-                  ? Icon(Icons.sports_bar_outlined, color: primaryColor, size: 26)
-                  : null,
-            ),
-          ),
+          _buildLogoCircle(28),
           const SizedBox(width: 14),
           Expanded(
             child: Column(

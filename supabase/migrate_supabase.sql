@@ -14,6 +14,21 @@ create table if not exists public.billar_settings (
     table_count int not null default 8,
     hourly_rate double precision not null default 0.0,
     primary_color int default 0xFFE53935,
+    business_address text default '',
+    business_street text default '',
+    business_ext_number text default '',
+    business_int_number text default '',
+    business_colony text default '',
+    business_zip_code text default '',
+    business_city text default '',
+    business_state text default '',
+    business_phone text default '',
+    business_whatsapp text default '',
+    business_slogan text default '',
+    business_website text default '',
+    ticket_farewell text default 'GRACIAS POR SU COMPRA',
+    ticket_counter integer default 0,
+    social_networks text default '{}',
     created_at timestamptz default now(),
     updated_at timestamptz default now()
 );
@@ -92,6 +107,7 @@ create table if not exists public.pending_sales (
 alter table public.pending_sales enable row level security;
 
 drop policy if exists "pending_sales_select" on public.pending_sales;
+
 drop policy if exists "pending_sales_insert" on public.pending_sales;
 
 create policy "pending_sales_select" on public.pending_sales for

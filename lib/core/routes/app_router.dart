@@ -8,8 +8,9 @@ import '../../features/sales/presentation/pages/billiard_tables_page.dart';
 import '../../features/sales/presentation/pages/create_promo_page.dart';
 import '../../features/inventory/presentation/pages/inventory_page.dart';
 import '../../features/purchases/presentation/pages/purchases_page.dart';
-import '../../features/stats/presentation/pages/stats_page.dart';
-import '../../features/stats/presentation/pages/sales_history_page.dart';
+import '../../features/reports/presentation/pages/reports_page.dart';
+import '../../features/reports/presentation/pages/sales_history_page.dart';
+import '../../features/players/presentation/pages/players_hub_page.dart';
 import '../../features/players/presentation/pages/players_list_page.dart';
 import '../../features/players/presentation/pages/player_detail_page.dart';
 import '../../features/players/presentation/pages/player_comparison_page.dart';
@@ -20,6 +21,7 @@ import '../../features/special_client/presentation/pages/special_client_page.dar
 import '../../features/config/presentation/pages/initial_setup_page.dart';
 import '../../features/config/presentation/pages/config_page.dart';
 import '../../features/games/presentation/pages/games_page.dart';
+import '../../features/auth/presentation/pages/reset_password_page.dart';
 import '../../features/tournaments/presentation/pages/tournaments_page.dart';
 import '../../features/personal_stats/presentation/pages/personal_stats_page.dart';
 import 'app_routes.dart';
@@ -45,12 +47,14 @@ class AppRouter {
         return MaterialPageRoute(builder: (_) => const CreatePromoPage());
       case AppRoutes.purchases:
         return MaterialPageRoute(builder: (_) => const PurchasesPage());
-      case AppRoutes.stats:
-        return MaterialPageRoute(builder: (_) => const StatsPage());
+      case AppRoutes.reports:
+        return MaterialPageRoute(builder: (_) => const ReportsPage());
       case AppRoutes.salesHistory:
         return MaterialPageRoute(builder: (_) => const SalesHistoryPage());
       case AppRoutes.players:
         return MaterialPageRoute(builder: (_) => const PlayersListPage());
+      case AppRoutes.playersHub:
+        return MaterialPageRoute(builder: (_) => const PlayersHubPage());
       case AppRoutes.playerDetail:
         final args = settings.arguments;
         if (args is PlayerEntity) {
@@ -67,6 +71,8 @@ class AppRouter {
         return MaterialPageRoute(builder: (_) => const SpecialClientPage());
       case AppRoutes.config:
         return MaterialPageRoute(builder: (_) => const ConfigPage());
+      case AppRoutes.resetPassword:
+        return MaterialPageRoute(builder: (_) => const ResetPasswordPage());
       case AppRoutes.games:
         return MaterialPageRoute(builder: (_) => const GamesPage());
       case AppRoutes.tournaments:

@@ -7,6 +7,7 @@ import '../../../../features/inventory/domain/entities/product_entity.dart';
 import '../../../../features/inventory/presentation/widgets/product_sale_card.dart';
 import '../../../sales/domain/entities/sale_item_entity.dart';
 import '../../../sales/data/repositories/sales_repository.dart';
+import '../../../sales/data/repositories/stock_reservation_service.dart';
 import '../../../sales/presentation/services/ticket_service.dart';
 
 class QuickSalePage extends StatefulWidget {
@@ -19,6 +20,7 @@ class QuickSalePage extends StatefulWidget {
 class _QuickSalePageState extends State<QuickSalePage> {
   final _productRepo = ProductRepository();
   final _salesRepo = SalesRepository();
+  final _reservationService = StockReservationService();
   final _ticket = TicketService();
   final _searchCtrl = TextEditingController();
 
@@ -27,6 +29,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
   final Map<int, int> _cart = {};
   // Componentes de cada promo: promoId -> { childId -> cantidad }
   final Map<int, Map<int, int>> _promoComponents = {};
+  Map<int, double> _tableReserved = {};
   bool _isLoading = true;
   bool _isGrid = true;
 
@@ -50,11 +53,23 @@ class _QuickSalePageState extends State<QuickSalePage> {
   Future<void> _load() async {
     setState(() => _isLoading = true);
     final data = await _productRepo.getAll();
-    // Cargar componentes de cada promo para reflejar el descuento de stock en vivo.
     final compMap = <int, Map<int, int>>{};
     for (final p in data) {
       if (p.isPromo == 1 && p.id != null) {
         compMap[p.id!] = await _productRepo.getPromoComponents(p.id!);
+      }
+    }
+    final reserved = await _salesRepo.getReservedQuantities();
+    // Restaurar carrito de venta rápida si había una reserva activa.
+    final quickReserved = await _reservationService.getReservedQuantities(
+      excludeSource: 'table',
+    );
+    final restoredCart = <int, int>{};
+    for (final entry in quickReserved.entries) {
+      final pid = entry.key;
+      final qty = entry.value.toInt();
+      if (qty > 0 && data.any((p) => p.id == pid)) {
+        restoredCart[pid] = qty;
       }
     }
     if (mounted) {
@@ -64,8 +79,13 @@ class _QuickSalePageState extends State<QuickSalePage> {
         _promoComponents
           ..clear()
           ..addAll(compMap);
+        _tableReserved = reserved;
+        _cart
+          ..clear()
+          ..addAll(restoredCart);
         _isLoading = false;
       });
+      _filter();
     }
   }
 
@@ -86,14 +106,24 @@ class _QuickSalePageState extends State<QuickSalePage> {
 
   /// Stock disponible visible = stock real menos lo reservado por el carrito.
   double _availableStock(ProductEntity p) {
-    final avail = p.stock - _reservedFor(p.id);
+    final reservedInTables = p.id != null ? (_tableReserved[p.id] ?? 0) : 0.0;
+    final avail = p.stock - _reservedFor(p.id) - reservedInTables;
     return avail < 0 ? 0 : avail;
   }
 
   void _filter() {
     final q = _searchCtrl.text.toLowerCase();
     setState(() {
-      _filtered = q.isEmpty ? _all : _all.where((p) => p.name.toLowerCase().contains(q)).toList();
+      _filtered = _all.where((p) {
+        final matchesSearch = q.isEmpty || p.name.toLowerCase().contains(q);
+        final hasStock = _availableStock(p) > 0;
+        return matchesSearch && hasStock;
+      }).toList();
+      // Ordenar: promos primero, luego el resto
+      _filtered.sort((a, b) {
+        if (a.isPromo == b.isPromo) return a.name.compareTo(b.name);
+        return b.isPromo.compareTo(a.isPromo);
+      });
     });
   }
 
@@ -125,6 +155,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
       return;
     }
     setState(() => _cart[p.id!] = (_cart[p.id] ?? 0) + 1);
+    _persistReservation();
   }
 
   void _remove(int id) {
@@ -135,6 +166,11 @@ class _QuickSalePageState extends State<QuickSalePage> {
         _cart[id] = (_cart[id] ?? 1) - 1;
       }
     });
+    _persistReservation();
+  }
+
+  Future<void> _persistReservation() async {
+    await _reservationService.setQuickSaleReservation(_cartItems);
   }
 
   Future<void> _checkout() async {
@@ -223,6 +259,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
                                     }
                                   });
                                   if (mounted) setState(() {});
+                                  _persistReservation();
                                 },
                               ),
                               Text(
@@ -239,6 +276,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
                                     : () {
                                         ss(() => _cart[p.id!] = qty + 1);
                                         if (mounted) setState(() {});
+                                        _persistReservation();
                                       },
                               ),
                               IconButton(
@@ -246,6 +284,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
                                 onPressed: () {
                                   ss(() => _cart.remove(p.id));
                                   if (mounted) setState(() {});
+                                  _persistReservation();
                                 },
                               ),
                             ],
@@ -338,6 +377,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
     if (!mounted) return;
 
     setState(() => _cart.clear());
+    await _reservationService.clearQuickSaleReservation();
     await _load();
     if (!mounted) return;
 
@@ -404,12 +444,20 @@ class _QuickSalePageState extends State<QuickSalePage> {
                           onChanged: (v) => ss(() => paid = double.tryParse(v) ?? _total),
                         ),
                         const SizedBox(height: 8),
-                        Text(
-                          'Cambio: \$${(paid - _total) < 0 ? '0.00' : (paid - _total).toStringAsFixed(2)}',
-                          style: const TextStyle(
-                            color: Colors.greenAccent,
-                            fontWeight: FontWeight.bold,
-                          ),
+                        Builder(
+                          builder: (_) {
+                            final diff = paid - _total;
+                            final isShort = diff < 0;
+                            return Text(
+                              isShort
+                                  ? 'Falta: \$${diff.abs().toStringAsFixed(2)}'
+                                  : 'Cambio: \$${diff.toStringAsFixed(2)}',
+                              style: TextStyle(
+                                color: isShort ? Colors.redAccent : Colors.greenAccent,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            );
+                          },
                         ),
                       ],
                     ],
@@ -475,8 +523,8 @@ class _QuickSalePageState extends State<QuickSalePage> {
               : _isGrid
               ? GridView.builder(
                 padding: const EdgeInsets.all(10),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
+                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                  maxCrossAxisExtent: 190,
                   mainAxisSpacing: 12,
                   crossAxisSpacing: 12,
                   childAspectRatio: 0.95,

@@ -11,6 +11,7 @@ class ProductEntity {
   final int? parentId;
   final int piecesPerUnit;
   final String category;
+  final String presentation;
 
   const ProductEntity({
     this.id,
@@ -25,6 +26,7 @@ class ProductEntity {
     this.parentId,
     this.piecesPerUnit = 1,
     this.category = '',
+    this.presentation = '',
   });
 
   ProductEntity copyWith({
@@ -40,6 +42,7 @@ class ProductEntity {
     int? parentId,
     int? piecesPerUnit,
     String? category,
+    String? presentation,
   }) {
     return ProductEntity(
       id: id ?? this.id,
@@ -54,6 +57,7 @@ class ProductEntity {
       parentId: parentId ?? this.parentId,
       piecesPerUnit: piecesPerUnit ?? this.piecesPerUnit,
       category: category ?? this.category,
+      presentation: presentation ?? this.presentation,
     );
   }
 
@@ -71,6 +75,7 @@ class ProductEntity {
       parentId: m['parent_id'] as int?,
       piecesPerUnit: (m['pieces_per_unit'] as int?) ?? 1,
       category: m['category']?.toString() ?? '',
+      presentation: m['presentation']?.toString() ?? '',
     );
   }
 
@@ -88,6 +93,7 @@ class ProductEntity {
       'parent_id': parentId,
       'pieces_per_unit': piecesPerUnit,
       'category': category,
+      'presentation': presentation,
     };
   }
 

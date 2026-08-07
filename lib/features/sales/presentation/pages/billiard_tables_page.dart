@@ -65,7 +65,7 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
       appBar: AppBar(
         title: Text(
           'MESAS DE BILLAR',
-          style: TextStyle(color: primary, fontWeight: FontWeight.bold),
+          style: TextStyle(color: const Color(0xFF1E88E5), fontWeight: FontWeight.bold),
         ),
         actions: [IconButton(icon: const Icon(Icons.refresh), onPressed: _load)],
       ),
@@ -102,6 +102,7 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
                     consumo: consumo,
                     startTime: startTime,
                     primaryColor: primary,
+                    style: context.read<ThemeProvider>().cardStyle,
                     onTap: () => _openTable(t),
                   );
                 },
@@ -142,6 +143,7 @@ class _TableCard extends StatefulWidget {
   final double consumo;
   final DateTime? startTime;
   final Color primaryColor;
+  final CardStyle style;
   final VoidCallback onTap;
 
   const _TableCard({
@@ -150,6 +152,7 @@ class _TableCard extends StatefulWidget {
     required this.consumo,
     required this.startTime,
     required this.primaryColor,
+    this.style = CardStyle.gradient,
     required this.onTap,
   });
 
@@ -206,7 +209,8 @@ class _TableCardState extends State<_TableCard> {
   double get _timeCost {
     final rate = _prefs.hourlyRate;
     if (rate <= 0) return 0;
-    return (_elapsed.inSeconds / 3600) * rate;
+    final raw = (_elapsed.inSeconds / 3600) * rate;
+    return raw.ceilToDouble();
   }
 
   String get _elapsedStr {
@@ -221,37 +225,61 @@ class _TableCardState extends State<_TableCard> {
     final color = widget.primaryColor;
     final totalCost = widget.consumo + _timeCost;
 
+    final solidWhite = widget.style == CardStyle.solidWhite;
+    final outlined = widget.style == CardStyle.outlined;
+    final contentColor = solidWhite ? Colors.white.withValues(alpha: 0.92) : color;
+
     return GestureDetector(
       onTap: widget.onTap,
       child: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [color.withValues(alpha: 0.22), const Color(0xFF1A1A1A)],
-          ),
-          border: Border.all(color: color.withValues(alpha: 0.5), width: 2),
-        ),
+        decoration: solidWhite
+            ? BoxDecoration(
+                borderRadius: BorderRadius.circular(20),
+                color: color,
+                border: Border.all(color: Colors.white.withValues(alpha: 0.28), width: 1.5),
+              )
+            : outlined
+                ? BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    color: const Color(0xFF1A1A1A),
+                    border: Border.all(color: color, width: 2),
+                  )
+                : BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [color.withValues(alpha: 0.22), const Color(0xFF1A1A1A)],
+                    ),
+                    border: Border.all(color: color.withValues(alpha: 0.5), width: 2),
+                  ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.table_bar_rounded, size: 38, color: color),
+            Icon(Icons.table_bar_rounded, size: 38, color: contentColor),
             const SizedBox(height: 6),
             Text(
               widget.name,
-              style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 14),
+              style: TextStyle(
+                color: contentColor,
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+              ),
             ),
             const SizedBox(height: 4),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
               decoration: BoxDecoration(
-                color: color.withValues(alpha: 0.15),
+                color: solidWhite ? Colors.white.withValues(alpha: 0.22) : color.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Text(
                 widget.isOccupied ? 'OCUPADA' : 'LIBRE',
-                style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 11),
+                style: TextStyle(
+                  color: contentColor,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 11,
+                ),
               ),
             ),
             if (widget.isOccupied) ...[
@@ -319,6 +347,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
   final _prefs = PreferencesService();
   List<SaleItemEntity> _orders = [];
   List<ProductEntity> _products = [];
+  Map<int, double> _reservedOthers = {};
   bool _isLoading = true;
   bool _askedTimer = false;
   bool _isCheckingOut = false;
@@ -377,9 +406,13 @@ class _TableDetailPageState extends State<_TableDetailPage> {
     }
 
     final prods = await _productRepo.getAll();
+    final reservedOthers = await _salesRepo.getReservedQuantities(
+      excludeTableId: widget.tableData['id'],
+    );
     if (mounted) {
       setState(() {
         _products = prods;
+        _reservedOthers = reservedOthers;
         _isLoading = false;
       });
       // Solo preguntar si hay tarifa, no hay timer, no hay ordenes, y no hemos preguntado antes
@@ -395,56 +428,56 @@ class _TableDetailPageState extends State<_TableDetailPage> {
     if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
+      barrierDismissible: false,
       builder:
-          (ctx) => AlertDialog(
-            backgroundColor: const Color(0xFF1A1A1A),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-            title: Row(
-              children: [
-                const Icon(Icons.timer, color: Colors.orangeAccent, size: 28),
-                const SizedBox(width: 10),
-                Text(
-                  widget.tableData['name'] ?? 'Mesa',
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          (ctx) => PopScope(
+            canPop: false,
+            child: AlertDialog(
+              backgroundColor: const Color(0xFF1A1A1A),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: Row(
+                children: [
+                  const Icon(Icons.timer, color: Colors.orangeAccent, size: 28),
+                  const SizedBox(width: 10),
+                  Text(
+                    widget.tableData['name'] ?? 'Mesa',
+                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Inicia el cronómetro para cobrar el tiempo de uso de la mesa.',
+                    style: TextStyle(color: Colors.white70, fontSize: 15),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      const Icon(Icons.attach_money, color: Colors.orangeAccent, size: 16),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Tarifa: \$${_prefs.hourlyRate.toStringAsFixed(2)} / hora',
+                        style: const TextStyle(color: Colors.orangeAccent, fontSize: 13),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              actions: [
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.orangeAccent),
+                  icon: const Icon(Icons.timer, color: Colors.black, size: 18),
+                  label: const Text(
+                    'INICIAR TIEMPO',
+                    style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+                  ),
+                  onPressed: () => Navigator.pop(ctx, true),
                 ),
               ],
             ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  '¿Desea iniciar el cronómetro para cobrar tiempo?',
-                  style: TextStyle(color: Colors.white70, fontSize: 15),
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    const Icon(Icons.attach_money, color: Colors.orangeAccent, size: 16),
-                    const SizedBox(width: 4),
-                    Text(
-                      'Tarifa: \$${_prefs.hourlyRate.toStringAsFixed(2)} / hora',
-                      style: const TextStyle(color: Colors.orangeAccent, fontSize: 13),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Solo consumo', style: TextStyle(color: Colors.white38)),
-              ),
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.orangeAccent),
-                icon: const Icon(Icons.timer, color: Colors.black, size: 18),
-                label: const Text(
-                  'INICIAR TIEMPO',
-                  style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
-                ),
-                onPressed: () => Navigator.pop(ctx, true),
-              ),
-            ],
           ),
     );
     if (confirmed == true && mounted) {
@@ -464,20 +497,21 @@ class _TableDetailPageState extends State<_TableDetailPage> {
   double get _timeCost {
     final rate = _prefs.hourlyRate;
     if (rate <= 0 || _startTime == null) return 0;
-    return (_elapsed.inSeconds / 3600) * rate;
+    final raw = (_elapsed.inSeconds / 3600) * rate;
+    return raw.ceilToDouble();
   }
 
-  /// Horas usadas (fracción) redondeadas a 2 decimales para el ticket.
-  double get _hoursUsed => double.parse((_elapsed.inSeconds / 3600).toStringAsFixed(2));
-
-  /// Item de tiempo para ticket/venta: precio unitario = tarifa por hora,
-  /// cantidad = horas usadas. Así "P.Unit" muestra la tarifa real ($600/h).
+  /// Item de tiempo para ticket/venta: cantidad fija = 1 unidad de tiempo,
+  /// precio unitario = el mismo costo proporcional que se muestra y cobra en
+  /// vivo (_timeCost), para que el ticket y el registro de venta coincidan
+  /// exactamente con lo cobrado (proporcional a los minutos jugados, no
+  /// redondeado a la hora completa). Así el PDF muestra
+  /// "Tiempo de juego (00:10) P.U. $10.00 CANT 1 IMPORTE $10.00".
   SaleItemEntity _buildTimeItem() {
-    final rate = _prefs.hourlyRate;
     return SaleItemEntity(
       productName: 'Tiempo de juego ($_elapsedStr)',
-      price: rate,
-      quantity: _hoursUsed,
+      price: _timeCost,
+      quantity: 1,
     );
   }
 
@@ -491,12 +525,14 @@ class _TableDetailPageState extends State<_TableDetailPage> {
   }
 
   void _addProduct(ProductEntity p) {
-    // Validar stock
+    // Validar stock considerando lo ya reservado en otras mesas abiertas.
     final currentQty = _orders.firstWhere(
       (o) => o.productId == p.id,
       orElse: () => SaleItemEntity(productName: '', price: 0, quantity: 0),
     ).quantity;
-    if (p.stock <= currentQty) {
+    final reservedElsewhere = _reservedOthers[p.id] ?? 0;
+    final availableStock = p.stock - reservedElsewhere;
+    if (availableStock <= currentQty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Stock insuficiente: ${p.name}'), backgroundColor: Colors.orange),
       );
@@ -630,12 +666,20 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                           onChanged: (v) => ss(() => paid = double.tryParse(v) ?? _grandTotal),
                         ),
                         const SizedBox(height: 8),
-                        Text(
-                          'Cambio: \$${(paid - _grandTotal).clamp(0, double.infinity).toStringAsFixed(2)}',
-                          style: const TextStyle(
-                            color: Colors.greenAccent,
-                            fontWeight: FontWeight.bold,
-                          ),
+                        Builder(
+                          builder: (_) {
+                            final diff = paid - _grandTotal;
+                            final isShort = diff < 0;
+                            return Text(
+                              isShort
+                                  ? 'Falta: \$${diff.abs().toStringAsFixed(2)}'
+                                  : 'Cambio: \$${diff.toStringAsFixed(2)}',
+                              style: TextStyle(
+                                color: isShort ? Colors.redAccent : Colors.greenAccent,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            );
+                          },
                         ),
                       ],
                     ],
@@ -734,6 +778,22 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                   ],
                 ),
               ),
+            )
+          else if (_prefs.hourlyRate > 0)
+            TextButton.icon(
+              icon: const Icon(Icons.timer_outlined, color: Colors.orangeAccent),
+              label: const Text('INICIAR TIEMPO', style: TextStyle(color: Colors.orangeAccent)),
+              onPressed: () async {
+                await _salesRepo.occupyTable(widget.tableData['id']);
+                setState(() {
+                  _startTime = DateTime.now();
+                  _elapsed = Duration.zero;
+                });
+                _timer?.cancel();
+                _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+                  if (mounted) setState(() => _elapsed = DateTime.now().difference(_startTime!));
+                });
+              },
             ),
           if (_orders.isNotEmpty)
             TextButton.icon(
@@ -790,6 +850,42 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                           ),
                         ],
                       ),
+                    )
+                  else if (_startTime == null && _prefs.hourlyRate > 0)
+                    InkWell(
+                      onTap: () async {
+                        await _salesRepo.occupyTable(widget.tableData['id']);
+                        setState(() {
+                          _startTime = DateTime.now();
+                          _elapsed = Duration.zero;
+                        });
+                        _timer?.cancel();
+                        _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+                          if (mounted) {
+                            setState(() => _elapsed = DateTime.now().difference(_startTime!));
+                          }
+                        });
+                      },
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        color: Colors.orangeAccent.withValues(alpha: 0.12),
+                        child: const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.timer_outlined, color: Colors.orangeAccent, size: 16),
+                            SizedBox(width: 6),
+                            Text(
+                              'Cronómetro no iniciado · Toca aquí para cobrar tiempo',
+                              style: TextStyle(
+                                color: Colors.orangeAccent,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
                   Expanded(
                     child: Row(
@@ -810,38 +906,66 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                                 ),
                               ),
                               Expanded(
-                                child: GridView.builder(
-                                  padding: const EdgeInsets.all(10),
-                                  gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                                    maxCrossAxisExtent: 160,
-                                    mainAxisSpacing: 10,
-                                    crossAxisSpacing: 10,
-                                    childAspectRatio: 0.7,
-                                  ),
-                                  itemCount: _products.length,
-                                  itemBuilder: (_, i) {
-                                    final p = _products[i];
-                                    final q =
-                                        _orders
-                                            .firstWhere(
-                                              (e) => e.productId == p.id,
-                                              orElse:
-                                                  () => SaleItemEntity(productName: '', price: 0),
-                                            )
-                                            .quantity;
-                                    return GestureDetector(
-                                      onTap: () => _addProduct(p),
-                                      child: ProductSaleCard(
-                                        product: p,
-                                        quantity: q.toInt(),
-                                        onAdd: () => _addProduct(p),
-                                        onRemove: () {
-                                          final idx = _orders.indexWhere(
-                                            (e) => e.productId == p.id,
-                                          );
-                                          if (idx >= 0) _removeItem(idx);
-                                        },
+                                child: Builder(
+                                  builder: (_) {
+                                    final visibleProducts =
+                                        _products.where((p) {
+                                          final reservedElsewhere = _reservedOthers[p.id] ?? 0;
+                                          final availableStock = p.stock - reservedElsewhere;
+                                          final inThisOrder =
+                                              _orders
+                                                  .firstWhere(
+                                                    (e) => e.productId == p.id,
+                                                    orElse:
+                                                        () => SaleItemEntity(
+                                                          productName: '',
+                                                          price: 0,
+                                                        ),
+                                                  )
+                                                  .quantity;
+                                          return availableStock > inThisOrder || inThisOrder > 0;
+                                        }).toList();
+                                    return GridView.builder(
+                                      padding: const EdgeInsets.all(10),
+                                      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                                        maxCrossAxisExtent: 160,
+                                        mainAxisSpacing: 10,
+                                        crossAxisSpacing: 10,
+                                        childAspectRatio: 0.7,
                                       ),
+                                      itemCount: visibleProducts.length,
+                                      itemBuilder: (_, i) {
+                                        final p = visibleProducts[i];
+                                        final q =
+                                            _orders
+                                                .firstWhere(
+                                                  (e) => e.productId == p.id,
+                                                  orElse:
+                                                      () => SaleItemEntity(
+                                                        productName: '',
+                                                        price: 0,
+                                                      ),
+                                                )
+                                                .quantity;
+                                        final reservedElsewhere = _reservedOthers[p.id] ?? 0;
+                                        final displayStock = p.stock - reservedElsewhere - q;
+                                        return GestureDetector(
+                                          onTap: () => _addProduct(p),
+                                          child: ProductSaleCard(
+                                            product: p.copyWith(
+                                              stock: displayStock < 0 ? 0 : displayStock,
+                                            ),
+                                            quantity: q.toInt(),
+                                            onAdd: () => _addProduct(p),
+                                            onRemove: () {
+                                              final idx = _orders.indexWhere(
+                                                (e) => e.productId == p.id,
+                                              );
+                                              if (idx >= 0) _removeItem(idx);
+                                            },
+                                          ),
+                                        );
+                                      },
                                     );
                                   },
                                 ),

@@ -106,3 +106,14 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# Copy the .env file (if it exists) next to the executable on Windows builds,
+# so that flutter_dotenv can read it when running the released .exe.
+# The file is searched relative to the executable directory at runtime.
+set(DOTENV_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../.env")
+if(EXISTS "${DOTENV_FILE}")
+  install(FILES "${DOTENV_FILE}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    COMPONENT Runtime)
+else()
+  message(WARNING ".env file not found at ${DOTENV_FILE}. The executable will not be able to load Supabase credentials from .env. Use --dart-define or place .env next to the .exe manually.")
+endif()

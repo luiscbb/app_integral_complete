@@ -16,6 +16,43 @@ class TicketService {
 
   double get _mmWidth => _prefs.printWidth == '58mm' ? 58 : 80;
 
+  Future<int> _nextTicketNumber(int? provided) async {
+    if (provided != null && provided > 0) return provided;
+    final next = _prefs.ticketCounter + 1;
+    await _prefs.setTicketCounter(next);
+    return next;
+  }
+
+  Future<Uint8List?> _loadLogoBytes() async {
+    // Preferir archivo local si existe.
+    final logoPath = _prefs.logoPath;
+    if (logoPath.isNotEmpty) {
+      final file = File(logoPath);
+      if (await file.exists()) {
+        return file.readAsBytes();
+      }
+    }
+    // Fallback a URL remota (logo sincronizado entre dispositivos).
+    final logoUrl = _prefs.logoUrl;
+    if (logoUrl.isNotEmpty) {
+      try {
+        final client = HttpClient();
+        final req = await client.getUrl(Uri.parse(logoUrl));
+        final res = await req.close().timeout(const Duration(seconds: 8));
+        if (res.statusCode == 200) {
+          final bytes = <int>[];
+          await for (final chunk in res) {
+            bytes.addAll(chunk);
+          }
+          client.close();
+          return Uint8List.fromList(bytes);
+        }
+        client.close();
+      } catch (_) {}
+    }
+    return null;
+  }
+
   Future<void> printTicket({
     required List<SaleItemEntity> items,
     required double total,
@@ -23,11 +60,29 @@ class TicketService {
     required String paymentMethod,
     required String saleType,
     required BuildContext context,
+    int? ticketNumber,
   }) async {
+    final resolvedTicketNumber = await _nextTicketNumber(ticketNumber);
+    if (!context.mounted) return;
     if (Platform.isAndroid) {
-      await _printBluetooth(items, total, paid, paymentMethod, saleType, context);
+      await _printBluetooth(
+        items,
+        total,
+        paid,
+        paymentMethod,
+        saleType,
+        context,
+        ticketNumber: resolvedTicketNumber,
+      );
     } else {
-      final doc = await _buildPdf(items, total, paid, paymentMethod, saleType);
+      final doc = await _buildPdf(
+        items,
+        total,
+        paid,
+        paymentMethod,
+        saleType,
+        ticketNumber: resolvedTicketNumber,
+      );
       final bytes = await doc.save();
       await Printing.layoutPdf(onLayout: (_) => bytes);
     }
@@ -39,8 +94,9 @@ class TicketService {
     double paid,
     String paymentMethod,
     String saleType,
-    BuildContext context,
-  ) async {
+    BuildContext context, {
+    required int ticketNumber,
+  }) async {
     final bluetooth = BlueThermalPrinter.instance;
 
     List<BluetoothDevice> devices = [];
@@ -52,7 +108,9 @@ class TicketService {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('No hay impresoras Bluetooth vinculadas. Vincula la impresora en Ajustes > Bluetooth.'),
+            content: Text(
+              'No hay impresoras Bluetooth vinculadas. Vincula la impresora en Ajustes > Bluetooth.',
+            ),
             backgroundColor: Colors.orange,
             duration: Duration(seconds: 4),
           ),
@@ -67,33 +125,43 @@ class TicketService {
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
       shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       builder: (ctx) {
         final primary = Theme.of(ctx).colorScheme.primary;
         return Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Text('SELECCIONAR IMPRESORA BLUETOOTH',
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                'SELECCIONAR IMPRESORA BLUETOOTH',
                 style: TextStyle(
-                    color: primary,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 13,
-                    letterSpacing: 1)),
-          ),
-          const Divider(color: Colors.white10),
-          ...devices.map((d) => ListTile(
+                  color: primary,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                  letterSpacing: 1,
+                ),
+              ),
+            ),
+            const Divider(color: Colors.white10),
+            ...devices.map(
+              (d) => ListTile(
                 leading: Icon(Icons.bluetooth, color: primary),
-                title: Text(d.name ?? 'Desconocido',
-                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                subtitle: Text(d.address ?? '',
-                    style: const TextStyle(color: Colors.white38, fontSize: 11)),
+                title: Text(
+                  d.name ?? 'Desconocido',
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                ),
+                subtitle: Text(
+                  d.address ?? '',
+                  style: const TextStyle(color: Colors.white38, fontSize: 11),
+                ),
                 onTap: () => Navigator.pop(ctx, d),
-              )),
-          const SizedBox(height: 16),
-        ],
-      );
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+        );
       },
     );
 
@@ -112,7 +180,10 @@ class TicketService {
       if (!isConnected) {
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('No se pudo conectar a la impresora'), backgroundColor: Colors.red),
+            const SnackBar(
+              content: Text('No se pudo conectar a la impresora'),
+              backgroundColor: Colors.red,
+            ),
           );
         }
         return;
@@ -121,63 +192,87 @@ class TicketService {
       await bluetooth.writeBytes(Uint8List.fromList([0x1B, 0x40]));
       await Future.delayed(const Duration(milliseconds: 100));
 
-      final now = DateTime.now();
-      final dateStr =
-          '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year} ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
-      final sep = _mmWidth == 58 ? '------------------------' : '--------------------------------';
+      // Centrar texto
+      await bluetooth.writeBytes(Uint8List.fromList([0x1B, 0x61, 0x01]));
 
-      final logoPath = _prefs.logoPath;
-      if (logoPath.isNotEmpty) {
-        final logoFile = File(logoPath);
-        if (await logoFile.exists()) {
-          try {
-            await bluetooth.printImage(logoPath);
-            await bluetooth.printNewLine();
-          } catch (_) {}
+      final layout = _TicketLayout(
+        prefs: _prefs,
+        items: items,
+        total: total,
+        paid: paid,
+        paymentMethod: paymentMethod,
+        saleType: saleType,
+        ticketNumber: ticketNumber,
+      );
+
+      final logoBytes = await _loadLogoBytes();
+      if (logoBytes != null) {
+        try {
+          await bluetooth.printImageBytes(logoBytes);
+          await bluetooth.printNewLine();
+        } catch (_) {}
+      }
+
+      for (final line in layout.bluetoothHeaderLines()) {
+        for (final sub in line.split('\n')) {
+          await bluetooth.write(sub);
+          await bluetooth.printNewLine();
         }
       }
 
-      final buf = StringBuffer();
-      buf.write('${_prefs.businessName.toUpperCase()}\n');
-      buf.write('$dateStr\n');
-      buf.write('$saleType | $paymentMethod\n');
-      buf.write('Atendio: ${_prefs.userName}\n');
-      buf.write('$sep\n');
+      await bluetooth.write(layout.bluetoothSeparator);
+      await bluetooth.printNewLine();
 
-      final computedTotal = items.fold<double>(0, (acc, item) => acc + item.price * item.quantity);
-      final safeTotal = total > 0 ? total : computedTotal;
+      for (final line in layout.bluetoothMetaLines()) {
+        await bluetooth.write(line);
+        await bluetooth.printNewLine();
+      }
+      await bluetooth.write('Tipo: $saleType | Pago: $paymentMethod');
+      await bluetooth.printNewLine();
+      await bluetooth.write('Atendio: ${_prefs.userName}');
+      await bluetooth.printNewLine();
 
-      for (final item in items) {
-        final name = item.productName.length > 18
-            ? item.productName.substring(0, 18)
-            : item.productName;
-        buf.write('$name\n');
-        final detail = '  \$${item.price.toStringAsFixed(2)} x${item.qtyLabel}';
-        final price = '\$${(item.price * item.quantity).toStringAsFixed(2)}';
-        final spaces = sep.length - detail.length - price.length;
-        buf.write('$detail${' ' * (spaces > 1 ? spaces : 1)}$price\n');
+      await bluetooth.write(layout.bluetoothSeparator);
+      await bluetooth.printNewLine();
+      for (final item in layout.itemLines) {
+        for (final line in item) {
+          await bluetooth.write(line);
+          await bluetooth.printNewLine();
+        }
       }
 
-      buf.write('$sep\n');
-      buf.write('TOTAL: \$${safeTotal.toStringAsFixed(2)}\n');
+      await bluetooth.write(layout.bluetoothSeparator);
+      await bluetooth.printNewLine();
+
+      for (final line in layout.totalLines) {
+        await bluetooth.write(line);
+        await bluetooth.printNewLine();
+      }
 
       if (paymentMethod == 'Efectivo' && paid > 0) {
-        buf.write('PAGO:   \$${paid.toStringAsFixed(2)}\n');
-        final change = (paid - safeTotal) < 0 ? 0.0 : (paid - safeTotal);
-        buf.write('CAMBIO: \$${change.toStringAsFixed(2)}\n');
+        await bluetooth.write('PAGO:   \$${paid.toStringAsFixed(2)}');
+        await bluetooth.printNewLine();
+        final diff = paid - layout.safeTotal;
+        final label = diff < 0 ? 'FALTA' : 'CAMBIO';
+        await bluetooth.write('$label: \$${diff.abs().toStringAsFixed(2)}');
+        await bluetooth.printNewLine();
       }
 
-      buf.write('\n');
-      buf.write('*** GRACIAS POR SU COMPRA ***\n');
-      buf.write('\n\n\n');
+      await bluetooth.printNewLine();
+      for (final line in layout.bluetoothFooterLines()) {
+        await bluetooth.write(line);
+        await bluetooth.printNewLine();
+      }
 
-      await bluetooth.write(buf.toString());
       await Future.delayed(const Duration(milliseconds: 1500));
       await bluetooth.disconnect();
 
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Ticket enviado a la impresora'), backgroundColor: Colors.green),
+          const SnackBar(
+            content: Text('Ticket enviado a la impresora'),
+            backgroundColor: Colors.green,
+          ),
         );
       }
     } catch (e) {
@@ -195,13 +290,24 @@ class TicketService {
     required double paid,
     required String paymentMethod,
     required String saleType,
+    int? ticketNumber,
   }) async {
-    final doc = await _buildPdf(items, total, paid, paymentMethod, saleType);
+    final resolvedTicketNumber = await _nextTicketNumber(ticketNumber);
+    final doc = await _buildPdf(
+      items,
+      total,
+      paid,
+      paymentMethod,
+      saleType,
+      ticketNumber: resolvedTicketNumber,
+    );
     final bytes = await doc.save();
     final dir = await getTemporaryDirectory();
     final file = File('${dir.path}/ticket_baumar.pdf');
     await file.writeAsBytes(bytes);
-    await SharePlus.instance.share(ShareParams(files: [XFile(file.path)], subject: 'Ticket de Venta'));
+    await SharePlus.instance.share(
+      ShareParams(files: [XFile(file.path)], subject: 'Ticket de Venta'),
+    );
   }
 
   Future<void> showPreviewSheet({
@@ -211,30 +317,91 @@ class TicketService {
     required double paid,
     required String paymentMethod,
     required String saleType,
+    int? ticketNumber,
   }) async {
+    final resolvedTicketNumber = ticketNumber ?? (_prefs.ticketCounter + 1);
+    final doc = await _buildPdf(
+      items,
+      total,
+      paid,
+      paymentMethod,
+      saleType,
+      ticketNumber: resolvedTicketNumber,
+    );
+    final bytes = await doc.save();
+    if (!context.mounted) return;
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (_) => DraggableScrollableSheet(
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => DraggableScrollableSheet(
         expand: false,
-        initialChildSize: 0.85,
+        initialChildSize: 0.9,
         maxChildSize: 0.95,
-        builder: (_, ctrl) => TicketPreviewSheet(
-          items: items,
-          total: total,
-          paid: paid,
-          paymentMethod: paymentMethod,
-          saleType: saleType,
-          onPrint: () => printTicket(
-            items: items, total: total, paid: paid,
-            paymentMethod: paymentMethod, saleType: saleType, context: context,
-          ),
-          onShare: () => sharePdf(
-            items: items, total: total, paid: paid,
-            paymentMethod: paymentMethod, saleType: saleType,
-          ),
+        builder: (_, ctrl) => Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: const BoxDecoration(
+                color: Color(0xFF1A1A1A),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              ),
+              child: Row(
+                children: [
+                  const Text(
+                    'VISTA PREVIA DEL TICKET',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.share, color: Colors.blue),
+                    onPressed: () => sharePdf(
+                      items: items,
+                      total: total,
+                      paid: paid,
+                      paymentMethod: paymentMethod,
+                      saleType: saleType,
+                      ticketNumber: resolvedTicketNumber,
+                    ),
+                  ),
+                  IconButton(
+                    icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
+                    onPressed: () => printTicket(
+                      items: items,
+                      total: total,
+                      paid: paid,
+                      paymentMethod: paymentMethod,
+                      saleType: saleType,
+                      context: ctx,
+                      ticketNumber: resolvedTicketNumber,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white54),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: PdfPreview(
+                padding: const EdgeInsets.all(12),
+                build: (_) => Future.value(bytes),
+                allowSharing: false,
+                allowPrinting: false,
+                initialPageFormat: const PdfPageFormat(80 * PdfPageFormat.mm, 200 * PdfPageFormat.mm),
+                pageFormats: const {},
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -245,37 +412,40 @@ class TicketService {
     double total,
     double paid,
     String paymentMethod,
-    String saleType,
-  ) async {
+    String saleType, {
+    required int ticketNumber,
+  }) async {
+    final layout = _TicketLayout(
+      prefs: _prefs,
+      items: items,
+      total: total,
+      paid: paid,
+      paymentMethod: paymentMethod,
+      saleType: saleType,
+      ticketNumber: ticketNumber,
+    );
+
     final doc = pw.Document();
     final now = DateTime.now();
     final dateStr =
         '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}  ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
 
     pw.MemoryImage? logoImage;
-    final logoPath = _prefs.logoPath;
-    if (logoPath.isNotEmpty) {
-      final file = File(logoPath);
-      if (await file.exists()) {
-        logoImage = pw.MemoryImage(await file.readAsBytes());
-      }
+    final logoBytes = await _loadLogoBytes();
+    if (logoBytes != null) {
+      logoImage = pw.MemoryImage(logoBytes);
     }
-
-    // Total real calculado desde los items (evita Total=0 por valores desincronizados)
-    final computedTotal = items.fold<double>(0, (acc, item) => acc + item.price * item.quantity);
-    final safeTotal = total > 0 ? total : computedTotal;
-    final cashierName = _prefs.userName;
 
     final widthMm = _mmWidth;
     final is58 = widthMm == 58;
     final pageWidth = widthMm * PdfPageFormat.mm;
 
-    // Calcular altura dinámica según contenido (58mm usa 2 líneas por item)
     final itemHeight = (is58 ? 9 : 7) * PdfPageFormat.mm;
-    final headerHeight = (logoImage != null ? 54 : 38) * PdfPageFormat.mm;
+    final headerHeight = (logoImage != null ? 54 : 40) * PdfPageFormat.mm;
     final footerHeight = (paymentMethod == 'Efectivo' && paid > 0 ? 34 : 24) * PdfPageFormat.mm;
-    final pageHeight = headerHeight + (items.length + 1) * itemHeight + footerHeight + 4 * PdfPageFormat.mm;
-    final format = PdfPageFormat(pageWidth, pageHeight, marginAll: (is58 ? 3 : 5) * PdfPageFormat.mm);
+    final headerLineCount = layout.pdfHeaderLines(dateStr).length;
+    final pageHeight = headerHeight + (headerLineCount * 3 * PdfPageFormat.mm) + (items.length + 1) * itemHeight + footerHeight + 4 * PdfPageFormat.mm;
+    final format = PdfPageFormat(pageWidth, pageHeight, marginAll: (is58 ? 2 : 4) * PdfPageFormat.mm);
 
     const white = PdfColors.white;
     const black = PdfColors.black;
@@ -289,15 +459,37 @@ class TicketService {
       letterSpacing: is58 ? 0.5 : 1,
     );
     final normalStyle = pw.TextStyle(fontSize: is58 ? 8 : 9.5, color: black);
-    final boldStyle = pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: is58 ? 8.5 : 10, color: black);
+    final boldStyle = pw.TextStyle(
+      fontWeight: pw.FontWeight.bold,
+      fontSize: is58 ? 8.5 : 10,
+      color: black,
+    );
+    final italicStyle = pw.TextStyle(
+      fontStyle: pw.FontStyle.italic,
+      fontSize: is58 ? 7.5 : 8.5,
+      color: grey,
+    );
     final smallStyle = pw.TextStyle(fontSize: is58 ? 7 : 8, color: grey);
-    final colHeadStyle = pw.TextStyle(fontSize: is58 ? 6.5 : 7.5, color: grey, fontWeight: pw.FontWeight.bold);
-    final totalStyle = pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: is58 ? 11 : 13, color: black);
+    final colHeadStyle = pw.TextStyle(
+      fontSize: is58 ? 6.5 : 7.5,
+      color: grey,
+      fontWeight: pw.FontWeight.bold,
+    );
+    final totalStyle = pw.TextStyle(
+      fontWeight: pw.FontWeight.bold,
+      fontSize: is58 ? 11 : 13,
+      color: black,
+    );
+    final tinyStyle = pw.TextStyle(fontSize: is58 ? 6.5 : 7.5, color: grey);
+    final farewellStyle = pw.TextStyle(
+      color: primaryColor,
+      fontWeight: pw.FontWeight.bold,
+      fontSize: is58 ? 8 : 9.5,
+    );
 
     pw.Widget buildItemRow(SaleItemEntity item) {
       final lineTotal = '\$${(item.price * item.quantity).toStringAsFixed(2)}';
       if (is58) {
-        // 58mm: nombre en una línea, detalle (cant x precio) + subtotal debajo
         return pw.Padding(
           padding: const pw.EdgeInsets.symmetric(vertical: 1.5),
           child: pw.Column(
@@ -307,7 +499,10 @@ class TicketService {
               pw.Row(
                 mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                 children: [
-                  pw.Text('${item.qtyLabel} x \$${item.price.toStringAsFixed(2)}', style: smallStyle),
+                  pw.Text(
+                    '${item.qtyLabel} x \$${item.price.toStringAsFixed(2)}',
+                    style: smallStyle,
+                  ),
                   pw.Text(lineTotal, style: boldStyle),
                 ],
               ),
@@ -315,16 +510,28 @@ class TicketService {
           ),
         );
       }
-      // 80mm: tabla de 4 columnas
       return pw.Padding(
         padding: const pw.EdgeInsets.symmetric(vertical: 1.5),
         child: pw.Row(
           crossAxisAlignment: pw.CrossAxisAlignment.start,
           children: [
             pw.Expanded(flex: 6, child: pw.Text(item.productName, style: normalStyle)),
-            pw.Expanded(flex: 3, child: pw.Text('\$${item.price.toStringAsFixed(2)}', style: normalStyle, textAlign: pw.TextAlign.right)),
-            pw.Expanded(flex: 2, child: pw.Text(item.qtyLabel, style: normalStyle, textAlign: pw.TextAlign.center)),
-            pw.Expanded(flex: 3, child: pw.Text(lineTotal, style: boldStyle, textAlign: pw.TextAlign.right)),
+            pw.Expanded(
+              flex: 3,
+              child: pw.Text(
+                '\$${item.price.toStringAsFixed(2)}',
+                style: normalStyle,
+                textAlign: pw.TextAlign.right,
+              ),
+            ),
+            pw.Expanded(
+              flex: 2,
+              child: pw.Text(item.qtyLabel, style: normalStyle, textAlign: pw.TextAlign.center),
+            ),
+            pw.Expanded(
+              flex: 3,
+              child: pw.Text(lineTotal, style: boldStyle, textAlign: pw.TextAlign.right),
+            ),
           ],
         ),
       );
@@ -343,23 +550,46 @@ class TicketService {
       return pw.Row(
         children: [
           pw.Expanded(flex: 6, child: pw.Text('PRODUCTO', style: colHeadStyle)),
-          pw.Expanded(flex: 3, child: pw.Text('P.UNIT', style: colHeadStyle, textAlign: pw.TextAlign.right)),
-          pw.Expanded(flex: 2, child: pw.Text('CANT', style: colHeadStyle, textAlign: pw.TextAlign.center)),
-          pw.Expanded(flex: 3, child: pw.Text('IMPORTE', style: colHeadStyle, textAlign: pw.TextAlign.right)),
+          pw.Expanded(
+            flex: 3,
+            child: pw.Text('P.UNIT', style: colHeadStyle, textAlign: pw.TextAlign.right),
+          ),
+          pw.Expanded(
+            flex: 2,
+            child: pw.Text('CANT', style: colHeadStyle, textAlign: pw.TextAlign.center),
+          ),
+          pw.Expanded(
+            flex: 3,
+            child: pw.Text('IMPORTE', style: colHeadStyle, textAlign: pw.TextAlign.right),
+          ),
         ],
       );
     }
 
-    pw.Widget buildSummaryRow(String label, String value, {bool emphasize = false, PdfColor? valueColor}) {
+    pw.Widget buildSummaryRow(
+      String label,
+      String value, {
+      bool emphasize = false,
+      PdfColor? valueColor,
+    }) {
       return pw.Padding(
         padding: const pw.EdgeInsets.symmetric(vertical: 1),
         child: pw.Row(
           mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
           children: [
             pw.Text(label, style: emphasize ? totalStyle : normalStyle),
-            pw.Text(value, style: emphasize
-                ? (valueColor != null ? pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: is58 ? 11 : 13, color: valueColor) : totalStyle)
-                : normalStyle),
+            pw.Text(
+              value,
+              style: emphasize
+                  ? (valueColor != null
+                      ? pw.TextStyle(
+                          fontWeight: pw.FontWeight.bold,
+                          fontSize: is58 ? 11 : 13,
+                          color: valueColor,
+                        )
+                      : totalStyle)
+                  : normalStyle,
+            ),
           ],
         ),
       );
@@ -380,34 +610,84 @@ class TicketService {
                 pw.Image(logoImage, width: logoSize, height: logoSize),
                 pw.SizedBox(height: 4),
               ],
-              pw.Text(_prefs.businessName.toUpperCase(), style: titleStyle, textAlign: pw.TextAlign.center),
-              pw.SizedBox(height: 3),
-              pw.Text(dateStr, style: smallStyle),
-              pw.Text('Tipo: $saleType', style: smallStyle),
-              pw.Text('Pago: $paymentMethod', style: smallStyle),
-              pw.Text('Atendió: $cashierName', style: smallStyle),
+              pw.Text(
+                _prefs.businessName.toUpperCase(),
+                style: titleStyle,
+                textAlign: pw.TextAlign.center,
+              ),
+              pw.SizedBox(height: 1),
+              if (_prefs.businessSlogan.isNotEmpty)
+                pw.Text(
+                  '"${_prefs.businessSlogan}"',
+                  style: italicStyle,
+                  textAlign: pw.TextAlign.center,
+                ),
+              pw.SizedBox(height: 2),
+              ...layout.pdfHeaderLines(dateStr).map(
+                    (line) => pw.Text(line, style: tinyStyle, textAlign: pw.TextAlign.center),
+                  ),
+              if (_prefs.businessWhatsapp.isNotEmpty)
+                pw.Row(
+                  mainAxisAlignment: pw.MainAxisAlignment.center,
+                  children: [
+                    pw.Text('Whats: ', style: tinyStyle),
+                    pw.Text(_prefs.businessWhatsapp, style: smallStyle),
+                  ],
+                ),
+              pw.SizedBox(height: 2),
+              pw.Divider(color: primaryColor, thickness: 0.8),
+              ...layout.pdfMetaLines(dateStr).map(
+                    (line) => pw.Text(line, style: smallStyle, textAlign: pw.TextAlign.center),
+                  ),
+              pw.Text(
+                'Tipo: $saleType | Pago: $paymentMethod',
+                style: smallStyle,
+                textAlign: pw.TextAlign.center,
+              ),
+              pw.Text(
+                'Atendio: ${_prefs.userName}',
+                style: smallStyle,
+                textAlign: pw.TextAlign.center,
+              ),
               pw.SizedBox(height: 2),
               pw.Divider(color: primaryColor, thickness: 0.8),
               buildColumnsHeader(),
               pw.SizedBox(height: 2),
               ...items.map(buildItemRow),
               pw.Divider(color: primaryColor, thickness: 0.8),
-              buildSummaryRow('TOTAL', '\$${safeTotal.toStringAsFixed(2)}', emphasize: true),
+              buildSummaryRow(
+                'TOTAL',
+                '\$${layout.safeTotal.toStringAsFixed(2)}',
+                emphasize: true,
+              ),
               if (paymentMethod == 'Efectivo' && paid > 0) ...[
                 buildSummaryRow('PAGO', '\$${paid.toStringAsFixed(2)}'),
                 buildSummaryRow(
-                  'CAMBIO',
-                  '\$${(paid - safeTotal) < 0 ? '0.00' : (paid - safeTotal).toStringAsFixed(2)}',
+                  (paid - layout.safeTotal) < 0 ? 'FALTA' : 'CAMBIO',
+                  '\$${(paid - layout.safeTotal).abs().toStringAsFixed(2)}',
                   emphasize: true,
                   valueColor: primaryColor,
                 ),
               ],
               pw.SizedBox(height: 8),
-              pw.Text('*** GRACIAS POR SU COMPRA ***',
-                  style: pw.TextStyle(color: primaryColor, fontWeight: pw.FontWeight.bold, fontSize: is58 ? 8 : 9.5),
-                  textAlign: pw.TextAlign.center),
+              pw.Text(
+                '*** ${_prefs.ticketFarewell.toUpperCase()} ***',
+                style: farewellStyle,
+                textAlign: pw.TextAlign.center,
+              ),
               pw.SizedBox(height: 2),
-              pw.Text(_prefs.businessName, style: smallStyle, textAlign: pw.TextAlign.center),
+              if (_prefs.businessWebsite.isNotEmpty)
+                pw.Text(
+                  _prefs.businessWebsite,
+                  style: smallStyle,
+                  textAlign: pw.TextAlign.center,
+                ),
+              if (layout.socialFooter.isNotEmpty)
+                pw.Text(
+                  layout.socialFooter,
+                  style: tinyStyle,
+                  textAlign: pw.TextAlign.center,
+                ),
               pw.SizedBox(height: 4),
             ],
           ),
@@ -418,189 +698,120 @@ class TicketService {
   }
 }
 
-class TicketPreviewSheet extends StatelessWidget {
+/// Layout compartido que calcula las líneas de texto para Bluetooth y PDF.
+class _TicketLayout {
+  final PreferencesService prefs;
   final List<SaleItemEntity> items;
   final double total;
   final double paid;
   final String paymentMethod;
   final String saleType;
-  final VoidCallback onPrint;
-  final VoidCallback onShare;
+  final int ticketNumber;
 
-  const TicketPreviewSheet({
-    super.key,
+  late final double safeTotal;
+  late final List<List<String>> itemLines;
+  late final List<String> totalLines;
+  late final String socialFooter;
+
+  _TicketLayout({
+    required this.prefs,
     required this.items,
     required this.total,
     required this.paid,
     required this.paymentMethod,
     required this.saleType,
-    required this.onPrint,
-    required this.onShare,
-  });
+    required this.ticketNumber,
+  }) {
+    safeTotal = total > 0 ? total : items.fold<double>(0, (acc, item) => acc + item.price * item.quantity);
+    _buildItemLines();
+    _buildTotalLines();
+    socialFooter = _buildSocialFooter();
+  }
 
-  @override
-  Widget build(BuildContext context) {
-    final now = DateTime.now();
-    final prefs = PreferencesService();
-    final logo = prefs.logoPath;
-    final primary = Theme.of(context).colorScheme.primary;
-    final computedTotal = items.fold<double>(0, (acc, item) => acc + item.price * item.quantity);
-    final safeTotal = total > 0 ? total : computedTotal;
+  String get bluetoothSeparator {
+    return prefs.printWidth == '58mm' ? '------------------------' : '--------------------------------';
+  }
+
+  void _buildItemLines() {
     final is58 = prefs.printWidth == '58mm';
-    // El ancho del recibo en pantalla refleja el papel seleccionado
-    final sheetWidth = is58 ? 240.0 : 320.0;
-
-    return Container(
-      color: Colors.grey[200],
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text('VISTA PREVIA TICKET',
-                  style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 15)),
-              Row(
-                children: [
-                  IconButton(icon: const Icon(Icons.share, color: Colors.blue), onPressed: onShare),
-                  IconButton(icon: Icon(Icons.print, color: primary), onPressed: onPrint),
-                ],
-              ),
-            ],
-          ),
-          Expanded(
-            child: Center(
-              child: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: sheetWidth),
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(4),
-                    boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.15), blurRadius: 8)],
-                  ),
-                  child: CustomPaint(
-                    painter: const _DentedEdgePainter(),
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 24, 16, 24),
-                      child: SingleChildScrollView(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            if (logo.isNotEmpty && File(logo).existsSync())
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(8),
-                                child: Image.file(File(logo), width: 56, height: 56, fit: BoxFit.contain),
-                              ),
-                            const SizedBox(height: 6),
-                            Text(prefs.businessName.toUpperCase(),
-                                style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 15, letterSpacing: 2)),
-                            const SizedBox(height: 4),
-                            Text(
-                              '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}  ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}',
-                              style: const TextStyle(color: Colors.black54, fontSize: 11),
-                            ),
-                            Text('$saleType | $paymentMethod',
-                                style: const TextStyle(color: Colors.black54, fontSize: 10)),
-                            Text('Atendió: ${prefs.userName}',
-                                style: const TextStyle(color: Colors.black54, fontSize: 10)),
-                            Divider(color: primary, thickness: 0.5),
-                            if (is58)
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: const [
-                                  Text('CANT x P.UNIT', style: TextStyle(color: Colors.black45, fontSize: 8, fontWeight: FontWeight.bold)),
-                                  Text('IMPORTE', style: TextStyle(color: Colors.black45, fontSize: 8, fontWeight: FontWeight.bold)),
-                                ],
-                              )
-                            else
-                              Row(
-                                children: const [
-                                  Expanded(flex: 6, child: Text('PRODUCTO', style: TextStyle(color: Colors.black45, fontSize: 8.5, fontWeight: FontWeight.bold))),
-                                  Expanded(flex: 3, child: Text('P.UNIT', textAlign: TextAlign.right, style: TextStyle(color: Colors.black45, fontSize: 8.5, fontWeight: FontWeight.bold))),
-                                  Expanded(flex: 2, child: Text('CANT', textAlign: TextAlign.center, style: TextStyle(color: Colors.black45, fontSize: 8.5, fontWeight: FontWeight.bold))),
-                                  Expanded(flex: 3, child: Text('IMPORTE', textAlign: TextAlign.right, style: TextStyle(color: Colors.black45, fontSize: 8.5, fontWeight: FontWeight.bold))),
-                                ],
-                              ),
-                            const SizedBox(height: 2),
-                            ...items.map((item) => Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 2),
-                              child: is58
-                                  ? Column(
-                                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                                      children: [
-                                        Text(item.productName, style: const TextStyle(color: Colors.black87, fontSize: 11)),
-                                        Row(
-                                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                          children: [
-                                            Text('${item.qtyLabel} x \$${item.price.toStringAsFixed(2)}', style: const TextStyle(color: Colors.black54, fontSize: 10)),
-                                            Text('\$${(item.price * item.quantity).toStringAsFixed(2)}', style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 11)),
-                                          ],
-                                        ),
-                                      ],
-                                    )
-                                  : Row(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Expanded(flex: 6, child: Text(item.productName, style: const TextStyle(color: Colors.black87, fontSize: 11))),
-                                        Expanded(flex: 3, child: Text('\$${item.price.toStringAsFixed(2)}', textAlign: TextAlign.right, style: const TextStyle(color: Colors.black54, fontSize: 11))),
-                                        Expanded(flex: 2, child: Text(item.qtyLabel, textAlign: TextAlign.center, style: const TextStyle(color: Colors.black54, fontSize: 11))),
-                                        Expanded(flex: 3, child: Text('\$${(item.price * item.quantity).toStringAsFixed(2)}', textAlign: TextAlign.right, style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 11))),
-                                      ],
-                                    ),
-                            )),
-                            Divider(color: primary, thickness: 0.5),
-                            _row('TOTAL', '\$${safeTotal.toStringAsFixed(2)}', bold: true, valueColor: Colors.green[700]),
-                            if (paymentMethod == 'Efectivo' && paid > 0) ...[
-                              _row('PAGO', '\$${paid.toStringAsFixed(2)}'),
-                              _row('CAMBIO', '\$${(paid - safeTotal) < 0 ? '0.00' : (paid - safeTotal).toStringAsFixed(2)}', bold: true, valueColor: Colors.orange),
-                            ],
-                            const SizedBox(height: 10),
-                            Text('*** GRACIAS POR SU COMPRA ***',
-                                style: TextStyle(color: primary, fontWeight: FontWeight.bold, fontSize: 11)),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
+    final sep = bluetoothSeparator;
+    itemLines = items.map((item) {
+      final name = item.productName.length > (is58 ? 18 : 26) ? item.productName.substring(0, is58 ? 18 : 26) : item.productName;
+      final detail = '  \$${item.price.toStringAsFixed(2)} x${item.qtyLabel}';
+      final price = '\$${(item.price * item.quantity).toStringAsFixed(2)}';
+      final spaces = sep.length - detail.length - price.length;
+      return [
+        name,
+        '$detail${' ' * (spaces > 1 ? spaces : 1)}$price',
+      ];
+    }).toList();
   }
 
-  Widget _row(String label, String value, {bool bold = false, Color? valueColor}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(label, style: TextStyle(color: Colors.black54, fontSize: 12, fontWeight: bold ? FontWeight.bold : FontWeight.normal)),
-          Text(value, style: TextStyle(color: valueColor ?? Colors.black, fontSize: 12, fontWeight: bold ? FontWeight.bold : FontWeight.normal)),
-        ],
-      ),
-    );
+  void _buildTotalLines() {
+    totalLines = [
+      'TOTAL: \$${safeTotal.toStringAsFixed(2)}',
+    ];
   }
-}
 
-class _DentedEdgePainter extends CustomPainter {
-  const _DentedEdgePainter();
+  String _buildSocialFooter() {
+    if (prefs.socialNetworks.isEmpty) return '';
+    return prefs.socialNetworks.entries.map((e) => '@${e.value}').join('  ');
+  }
 
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()..color = Colors.grey[300]!;
-    const r = 7.0;
-    const count = 12;
-    final spacing = size.width / count;
+  List<String> pdfHeaderLines(String dateStr) {
+    final lines = <String>[];
 
-    for (int i = 0; i < count; i++) {
-      canvas.drawCircle(Offset(spacing * i + spacing / 2, 0), r, paint);
-      canvas.drawCircle(Offset(spacing * i + spacing / 2, size.height), r, paint);
+    final addressPart1 = [
+      prefs.businessStreet,
+      if (prefs.businessExtNumber.isNotEmpty)
+        'No. ${prefs.businessExtNumber}${prefs.businessIntNumber.isNotEmpty ? ' Int. ${prefs.businessIntNumber}' : ''}',
+    ].where((s) => s.isNotEmpty).toList();
+
+    final addressPart2 = [
+      prefs.businessColony,
+      if (prefs.businessCity.isNotEmpty) prefs.businessCity,
+    ].where((s) => s.isNotEmpty).toList();
+
+    final addressPart3 = [
+      if (prefs.businessState.isNotEmpty) prefs.businessState,
+      if (prefs.businessZipCode.isNotEmpty) 'CP ${prefs.businessZipCode}',
+    ].where((s) => s.isNotEmpty).toList();
+
+    if (addressPart1.isNotEmpty) lines.add(addressPart1.join(' | '));
+    if (addressPart2.isNotEmpty) lines.add(addressPart2.join(' | '));
+    if (addressPart3.isNotEmpty) lines.add(addressPart3.join(' | '));
+
+    return lines;
+  }
+
+  List<String> pdfMetaLines(String dateStr) {
+    return [
+      'Folio: #$ticketNumber  |  $dateStr',
+    ];
+  }
+
+  List<String> bluetoothHeaderLines() {
+    final lines = pdfHeaderLines(
+      '${DateTime.now().day.toString().padLeft(2, '0')}/${DateTime.now().month.toString().padLeft(2, '0')}/${DateTime.now().year} ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}',
+    );
+    if (prefs.businessWhatsapp.isNotEmpty) {
+      lines.add('Whats: ${prefs.businessWhatsapp}');
     }
+    return lines;
   }
 
-  @override
-  bool shouldRepaint(_) => false;
+  List<String> bluetoothMetaLines() {
+    return pdfMetaLines(
+      '${DateTime.now().day.toString().padLeft(2, '0')}/${DateTime.now().month.toString().padLeft(2, '0')}/${DateTime.now().year} ${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}',
+    );
+  }
+
+  List<String> bluetoothFooterLines() {
+    final lines = <String>[
+      '*** ${prefs.ticketFarewell.toUpperCase()} ***',
+    ];
+    if (prefs.businessWebsite.isNotEmpty) lines.add(prefs.businessWebsite);
+    if (socialFooter.isNotEmpty) lines.add(socialFooter);
+    return lines;
+  }
 }

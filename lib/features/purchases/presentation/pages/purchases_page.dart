@@ -1,5 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import 'dart:io';
 
+import '../../../../core/storage/preferences_service.dart';
 import '../../../inventory/data/repositories/product_repository.dart';
 import '../../../inventory/domain/entities/product_entity.dart';
 import '../../data/repositories/purchases_repository.dart';
@@ -53,30 +59,32 @@ class _PurchasesPageState extends State<PurchasesPage> with SingleTickerProvider
     }
   }
 
+  static const Color _headerColor = Color(0xFFFB8C00);
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text(
           'COMPRAS',
-          style: TextStyle(color: Color(0xFFFB8C00), fontWeight: FontWeight.bold),
+          style: TextStyle(color: _headerColor, fontWeight: FontWeight.bold),
         ),
         bottom: TabBar(
           controller: _tabs,
-          labelColor: const Color(0xFFFB8C00),
+          labelColor: _headerColor,
           unselectedLabelColor: Colors.white38,
-          indicatorColor: const Color(0xFFFB8C00),
+          indicatorColor: _headerColor,
           tabs: const [Tab(text: 'NUEVA COMPRA'), Tab(text: 'PROVEEDORES'), Tab(text: 'HISTORIAL')],
         ),
       ),
       body:
           _isLoading
-              ? const Center(child: CircularProgressIndicator(color: Color(0xFFFB8C00)))
+              ? const Center(child: CircularProgressIndicator(color: _headerColor))
               : TabBarView(
                 controller: _tabs,
                 children: [
                   _NewPurchaseTab(providers: _providers, products: _products, onSaved: _load),
-                  _ProvidersTab(providers: _providers, repo: _repo, onChanged: _load),
+                  _ProvidersTab(providers: _providers, products: _products, repo: _repo, onChanged: _load),
                   _HistoryTab(history: _history),
                 ],
               ),
@@ -112,11 +120,21 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab> {
   final List<TextEditingController> _qtyControllers = [];
   final List<TextEditingController> _costControllers = [];
 
+  // En compras SÍ se permite comprar por caja/cajetilla (para eso existe la
+  // conversión automática caja->piezas en PurchasesRepository.savePurchase),
+  // solo se excluyen las promociones (no tiene sentido comprar una promo).
+  List<ProductEntity> get _purchaseProducts =>
+      widget.products.where((p) => p.isPromo != 1).toList();
+
   @override
   void dispose() {
     _refCtrl.dispose();
-    for (final c in _qtyControllers) { c.dispose(); }
-    for (final c in _costControllers) { c.dispose(); }
+    for (final c in _qtyControllers) {
+      c.dispose();
+    }
+    for (final c in _costControllers) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -125,35 +143,74 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab> {
   Future<void> _save() async {
     if (_cart.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Agrega al menos un producto'), backgroundColor: Colors.orange),
+        const SnackBar(
+          content: Text('Agrega al menos un producto'),
+          backgroundColor: Colors.orange,
+        ),
       );
       return;
     }
     setState(() => _saving = true);
     try {
-      await _repo.savePurchase(
-        purchase: PurchaseEntity(
-          providerId: _provider?.id,
-          reference: _refCtrl.text,
-          items: _cart.map((c) => PurchaseItemEntity(
-            productId: c.product.id!,
-            productName: c.product.name,
-            quantity: c.quantity,
-            costPerUnit: c.cost,
-          )).toList(),
-        ),
+      final purchase = PurchaseEntity(
+        providerId: _provider?.id,
+        reference: _refCtrl.text.toUpperCase(),
+        items:
+            _cart
+                .map(
+                  (c) => PurchaseItemEntity(
+                    productId: c.product.id!,
+                    productName: c.product.name,
+                    quantity: c.quantity,
+                    costPerUnit: c.cost,
+                  ),
+                )
+                .toList(),
       );
+      final purchaseId = await _repo.savePurchase(purchase: purchase);
       if (!mounted) return;
+
+      final itemsForPdf = _cart
+          .map(
+            (c) => _PurchasePdfItem(
+              name: c.product.name,
+              quantity: c.quantity,
+              cost: c.cost,
+              subtotal: c.subtotal,
+            ),
+          )
+          .toList();
+      final total = _calcTotal();
+      final providerName = _provider?.name ?? 'SIN PROVEEDOR';
+      final reference = _refCtrl.text.toUpperCase();
+
+      await _showPurchasePdf(
+        context: context,
+        purchaseId: purchaseId,
+        providerName: providerName,
+        reference: reference,
+        items: itemsForPdf,
+        total: total,
+      );
+
       _refCtrl.clear();
       _provider = null;
-      for (final c in _qtyControllers) { c.dispose(); }
-      for (final c in _costControllers) { c.dispose(); }
+      for (final c in _qtyControllers) {
+        c.dispose();
+      }
+      for (final c in _costControllers) {
+        c.dispose();
+      }
       _qtyControllers.clear();
       _costControllers.clear();
       _cart.clear();
       widget.onSaved();
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Compra registrada y stock actualizado'), backgroundColor: Colors.green),
+        const SnackBar(
+          content: Text('Compra registrada y stock actualizado'),
+          backgroundColor: Colors.green,
+        ),
       );
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -166,7 +223,7 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab> {
       setState(() => existing.quantity++);
       final idx = _cart.indexOf(existing);
       _qtyControllers[idx].text = existing.quantity.toStringAsFixed(
-        existing.quantity == existing.quantity.toInt() ? 0 : 2
+        existing.quantity == existing.quantity.toInt() ? 0 : 2,
       );
       return;
     }
@@ -202,83 +259,146 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab> {
 
   Future<void> _openProductPicker() async {
     final searchCtrl = TextEditingController();
-    var filtered = List<ProductEntity>.from(widget.products);
+    var filtered = List<ProductEntity>.from(_purchaseProducts);
     await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: const Color(0xFF1A1A1A),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
       builder: (ctx) {
+        final primary = Theme.of(ctx).colorScheme.primary;
         return StatefulBuilder(
           builder: (ctx2, ss) {
             return DraggableScrollableSheet(
               expand: false,
               initialChildSize: 0.7,
               maxChildSize: 0.95,
-              builder: (_, ctrl) => Padding(
-                padding: EdgeInsets.only(bottom: MediaQuery.of(ctx2).viewInsets.bottom, left: 16, right: 16, top: 16),
-                child: Column(
-                  children: [
-                    Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2))),
-                    const SizedBox(height: 16),
-                    const Text('AGREGAR PRODUCTOS', style: TextStyle(color: Color(0xFFFB8C00), fontWeight: FontWeight.bold, fontSize: 16, letterSpacing: 1)),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: searchCtrl,
-                      onChanged: (q) {
-                        ss(() {
-                          final text = q.toLowerCase();
-                          filtered = widget.products.where((p) => p.name.toLowerCase().contains(text)).toList();
-                        });
-                      },
-                      style: const TextStyle(color: Colors.white),
-                      decoration: InputDecoration(
-                        hintText: 'Buscar producto...',
-                        hintStyle: const TextStyle(color: Colors.white24),
-                        prefixIcon: const Icon(Icons.search, color: Colors.white38),
-                        filled: true,
-                        fillColor: Colors.white.withValues(alpha: 0.05),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                      ),
+              builder:
+                  (_, ctrl) => Padding(
+                    padding: EdgeInsets.only(
+                      bottom: MediaQuery.of(ctx2).viewInsets.bottom,
+                      left: 16,
+                      right: 16,
+                      top: 16,
                     ),
-                    const SizedBox(height: 12),
-                    Expanded(
-                      child: filtered.isEmpty
-                        ? const Center(child: Text('Sin coincidencias', style: TextStyle(color: Colors.white24)))
-                        : ListView.builder(
-                            controller: ctrl,
-                            itemCount: filtered.length,
-                            itemBuilder: (_, i) {
-                              final p = filtered[i];
-                              final inCart = _cart.any((c) => c.product.id == p.id);
-                              return ListTile(
-                                leading: CircleAvatar(
-                                  backgroundColor: const Color(0xFFFB8C00).withValues(alpha: 0.15),
-                                  child: Text(p.name.substring(0, 1).toUpperCase(), style: const TextStyle(color: Color(0xFFFB8C00), fontWeight: FontWeight.bold)),
-                                ),
-                                title: Text(p.name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                                subtitle: Text('Stock: ${p.stock.toStringAsFixed(0)}  |  Costo: \$${p.cost.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white38, fontSize: 11)),
-                                trailing: ElevatedButton(
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: inCart ? Colors.green : const Color(0xFFFB8C00),
-                                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                                  ),
-                                  onPressed: () {
-                                    _addToCart(p);
-                                    ss(() {});
-                                    if (_cart.where((c) => c.product.id == p.id).length == 1) {
-                                      Navigator.of(ctx).pop();
-                                    }
-                                  },
-                                  child: Text(inCart ? '+' : 'Agregar', style: const TextStyle(color: Colors.white, fontSize: 12)),
-                                ),
-                              );
-                            },
+                    child: Column(
+                      children: [
+                        Container(
+                          width: 40,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: Colors.white24,
+                            borderRadius: BorderRadius.circular(2),
                           ),
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          'AGREGAR PRODUCTOS',
+                          style: TextStyle(
+                            color: primary,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                            letterSpacing: 1,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: searchCtrl,
+                          onChanged: (q) {
+                            ss(() {
+                              final text = q.toLowerCase();
+                              filtered =
+                                  _purchaseProducts
+                                      .where((p) => p.name.toLowerCase().contains(text))
+                                      .toList();
+                            });
+                          },
+                          style: const TextStyle(color: Colors.white),
+                          decoration: InputDecoration(
+                            hintText: 'Buscar producto...',
+                            hintStyle: const TextStyle(color: Colors.white24),
+                            prefixIcon: const Icon(Icons.search, color: Colors.white38),
+                            filled: true,
+                            fillColor: Colors.white.withValues(alpha: 0.05),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide.none,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Expanded(
+                          child:
+                              filtered.isEmpty
+                                  ? const Center(
+                                    child: Text(
+                                      'Sin coincidencias',
+                                      style: TextStyle(color: Colors.white24),
+                                    ),
+                                  )
+                                  : ListView.builder(
+                                    controller: ctrl,
+                                    itemCount: filtered.length,
+                                    itemBuilder: (_, i) {
+                                      final p = filtered[i];
+                                      final inCart = _cart.any((c) => c.product.id == p.id);
+                                      return ListTile(
+                                        leading: CircleAvatar(
+                                          backgroundColor: primary.withValues(alpha: 0.15),
+                                          child: Text(
+                                            p.name.substring(0, 1).toUpperCase(),
+                                            style: TextStyle(
+                                              color: primary,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                        title: Text(
+                                          p.name,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                        subtitle: Text(
+                                          'Stock: ${p.stock.toStringAsFixed(0)}  |  Costo: \$${p.cost.toStringAsFixed(2)}',
+                                          style: const TextStyle(
+                                            color: Colors.white38,
+                                            fontSize: 11,
+                                          ),
+                                        ),
+                                        trailing: ElevatedButton(
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor:
+                                                inCart ? Colors.green : primary,
+                                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                                          ),
+                                          onPressed: () {
+                                            _addToCart(p);
+                                            ss(() {});
+                                            if (_cart.where((c) => c.product.id == p.id).length ==
+                                                1) {
+                                              Navigator.of(ctx).pop();
+                                            }
+                                          },
+                                          child: Text(
+                                            inCart ? '+' : 'Agregar',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-              ),
+                  ),
             );
           },
         );
@@ -288,13 +408,16 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab> {
 
   @override
   Widget build(BuildContext context) {
+    final primary = Theme.of(context).colorScheme.primary;
     return Column(
       children: [
         // Header
         Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            gradient: LinearGradient(colors: [const Color(0xFFFB8C00).withValues(alpha: 0.12), Colors.transparent]),
+            gradient: LinearGradient(
+              colors: [primary.withValues(alpha: 0.12), Colors.transparent],
+            ),
             border: const Border(bottom: BorderSide(color: Colors.white10)),
           ),
           child: Column(
@@ -303,17 +426,24 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab> {
                 children: [
                   Expanded(
                     child: DropdownButtonFormField<ProviderEntity>(
-                      value: _provider,
+                      initialValue: _provider,
                       dropdownColor: const Color(0xFF1A1A1A),
                       style: const TextStyle(color: Colors.white, fontSize: 13),
                       decoration: InputDecoration(
                         labelText: 'Proveedor (opcional)',
                         labelStyle: const TextStyle(color: Colors.white38, fontSize: 12),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
-                        filled: true, fillColor: Colors.white.withValues(alpha: 0.05),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: BorderSide.none,
+                        ),
+                        filled: true,
+                        fillColor: Colors.white.withValues(alpha: 0.05),
                         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       ),
-                      items: widget.providers.map((p) => DropdownMenuItem(value: p, child: Text(p.name))).toList(),
+                      items:
+                          widget.providers
+                              .map((p) => DropdownMenuItem(value: p, child: Text(p.name)))
+                              .toList(),
                       onChanged: (v) => setState(() => _provider = v),
                     ),
                   ),
@@ -321,13 +451,19 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab> {
                   Expanded(
                     child: TextField(
                       controller: _refCtrl,
+                      textCapitalization: TextCapitalization.characters,
+                      inputFormatters: [_UpperCaseFormatter()],
                       style: const TextStyle(color: Colors.white, fontSize: 13),
                       decoration: InputDecoration(
                         labelText: 'Referencia / Factura',
                         labelStyle: const TextStyle(color: Colors.white38, fontSize: 12),
                         prefixIcon: const Icon(Icons.receipt, color: Colors.white38, size: 18),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
-                        filled: true, fillColor: Colors.white.withValues(alpha: 0.05),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: BorderSide.none,
+                        ),
+                        filled: true,
+                        fillColor: Colors.white.withValues(alpha: 0.05),
                         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       ),
                     ),
@@ -342,14 +478,32 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab> {
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           child: Row(
             children: [
-              Icon(Icons.shopping_cart, color: const Color(0xFFFB8C00).withValues(alpha: 0.7), size: 18),
+              Icon(
+                Icons.shopping_cart,
+                color: primary.withValues(alpha: 0.7),
+                size: 18,
+              ),
               const SizedBox(width: 8),
-              Text('CARRITO (${_cart.length})', style: const TextStyle(color: Colors.white38, fontSize: 12, letterSpacing: 1, fontWeight: FontWeight.bold)),
+              Text(
+                'CARRITO (${_cart.length})',
+                style: const TextStyle(
+                  color: Colors.white38,
+                  fontSize: 12,
+                  letterSpacing: 1,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
               const Spacer(),
               ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFB8C00), padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: primary,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                ),
                 icon: const Icon(Icons.add, size: 16, color: Colors.white),
-                label: const Text('AGREGAR PRODUCTO', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                label: const Text(
+                  'AGREGAR PRODUCTO',
+                  style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                ),
                 onPressed: _openProductPicker,
               ),
             ],
@@ -358,96 +512,221 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab> {
         const Divider(color: Colors.white10, height: 1),
         // Tabla carrito
         Expanded(
-          child: _cart.isEmpty
-            ? Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.shopping_basket_outlined, color: Colors.white.withValues(alpha: 0.08), size: 72),
-                    const SizedBox(height: 16),
-                    Text('CARRITO VACIO', style: TextStyle(color: Colors.white.withValues(alpha: 0.2), fontSize: 14, letterSpacing: 2, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 8),
-                    Text('Presiona "Agregar Producto" para empezar', style: TextStyle(color: Colors.white.withValues(alpha: 0.15), fontSize: 12)),
-                  ],
-                ),
-              )
-            : Column(
-                children: [
-                  // Encabezados tabla
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    color: Colors.white.withValues(alpha: 0.02),
-                    child: Row(
+          child:
+              _cart.isEmpty
+                  ? Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const Expanded(flex: 4, child: Text('PRODUCTO', style: TextStyle(color: Colors.white30, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1))),
-                        const Expanded(flex: 2, child: Text('CANT', textAlign: TextAlign.center, style: TextStyle(color: Colors.white30, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1))),
-                        const Expanded(flex: 2, child: Text('COSTO', textAlign: TextAlign.center, style: TextStyle(color: Colors.white30, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1))),
-                        const Expanded(flex: 2, child: Text('SUBTOTAL', textAlign: TextAlign.right, style: TextStyle(color: Colors.white30, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1))),
-                        const SizedBox(width: 36),
+                        Icon(
+                          Icons.shopping_basket_outlined,
+                          color: Colors.white.withValues(alpha: 0.08),
+                          size: 72,
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          'CARRITO VACIO',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.2),
+                            fontSize: 14,
+                            letterSpacing: 2,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Presiona "Agregar Producto" para empezar',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.15),
+                            fontSize: 12,
+                          ),
+                        ),
                       ],
                     ),
-                  ),
-                  Expanded(
-                    child: ListView.builder(
-                      itemCount: _cart.length,
-                      itemBuilder: (_, i) {
-                        final item = _cart[i];
-                        return Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          decoration: BoxDecoration(border: Border(bottom: BorderSide(color: Colors.white.withValues(alpha: 0.05)))),
-                          child: Row(
-                            children: [
-                              Expanded(flex: 4, child: Text(item.product.name, style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600))),
-                              Expanded(flex: 2, child: Center(
-                                child: SizedBox(
-                                  width: 56,
-                                  child: TextField(
-                                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                                    textAlign: TextAlign.center,
-                                    style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
-                                    decoration: InputDecoration(
-                                      filled: true, fillColor: Colors.white.withValues(alpha: 0.05),
-                                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: BorderSide.none),
-                                      contentPadding: const EdgeInsets.symmetric(vertical: 4),
-                                    ),
-                                    controller: _qtyControllers[i],
-                                    onTap: () => _selectAll(_qtyControllers[i]),
-                                    onChanged: (v) => _updateQty(i, double.tryParse(v) ?? 1),
-                                  ),
+                  )
+                  : Column(
+                    children: [
+                      // Encabezados tabla
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        color: Colors.white.withValues(alpha: 0.02),
+                        child: Row(
+                          children: [
+                            const Expanded(
+                              flex: 4,
+                              child: Text(
+                                'PRODUCTO',
+                                style: TextStyle(
+                                  color: Colors.white30,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1,
                                 ),
-                              )),
-                              Expanded(flex: 2, child: Center(
-                                child: SizedBox(
-                                  width: 64,
-                                  child: TextField(
-                                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                                    textAlign: TextAlign.center,
-                                    style: const TextStyle(color: Colors.white, fontSize: 13),
-                                    decoration: InputDecoration(
-                                      prefixText: '\$', prefixStyle: const TextStyle(color: Colors.white38, fontSize: 10),
-                                      filled: true, fillColor: Colors.white.withValues(alpha: 0.05),
-                                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(6), borderSide: BorderSide.none),
-                                      contentPadding: const EdgeInsets.symmetric(vertical: 4),
-                                    ),
-                                    controller: _costControllers[i],
-                                    onTap: () => _selectAll(_costControllers[i]),
-                                    onChanged: (v) => _updateCost(i, double.tryParse(v) ?? 0),
-                                  ),
-                                ),
-                              )),
-                              Expanded(flex: 2, child: Text('\${item.subtotal.toStringAsFixed(2)}', textAlign: TextAlign.right, style: const TextStyle(color: Colors.greenAccent, fontSize: 13, fontWeight: FontWeight.bold))),
-                              SizedBox(
-                                width: 36,
-                                child: IconButton(icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 18), onPressed: () => _removeFromCart(i), padding: EdgeInsets.zero),
                               ),
-                            ],
-                          ),
-                        );
-                      },
-                    ),
+                            ),
+                            const Expanded(
+                              flex: 2,
+                              child: Text(
+                                'CANT',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Colors.white30,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1,
+                                ),
+                              ),
+                            ),
+                            const Expanded(
+                              flex: 2,
+                              child: Text(
+                                'COSTO',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Colors.white30,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1,
+                                ),
+                              ),
+                            ),
+                            const Expanded(
+                              flex: 2,
+                              child: Text(
+                                'SUBTOTAL',
+                                textAlign: TextAlign.right,
+                                style: TextStyle(
+                                  color: Colors.white30,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 36),
+                          ],
+                        ),
+                      ),
+                      Expanded(
+                        child: ListView.builder(
+                          itemCount: _cart.length,
+                          itemBuilder: (_, i) {
+                            final item = _cart[i];
+                            return Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              decoration: BoxDecoration(
+                                border: Border(
+                                  bottom: BorderSide(color: Colors.white.withValues(alpha: 0.05)),
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    flex: 4,
+                                    child: Text(
+                                      item.product.name,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                  Expanded(
+                                    flex: 2,
+                                    child: Center(
+                                      child: SizedBox(
+                                        width: 56,
+                                        child: TextField(
+                                          keyboardType: const TextInputType.numberWithOptions(
+                                            decimal: true,
+                                          ),
+                                          textAlign: TextAlign.center,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                          decoration: InputDecoration(
+                                            filled: true,
+                                            fillColor: Colors.white.withValues(alpha: 0.05),
+                                            border: OutlineInputBorder(
+                                              borderRadius: BorderRadius.circular(6),
+                                              borderSide: BorderSide.none,
+                                            ),
+                                            contentPadding: const EdgeInsets.symmetric(vertical: 4),
+                                          ),
+                                          controller: _qtyControllers[i],
+                                          onTap: () => _selectAll(_qtyControllers[i]),
+                                          onChanged: (v) => _updateQty(i, double.tryParse(v) ?? 1),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  Expanded(
+                                    flex: 2,
+                                    child: Center(
+                                      child: SizedBox(
+                                        width: 64,
+                                        child: TextField(
+                                          keyboardType: const TextInputType.numberWithOptions(
+                                            decimal: true,
+                                          ),
+                                          textAlign: TextAlign.center,
+                                          style: const TextStyle(color: Colors.white, fontSize: 13),
+                                          decoration: InputDecoration(
+                                            prefixText: '\$',
+                                            prefixStyle: const TextStyle(
+                                              color: Colors.white38,
+                                              fontSize: 10,
+                                            ),
+                                            filled: true,
+                                            fillColor: Colors.white.withValues(alpha: 0.05),
+                                            border: OutlineInputBorder(
+                                              borderRadius: BorderRadius.circular(6),
+                                              borderSide: BorderSide.none,
+                                            ),
+                                            contentPadding: const EdgeInsets.symmetric(vertical: 4),
+                                          ),
+                                          controller: _costControllers[i],
+                                          onTap: () => _selectAll(_costControllers[i]),
+                                          onChanged: (v) => _updateCost(i, double.tryParse(v) ?? 0),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  Expanded(
+                                    flex: 2,
+                                    child: Text(
+                                      '\${item.subtotal.toStringAsFixed(2)}',
+                                      textAlign: TextAlign.right,
+                                      style: const TextStyle(
+                                        color: Colors.greenAccent,
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    width: 36,
+                                    child: IconButton(
+                                      icon: const Icon(
+                                        Icons.delete_outline,
+                                        color: Colors.redAccent,
+                                        size: 18,
+                                      ),
+                                      onPressed: () => _removeFromCart(i),
+                                      padding: EdgeInsets.zero,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
         ),
         // Footer totales
         Container(
@@ -455,15 +734,36 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab> {
           decoration: BoxDecoration(
             color: const Color(0xFF121212),
             border: const Border(top: BorderSide(color: Colors.white10)),
-            boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 8, offset: const Offset(0, -4))],
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.3),
+                blurRadius: 8,
+                offset: const Offset(0, -4),
+              ),
+            ],
           ),
           child: Column(
             children: [
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text('TOTAL COMPRA', style: TextStyle(color: Colors.white38, fontSize: 12, letterSpacing: 1, fontWeight: FontWeight.bold)),
-                  Text('\$${_calcTotal().toStringAsFixed(2)}', style: const TextStyle(color: Color(0xFFFB8C00), fontSize: 24, fontWeight: FontWeight.bold)),
+                  const Text(
+                    'TOTAL COMPRA',
+                    style: TextStyle(
+                      color: Colors.white38,
+                      fontSize: 12,
+                      letterSpacing: 1,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  Text(
+                    '\$${_calcTotal().toStringAsFixed(2)}',
+                    style: TextStyle(
+                      color: primary,
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ],
               ),
               const SizedBox(height: 10),
@@ -475,8 +775,22 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab> {
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
-                  icon: _saving ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.check_circle, color: Colors.white),
-                  label: Text(_saving ? 'REGISTRANDO...' : 'REGISTRAR COMPRA', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+                  icon:
+                      _saving
+                          ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          )
+                          : const Icon(Icons.check_circle, color: Colors.white),
+                  label: Text(
+                    _saving ? 'REGISTRANDO...' : 'REGISTRAR COMPRA',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
                   onPressed: _saving ? null : _save,
                 ),
               ),
@@ -488,52 +802,71 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab> {
   }
 }
 
-class _ProvidersTab extends StatelessWidget {
+class _ProvidersTab extends StatefulWidget {
   final List<ProviderEntity> providers;
+  final List<ProductEntity> products;
   final PurchasesRepository repo;
   final VoidCallback onChanged;
-  const _ProvidersTab({required this.providers, required this.repo, required this.onChanged});
+  const _ProvidersTab({required this.providers, required this.products, required this.repo, required this.onChanged});
+
+  @override
+  State<_ProvidersTab> createState() => _ProvidersTabState();
+}
+
+class _ProvidersTabState extends State<_ProvidersTab> {
+  List<ProductEntity> get _parentProducts =>
+      widget.products.where((p) => p.parentId == null && p.isPromo != 1).toList();
 
   @override
   Widget build(BuildContext context) {
+    final primary = Theme.of(context).colorScheme.primary;
     return Column(
       children: [
         Padding(
           padding: const EdgeInsets.all(12),
           child: ElevatedButton.icon(
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFFB8C00),
+              backgroundColor: primary,
               foregroundColor: Colors.white,
             ),
             icon: const Icon(Icons.add),
             label: const Text('AGREGAR PROVEEDOR'),
-            onPressed: () => _addProvider(context),
+            onPressed: () => _editProvider(context, null),
           ),
         ),
         Expanded(
           child:
-              providers.isEmpty
+              widget.providers.isEmpty
                   ? const EmptyState(message: 'No hay proveedores', icon: Icons.store_outlined)
                   : ListView.builder(
-                    itemCount: providers.length,
+                    itemCount: widget.providers.length,
                     itemBuilder: (_, i) {
-                      final p = providers[i];
+                      final p = widget.providers[i];
                       return ListTile(
-                        leading: const Icon(Icons.store, color: Color(0xFFFB8C00)),
+                        leading: Icon(Icons.store, color: primary),
                         title: Text(
                           p.name,
                           style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                         ),
                         subtitle: Text(
-                          '${p.phone.isNotEmpty ? p.phone : ''} | ${p.category}',
+                          '${p.phone.isNotEmpty ? p.phone : ''}${p.category.isNotEmpty ? ' | ${p.category}' : ''}${p.visitDays.isNotEmpty ? ' | ${p.visitDays.join(', ')}' : ''}',
                           style: const TextStyle(color: Colors.white38, fontSize: 12),
                         ),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.red),
-                          onPressed: () async {
-                            await repo.deleteProvider(p.id!);
-                            onChanged();
-                          },
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.edit, color: Colors.white38),
+                              onPressed: () => _editProvider(context, p),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete, color: Colors.red),
+                              onPressed: () async {
+                                await widget.repo.deleteProvider(p.id!);
+                                widget.onChanged();
+                              },
+                            ),
+                          ],
                         ),
                       );
                     },
@@ -543,10 +876,19 @@ class _ProvidersTab extends StatelessWidget {
     );
   }
 
-  Future<void> _addProvider(BuildContext context) async {
-    final nameCtrl = TextEditingController();
-    final phoneCtrl = TextEditingController();
-    String cat = 'Lunes';
+  Future<void> _editProvider(BuildContext context, ProviderEntity? existing) async {
+    final nameCtrl = TextEditingController(text: existing?.name ?? '');
+    final phoneCtrl = TextEditingController(text: existing?.phone ?? '');
+    final emailCtrl = TextEditingController(text: existing?.email ?? '');
+    final addressCtrl = TextEditingController(text: existing?.address ?? '');
+    final contactCtrl = TextEditingController(text: existing?.contactName ?? '');
+    final notesCtrl = TextEditingController(text: existing?.notes ?? '');
+    final categoryCtrl = TextEditingController(text: existing?.category ?? 'General');
+    final List<String> days = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+    final selectedDays = List<String>.from(existing?.visitDays ?? []);
+    final selectedProductIds = List<int>.from(await widget.repo.getProviderProductIds(existing?.id ?? -1));
+
+    if (!context.mounted) return;
     await showDialog(
       context: context,
       builder:
@@ -554,28 +896,114 @@ class _ProvidersTab extends StatelessWidget {
             builder:
                 (ctx, ss) => AlertDialog(
                   backgroundColor: const Color(0xFF1A1A1A),
-                  title: const Text('NUEVO PROVEEDOR', style: TextStyle(color: Color(0xFFFB8C00))),
-                  content: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      AppTextField(controller: nameCtrl, label: 'Nombre', icon: Icons.store),
-                      AppTextField(controller: phoneCtrl, label: 'Teléfono', icon: Icons.phone),
-                      DropdownButton<String>(
-                        value: cat,
-                        dropdownColor: const Color(0xFF1A1A1A),
-                        style: const TextStyle(color: Colors.white),
-                        onChanged: (v) => ss(() => cat = v!),
-                        items:
-                            [
-                              'Lunes',
-                              'Martes',
-                              'Miércoles',
-                              'Jueves',
-                              'Viernes',
-                              'Sábado',
-                            ].map((d) => DropdownMenuItem(value: d, child: Text(d))).toList(),
-                      ),
-                    ],
+                  title: Text(
+                    existing == null ? 'NUEVO PROVEEDOR' : 'EDITAR PROVEEDOR',
+                    style: const TextStyle(color: Color(0xFFFB8C00)),
+                  ),
+                  content: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        AppTextField(
+                          controller: nameCtrl,
+                          label: 'Nombre',
+                          icon: Icons.store,
+                          textCapitalization: TextCapitalization.characters,
+                          inputFormatters: [_UpperCaseFormatter()],
+                        ),
+                        _PhoneField(controller: phoneCtrl, label: 'Teléfono'),
+                        AppTextField(
+                          controller: emailCtrl,
+                          label: 'Correo',
+                          icon: Icons.email,
+                          keyboardType: TextInputType.emailAddress,
+                          textCapitalization: TextCapitalization.none,
+                          inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9@.\-_]+'))],
+                        ),
+                        AppTextField(
+                          controller: addressCtrl,
+                          label: 'Dirección',
+                          icon: Icons.location_on,
+                          textCapitalization: TextCapitalization.characters,
+                          inputFormatters: [_UpperCaseFormatter()],
+                        ),
+                        AppTextField(
+                          controller: contactCtrl,
+                          label: 'Nombre de contacto',
+                          icon: Icons.person,
+                          textCapitalization: TextCapitalization.characters,
+                          inputFormatters: [_UpperCaseFormatter()],
+                        ),
+                        AppTextField(
+                          controller: notesCtrl,
+                          label: 'Notas',
+                          icon: Icons.notes,
+                          maxLines: 2,
+                          textCapitalization: TextCapitalization.characters,
+                          inputFormatters: [_UpperCaseFormatter()],
+                        ),
+                        const SizedBox(height: 12),
+                        const Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text('DÍAS DE VISITA', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          children:
+                              days
+                                  .map(
+                                    (d) => FilterChip(
+                                      label: Text(d, style: const TextStyle(fontSize: 11)),
+                                      selected: selectedDays.contains(d),
+                                      selectedColor: const Color(0xFFFB8C00).withValues(alpha: 0.3),
+                                      backgroundColor: Colors.white10,
+                                      checkmarkColor: const Color(0xFFFB8C00),
+                                      onSelected: (sel) {
+                                        ss(() {
+                                          if (sel) {
+                                            selectedDays.add(d);
+                                          } else {
+                                            selectedDays.remove(d);
+                                          }
+                                        });
+                                      },
+                                    ),
+                                  )
+                                  .toList(),
+                        ),
+                        const SizedBox(height: 16),
+                        const Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text('PRODUCTOS QUE SURTE', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          children:
+                              _parentProducts
+                                  .map(
+                                    (pr) => FilterChip(
+                                      label: Text(pr.name, style: const TextStyle(fontSize: 11)),
+                                      selected: selectedProductIds.contains(pr.id),
+                                      selectedColor: const Color(0xFFFB8C00).withValues(alpha: 0.3),
+                                      backgroundColor: Colors.white10,
+                                      checkmarkColor: const Color(0xFFFB8C00),
+                                      onSelected: (sel) {
+                                        ss(() {
+                                          if (sel) {
+                                            selectedProductIds.add(pr.id!);
+                                          } else {
+                                            selectedProductIds.remove(pr.id);
+                                          }
+                                        });
+                                      },
+                                    ),
+                                  )
+                                  .toList(),
+                        ),
+                      ],
+                    ),
                   ),
                   actions: [
                     TextButton(
@@ -586,11 +1014,27 @@ class _ProvidersTab extends StatelessWidget {
                       style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFB8C00)),
                       onPressed: () async {
                         if (nameCtrl.text.isEmpty) return;
-                        await repo.insertProvider(
-                          ProviderEntity(name: nameCtrl.text, phone: phoneCtrl.text, category: cat),
+                        final provider = ProviderEntity(
+                          id: existing?.id,
+                          name: nameCtrl.text.trim(),
+                          phone: phoneCtrl.text.trim(),
+                          email: emailCtrl.text.trim(),
+                          address: addressCtrl.text.trim(),
+                          contactName: contactCtrl.text.trim(),
+                          notes: notesCtrl.text.trim(),
+                          category: categoryCtrl.text.trim().isEmpty ? 'General' : categoryCtrl.text.trim(),
+                          visitDays: selectedDays,
                         );
-                        Navigator.pop(ctx);
-                        onChanged();
+                        int providerId;
+                        if (existing == null) {
+                          providerId = await widget.repo.insertProvider(provider);
+                        } else {
+                          providerId = existing.id!;
+                          await widget.repo.updateProvider(provider);
+                        }
+                        await widget.repo.setProviderProducts(providerId, selectedProductIds);
+                        if (ctx.mounted) Navigator.pop(ctx);
+                        widget.onChanged();
                       },
                       child: const Text('GUARDAR', style: TextStyle(color: Colors.white)),
                     ),
@@ -601,9 +1045,325 @@ class _ProvidersTab extends StatelessWidget {
   }
 }
 
+class _PhoneField extends StatefulWidget {
+  final TextEditingController controller;
+  final String label;
+  const _PhoneField({required this.controller, required this.label});
+
+  @override
+  State<_PhoneField> createState() => _PhoneFieldState();
+}
+
+class _PhoneFieldState extends State<_PhoneField> {
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextField(
+        controller: widget.controller,
+        keyboardType: TextInputType.phone,
+        maxLength: 12,
+        buildCounter: (context, {required currentLength, required isFocused, maxLength}) => null,
+        inputFormatters: [
+          FilteringTextInputFormatter.digitsOnly,
+          _PhoneMaskFormatter(),
+        ],
+        style: const TextStyle(color: Colors.white),
+        decoration: InputDecoration(
+          labelText: widget.label,
+          hintText: '000-000-0000',
+          labelStyle: const TextStyle(color: Colors.white38, fontSize: 14),
+          hintStyle: const TextStyle(color: Colors.white24),
+          prefixIcon: const Icon(Icons.phone, color: Colors.white60),
+          filled: true,
+          fillColor: Colors.white.withValues(alpha: 0.05),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide.none,
+          ),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+        ),
+      ),
+    );
+  }
+}
+
+class _PhoneMaskFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
+    final digits = newValue.text.replaceAll(RegExp(r'\D'), '');
+    if (digits.length > 10) return oldValue;
+    String masked;
+    if (digits.length >= 7) {
+      masked = '${digits.substring(0, 3)}-${digits.substring(3, 6)}-${digits.substring(6)}';
+    } else if (digits.length >= 4) {
+      masked = '${digits.substring(0, 3)}-${digits.substring(3)}';
+    } else {
+      masked = digits;
+    }
+    final selectionIndex = masked.length;
+    return TextEditingValue(
+      text: masked,
+      selection: TextSelection.collapsed(offset: selectionIndex),
+    );
+  }
+}
+
+class _UpperCaseFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
+    return TextEditingValue(
+      text: newValue.text.toUpperCase(),
+      selection: newValue.selection,
+      composing: newValue.composing,
+    );
+  }
+}
+
+class _PurchasePdfItem {
+  final String name;
+  final double quantity;
+  final double cost;
+  final double subtotal;
+  _PurchasePdfItem({required this.name, required this.quantity, required this.cost, required this.subtotal});
+}
+
+Future<void> _showPurchasePdf({
+  required BuildContext context,
+  required int purchaseId,
+  required String providerName,
+  required String reference,
+  required List<_PurchasePdfItem> items,
+  required double total,
+}) async {
+  final prefs = PreferencesService();
+  final businessName = prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
+  final addressParts =
+      [prefs.businessStreet, prefs.businessExtNumber, prefs.businessColony, prefs.businessCity, prefs.businessState]
+          .where((s) => s.trim().isNotEmpty)
+          .join(', ');
+  final phone = prefs.businessPhone.trim().isNotEmpty ? prefs.businessPhone.trim() : prefs.businessWhatsapp.trim();
+
+  pw.MemoryImage? logoImage;
+  final logoBytes = await _loadLogoBytes();
+  if (logoBytes != null) {
+    logoImage = pw.MemoryImage(logoBytes);
+  }
+
+  final pdf = pw.Document();
+  final dateStr = '${DateTime.now().day.toString().padLeft(2, '0')}/${DateTime.now().month.toString().padLeft(2, '0')}/${DateTime.now().year}';
+  final hourStr = '${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}';
+
+  pdf.addPage(
+    pw.Page(
+      pageFormat: PdfPageFormat.roll80,
+      build: (pw.Context ctx) {
+        return pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            if (logoImage != null)
+              pw.Center(
+                child: pw.Container(
+                  height: 60,
+                  margin: const pw.EdgeInsets.only(bottom: 6),
+                  child: pw.Image(logoImage),
+                ),
+              ),
+            pw.Center(
+              child: pw.Text(
+                businessName.toUpperCase(),
+                style: pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold),
+              ),
+            ),
+            if (addressParts.isNotEmpty)
+              pw.Center(child: pw.Text(addressParts, style: const pw.TextStyle(fontSize: 8))),
+            if (phone.isNotEmpty)
+              pw.Center(child: pw.Text('Tel: $phone', style: const pw.TextStyle(fontSize: 8))),
+            pw.SizedBox(height: 6),
+            pw.Center(
+              child: pw.Text(
+                'COMPROBANTE DE COMPRA',
+                style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold),
+              ),
+            ),
+            pw.SizedBox(height: 4),
+            pw.Center(child: pw.Text('Folio: C-$purchaseId', style: const pw.TextStyle(fontSize: 10))),
+            pw.Center(child: pw.Text('Fecha: $dateStr $hourStr', style: const pw.TextStyle(fontSize: 10))),
+            pw.Divider(),
+            pw.Text('Proveedor:', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold)),
+            pw.Text(providerName, style: const pw.TextStyle(fontSize: 10)),
+            if (reference.isNotEmpty) ...[
+              pw.SizedBox(height: 2),
+              pw.Text('Referencia: $reference', style: const pw.TextStyle(fontSize: 10)),
+            ],
+            pw.Divider(),
+            pw.Row(
+              children: [
+                pw.Expanded(flex: 4, child: pw.Text('PRODUCTO', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold))),
+                pw.Expanded(flex: 2, child: pw.Text('CANT', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold))),
+                pw.Expanded(flex: 2, child: pw.Text('P.UNIT', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold))),
+                pw.Expanded(flex: 2, child: pw.Text('TOTAL', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold))),
+              ],
+            ),
+            pw.Divider(thickness: 0.5),
+            ...items.map((i) {
+              return pw.Row(
+                children: [
+                  pw.Expanded(flex: 4, child: pw.Text(i.name, style: const pw.TextStyle(fontSize: 9))),
+                  pw.Expanded(flex: 2, child: pw.Text(i.quantity.toStringAsFixed(0), style: const pw.TextStyle(fontSize: 9))),
+                  pw.Expanded(flex: 2, child: pw.Text('\$${i.cost.toStringAsFixed(2)}', style: const pw.TextStyle(fontSize: 9))),
+                  pw.Expanded(flex: 2, child: pw.Text('\$${i.subtotal.toStringAsFixed(2)}', style: const pw.TextStyle(fontSize: 9))),
+                ],
+              );
+            }),
+            pw.Divider(),
+            pw.Row(
+              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+              children: [
+                pw.Text('TOTAL', style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold)),
+                pw.Text('\$${total.toStringAsFixed(2)}', style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold)),
+              ],
+            ),
+            pw.SizedBox(height: 10),
+            pw.Center(
+              child: pw.Text('Documento interno / control de inventario', style: const pw.TextStyle(fontSize: 7)),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+
+
+  await Printing.layoutPdf(
+    onLayout: (PdfPageFormat format) async => pdf.save(),
+    name: 'compra_$purchaseId.pdf',
+  );
+}
+
+Future<Uint8List?> _loadLogoBytes() async {
+  final prefs = PreferencesService();
+  if (prefs.logoPath.isNotEmpty) {
+    final file = File(prefs.logoPath);
+    if (await file.exists()) return file.readAsBytes();
+  }
+  if (prefs.logoUrl.isNotEmpty) {
+    try {
+      final client = HttpClient();
+      final req = await client.getUrl(Uri.parse(prefs.logoUrl));
+      final res = await req.close().timeout(const Duration(seconds: 8));
+      if (res.statusCode == 200) {
+        final bytes = <int>[];
+        await for (final chunk in res) {
+          bytes.addAll(chunk);
+        }
+        client.close();
+        return Uint8List.fromList(bytes);
+      }
+      client.close();
+    } catch (_) {}
+  }
+  return null;
+}
+
 class _HistoryTab extends StatelessWidget {
   final List<Map<String, dynamic>> history;
   const _HistoryTab({required this.history});
+
+  Future<void> _showDetail(BuildContext context, Map<String, dynamic> h) async {
+    final repo = PurchasesRepository();
+    final details = await repo.getPurchaseDetails(h['id'] as int);
+    if (!context.mounted) return;
+    final date = DateTime.tryParse(h['date'] ?? '') ?? DateTime.now();
+    await showDialog(
+      context: context,
+      builder:
+          (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            title: const Text('DETALLE DE COMPRA', style: TextStyle(color: Color(0xFFFB8C00))),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      h['provider_name'] ?? 'Sin proveedor',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                    ),
+                    Text(
+                      '${date.day}/${date.month}/${date.year}${(h['reference'] ?? '').toString().isNotEmpty ? ' | ${h['reference']}' : ''}',
+                      style: const TextStyle(color: Colors.white38, fontSize: 12),
+                    ),
+                    const Divider(color: Colors.white24, height: 24),
+                    if (details.isEmpty)
+                      const Text('Sin detalle disponible', style: TextStyle(color: Colors.white38))
+                    else
+                      ...details.map((d) {
+                        final qty = (d['quantity'] as num).toDouble();
+                        final cost = (d['cost_per_unit'] as num).toDouble();
+                        return Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                flex: 4,
+                                child: Text(
+                                  d['product_name']?.toString() ?? 'Producto eliminado',
+                                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                                ),
+                              ),
+                              Expanded(
+                                flex: 2,
+                                child: Text(
+                                  '${qty.toStringAsFixed(0)} x \$${cost.toStringAsFixed(2)}',
+                                  style: const TextStyle(color: Colors.white38, fontSize: 12),
+                                ),
+                              ),
+                              Expanded(
+                                flex: 2,
+                                child: Text(
+                                  '\$${(qty * cost).toStringAsFixed(2)}',
+                                  textAlign: TextAlign.right,
+                                  style: const TextStyle(color: Colors.greenAccent, fontSize: 13),
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      }),
+                    const Divider(color: Colors.white24, height: 24),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'TOTAL',
+                          style: TextStyle(color: Colors.white38, fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          '\$${(h['total'] as num).toStringAsFixed(2)}',
+                          style: const TextStyle(
+                            color: Color(0xFFFB8C00),
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('CERRAR', style: TextStyle(color: Colors.white38)),
+              ),
+            ],
+          ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -629,6 +1389,7 @@ class _HistoryTab extends StatelessWidget {
             '\$${(h['total'] as num).toStringAsFixed(2)}',
             style: const TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold),
           ),
+          onTap: () => _showDetail(context, h),
         );
       },
     );

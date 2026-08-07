@@ -1,7 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../../core/routes/app_routes.dart';
 import '../../../../core/storage/preferences_service.dart';
+import '../../../../core/theme/theme_provider.dart';
 import '../../../../core/widgets/module_card.dart';
 import '../../../../features/home/presentation/widgets/home_header.dart';
 import '../../../../features/home/presentation/widgets/home_layout.dart';
@@ -19,25 +24,84 @@ class _HomePageState extends State<HomePage> {
   String _selectedCategory = 'Todos';
   final TextEditingController _searchCtrl = TextEditingController();
   bool _isSearching = false;
+  RealtimeChannel? _settingsChannel;
 
   static final _modules = [
     _Module('VENTA\nRÁPIDA',    Icons.flash_on_rounded,         Color(0xFFE53935), AppRoutes.quickSale,    'Ventas'),
     _Module('MESAS\nBILLAR',    Icons.table_bar_rounded,        Color(0xFF1E88E5), AppRoutes.billiardTables, 'Ventas'),
     _Module('INVENTARIO',       Icons.inventory_2_rounded,      Color(0xFF43A047), AppRoutes.inventory,    'Admin'),
     _Module('COMPRAS',          Icons.shopping_cart_rounded,    Color(0xFFFB8C00), AppRoutes.purchases,    'Admin'),
-    _Module('ESTADÍSTICAS',     Icons.bar_chart_rounded,        Color(0xFF8E24AA), AppRoutes.stats,        'Admin'),
-    _Module('JUGADORES',        Icons.sports_esports_rounded,   Color(0xFF00ACC1), AppRoutes.players,      'Juego'),
+    _Module('INFORMES',         Icons.bar_chart_rounded,        Color(0xFF8E24AA), AppRoutes.reports,      'Admin'),
+    _Module('JUGADORES',        Icons.sports_esports_rounded,   Color(0xFF00ACC1), AppRoutes.playersHub,   'Juego'),
     _Module('COMENSALES',       Icons.restaurant_rounded,       Color(0xFFE91E63), AppRoutes.dineIn,       'Ventas'),
-    _Module('PARTIDAS',         Icons.sports_bar_rounded,       Color(0xFF7C4DFF), AppRoutes.games,        'Juego'),
     _Module('TORNEOS',          Icons.emoji_events_rounded,     Color(0xFFFF5722), AppRoutes.tournaments,  'Juego'),
-    _Module('STATS\nPERS.',    Icons.trending_up_rounded,      Color(0xFF00BFA5), AppRoutes.personalStats,'Juego'),
     _Module('CONFIGURACIÓN',    Icons.settings_suggest_rounded, Color(0xFF78909C), AppRoutes.config,       'Admin'),
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _subscribeToSettingsChanges();
+  }
+
+  @override
   void dispose() {
+    _settingsChannel?.unsubscribe();
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  void _subscribeToSettingsChanges() {
+    final user = Supabase.instance.client.auth.currentUser;
+    debugPrint('[HomePage] subscribeSettings user=${user?.id}');
+    if (user == null) return;
+
+    _settingsChannel = Supabase.instance.client
+        .channel('public:billar_settings')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'billar_settings',
+          callback: (payload) async {
+            final newRecord = payload.newRecord;
+            debugPrint('[HomePage] Realtime cambio en billar_settings: $newRecord');
+            if (newRecord.isEmpty) return;
+            // Filtrar manualmente por user_id para evitar restricciones de filtros en Realtime.
+            final recordUserId = newRecord['user_id']?.toString();
+            if (recordUserId != user.id) {
+              debugPrint('[HomePage] Cambio descartado, no pertenece al usuario actual');
+              return;
+            }
+            await _applyRemoteSettings(newRecord);
+          },
+        )
+        .subscribe((status, [error]) {
+          debugPrint('[HomePage] Realtime status: $status error: $error');
+        });
+  }
+
+  Future<void> _applyRemoteSettings(Map<String, dynamic> settings) async {
+    final tableCount = (settings['table_count'] as num?)?.toInt() ?? _prefs.tableCount;
+    final primaryColor = (settings['primary_color'] as num?)?.toInt();
+    final logoUrl = settings['logo_url']?.toString() ?? _prefs.logoUrl;
+
+    debugPrint('[HomePage] Aplicando settings. logoUrl: "$logoUrl"');
+
+    await _prefs.setBusinessName(settings['business_name']?.toString() ?? _prefs.businessName);
+    await _prefs.setBillarId(settings['billar_id']?.toString() ?? _prefs.billarId);
+    await _prefs.setTableCount(tableCount);
+    await _prefs.setHourlyRate((settings['hourly_rate'] as num?)?.toDouble() ?? _prefs.hourlyRate);
+    await _prefs.setLogoUrl(logoUrl);
+
+    if (primaryColor != null && mounted) {
+      final color = Color(0xFF000000 | (primaryColor.toInt() & 0x00FFFFFF));
+      await _prefs.setPrimaryColorValue(color.toARGB32());
+      if (mounted) {
+        context.read<ThemeProvider>().setPrimaryColor(color);
+      }
+    }
+
+    if (mounted) setState(() {});
   }
 
   void _navigate(int index) async {
@@ -77,7 +141,14 @@ class _HomePageState extends State<HomePage> {
         padding: const EdgeInsets.symmetric(vertical: 16),
         child: Column(
           children: [
-            Icon(Icons.sports_bar_rounded, color: primary, size: 36),
+            ClipOval(
+              child: Image.asset(
+                'assets/baumar_8_personal-sf.png',
+                width: 48,
+                height: 48,
+                fit: BoxFit.cover,
+              ),
+            ),
             if (size.width > 1200) ...[
               const SizedBox(height: 6),
               Text(
@@ -95,6 +166,7 @@ class _HomePageState extends State<HomePage> {
               businessName: _prefs.businessName,
               userName: _prefs.userName,
               logoPath: _prefs.logoPath,
+              logoUrl: _prefs.logoUrl,
               primaryColor: primary,
               isDesktop: isDesktop,
               searchController: _searchCtrl,
@@ -134,12 +206,16 @@ class _HomePageState extends State<HomePage> {
               const SizedBox(height: 8),
             ],
             Expanded(
-              child: GridView.count(
+              child: GridView.builder(
                 padding: const EdgeInsets.all(20),
-                crossAxisCount: isDesktop ? (size.width > 1300 ? 4 : 3) : 2,
-                mainAxisSpacing: 16,
-                crossAxisSpacing: 16,
-                children: List.generate(_filteredModules.length, (i) {
+                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                  maxCrossAxisExtent: 210,
+                  mainAxisSpacing: 16,
+                  crossAxisSpacing: 16,
+                  childAspectRatio: 1,
+                ),
+                itemCount: _filteredModules.length,
+                itemBuilder: (_, i) {
                   final m = _filteredModules[i];
                   final originalIndex = _modules.indexOf(m);
                   return ModuleCard(
@@ -148,7 +224,7 @@ class _HomePageState extends State<HomePage> {
                     color: m.color,
                     onTap: () => _navigate(originalIndex),
                   );
-                }),
+                },
               ),
             ),
           ],

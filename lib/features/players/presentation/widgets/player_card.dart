@@ -1,7 +1,9 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../../domain/entities/player_stats.dart';
+import '../../../../core/theme/theme_provider.dart';
 
 class PlayerCard extends StatelessWidget {
   final PlayerEntity player;
@@ -21,18 +23,28 @@ class PlayerCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final style = context.watch<ThemeProvider>().cardStyle;
+    final solid = style == CardStyle.solidWhite;
+    final outlined = style == CardStyle.outlined;
+    final contentColor = solid ? Colors.white.withValues(alpha: 0.92) : _levelColor;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(20),
       child: Container(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(20),
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [_levelColor.withValues(alpha: 0.15), Theme.of(context).colorScheme.surface],
+          color: solid ? _levelColor : (outlined ? Theme.of(context).colorScheme.surface : null),
+          gradient: (solid || outlined)
+              ? null
+              : LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [_levelColor.withValues(alpha: 0.15), Theme.of(context).colorScheme.surface],
+                ),
+          border: Border.all(
+            color: solid ? Colors.white.withValues(alpha: 0.28) : _levelColor.withValues(alpha: outlined ? 1.0 : 0.3),
+            width: outlined ? 2 : 1.0,
           ),
-          border: Border.all(color: _levelColor.withValues(alpha: 0.3)),
         ),
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -48,8 +60,8 @@ class PlayerCard extends StatelessWidget {
                     children: [
                       Text(
                         player.displayName,
-                        style: const TextStyle(
-                          color: Colors.white,
+                        style: TextStyle(
+                          color: solid ? Colors.white.withValues(alpha: 0.92) : Colors.white,
                           fontWeight: FontWeight.bold,
                           fontSize: 15,
                         ),
@@ -59,7 +71,7 @@ class PlayerCard extends StatelessWidget {
                       Text(
                         player.levelLabel,
                         style: TextStyle(
-                          color: _levelColor,
+                          color: contentColor,
                           fontSize: 11,
                           fontWeight: FontWeight.bold,
                         ),
@@ -69,7 +81,7 @@ class PlayerCard extends StatelessWidget {
                 ),
                 Text(
                   player.stats.formattedWinRate,
-                  style: TextStyle(color: _levelColor, fontWeight: FontWeight.bold, fontSize: 18),
+                  style: TextStyle(color: contentColor, fontWeight: FontWeight.bold, fontSize: 18),
                 ),
               ],
             ),

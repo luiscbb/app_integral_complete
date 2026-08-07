@@ -1,4 +1,5 @@
 import 'dart:developer';
+import 'dart:convert';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class ConfigRemoteRepository {
@@ -38,12 +39,29 @@ class ConfigRemoteRepository {
     required int tableCount,
     required double hourlyRate,
     int? primaryColor,
+    String? businessAddress,
+    String? businessStreet,
+    String? businessExtNumber,
+    String? businessIntNumber,
+    String? businessColony,
+    String? businessZipCode,
+    String? businessCity,
+    String? businessState,
+    String? businessPhone,
+    String? businessWhatsapp,
+    String? businessSlogan,
+    String? businessWebsite,
+    String? ticketFarewell,
+    Map<String, String>? socialNetworks,
+    String? logoUrl,
   }) async {
     try {
       final user = _client.auth.currentUser;
       if (user == null) return null;
 
       final existing = await fetchSettings();
+
+      String value(String? v) => (v != null && v.isNotEmpty) ? v : '';
 
       final payload = {
         'user_id': user.id,
@@ -54,6 +72,21 @@ class ConfigRemoteRepository {
         // Guardar solo los 3 bytes RGB (sin alpha) para no exceder el rango
         // INTEGER de PostgreSQL (max 2147483647). 0xFFE53935 = 4294967295.
         if (primaryColor != null) 'primary_color': primaryColor & 0x00FFFFFF,
+        'business_address': value(businessAddress),
+        'business_street': value(businessStreet),
+        'business_ext_number': value(businessExtNumber),
+        'business_int_number': value(businessIntNumber),
+        'business_colony': value(businessColony),
+        'business_zip_code': value(businessZipCode),
+        'business_city': value(businessCity),
+        'business_state': value(businessState),
+        'business_phone': value(businessPhone),
+        'business_whatsapp': value(businessWhatsapp),
+        'business_slogan': value(businessSlogan),
+        'business_website': value(businessWebsite),
+        'ticket_farewell': value(ticketFarewell),
+        if (socialNetworks != null && socialNetworks.isNotEmpty) 'social_networks': jsonEncode(socialNetworks),
+        if (logoUrl != null && logoUrl.isNotEmpty) 'logo_url': logoUrl,
       };
 
       if (existing != null) {

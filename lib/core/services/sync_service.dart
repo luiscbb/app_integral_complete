@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:sqflite/sqflite.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../features/players/domain/entities/player_stats.dart';
@@ -282,11 +283,40 @@ class SyncService {
     }
   }
 
+  Future<bool> pushProviderProductsToCloud(int providerId) async {
+    try {
+      final hasNet = await AppServices.connectivityService.isOnline;
+      if (!hasNet) return false;
+
+      final db = await _db.database;
+      final rows = await db.query(
+        'provider_products',
+        columns: ['product_id'],
+        where: 'provider_id = ?',
+        whereArgs: [providerId],
+      );
+      final productIds = rows.map((r) => r['product_id'] as int).toList();
+
+      await _sup.from('provider_products').delete().eq('provider_id', providerId);
+      for (final productId in productIds) {
+        await _sup.from('provider_products').insert({
+          'provider_id': providerId,
+          'product_id': productId,
+        });
+      }
+      return true;
+    } catch (e) {
+      debugPrint('[SyncService] pushProviderProducts ERROR: $e');
+      return false;
+    }
+  }
+
   Future<bool> deleteProviderFromCloud(int localId) async {
     try {
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) return false;
 
+      await _sup.from('provider_products').delete().eq('provider_id', localId);
       await _sup.from('providers').delete().eq('id', localId);
       return true;
     } catch (e) {
@@ -295,9 +325,65 @@ class SyncService {
     }
   }
 
+  Future<void> pullProvidersFromCloud() async {
+    try {
+      final hasNet = await AppServices.connectivityService.isOnline;
+      if (!hasNet) return;
+
+      final db = await _db.database;
+
+      final remoteProviders = await _sup.from('providers').select();
+      final remoteProducts = await _sup.from('provider_products').select();
+
+      debugPrint('[SyncService] pullProvidersFromCloud: ${remoteProviders.length} proveedores, ${remoteProducts.length} relaciones');
+
+      await db.transaction((txn) async {
+        for (final p in remoteProviders) {
+          final id = p['id'] as int;
+          final existing = await txn.query('providers', where: 'id = ?', whereArgs: [id], limit: 1);
+          final map = {
+            'name': p['name'] ?? '',
+            'phone': p['phone'] ?? '',
+            'email': p['email'] ?? '',
+            'address': p['address'] ?? '',
+            'contact_name': p['contact_name'] ?? '',
+            'notes': p['notes'] ?? '',
+            'category': p['category'] ?? 'General',
+            'visit_days': p['visit_days'] ?? '',
+          };
+          if (existing.isEmpty) {
+            await txn.insert('providers', {'id': id, ...map});
+          } else {
+            await txn.update('providers', map, where: 'id = ?', whereArgs: [id]);
+          }
+        }
+
+        // Sincronizar relaciones (merge simple: borrar locales y reinsertar remotas)
+        final localProviderIds = remoteProviders.map((p) => p['id'] as int).toSet();
+        await txn.delete('provider_products', where: 'provider_id IN (${localProviderIds.join(',')})');
+        for (final rp in remoteProducts) {
+          final pid = rp['provider_id'] as int?;
+          final prid = rp['product_id'] as int?;
+          if (pid == null || prid == null) continue;
+          await txn.insert('provider_products', {
+            'provider_id': pid,
+            'product_id': prid,
+          }, conflictAlgorithm: ConflictAlgorithm.ignore);
+        }
+      });
+    } catch (e, st) {
+      debugPrint('[SyncService] pullProvidersFromCloud ERROR: $e');
+      if (kDebugMode) debugPrint('$st');
+    }
+  }
+
   // ────────────────────────────────────────────────────────────────────
   // AUTO-SYNC PENDIENTES
   // ────────────────────────────────────────────────────────────────────
+
+  /// Sincroniza manualmente los datos pendientes. Público para permitir
+  /// su uso antes de cerrar sesión u otras acciones explícitas.
+  Future<void> syncAllPending() async => _syncAllPending();
 
   Future<void> _syncAllPending() async {
     if (_isSyncing) return;
@@ -535,6 +621,133 @@ class SyncService {
       debugPrint('[SyncService] pullPurchasesFromCloud completado');
     } catch (e, st) {
       debugPrint('[SyncService] pullPurchasesFromCloud ERROR: $e');
+      if (kDebugMode) debugPrint('$st');
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────────
+  // MESAS DE BILLAR
+  // ────────────────────────────────────────────────────────────────────
+
+  /// Sube o actualiza una mesa en Supabase.
+  Future<bool> pushTableToCloud(Map<String, dynamic> table) async {
+    try {
+      final hasNet = await AppServices.connectivityService.isOnline;
+      if (!hasNet) return false;
+
+      final billarId = _prefs.billarId;
+      final id = table['id'] as int;
+      final map = {
+        'id': id,
+        'billar_id': billarId,
+        'name': table['name'] ?? 'Mesa $id',
+        'table_type': table['table_type'] ?? 'Pool',
+        'is_occupied': table['is_occupied'] ?? 0,
+        'start_time': table['start_time'],
+        'orders': table['orders'] ?? '[]',
+      };
+
+      await _sup.from('billiard_tables').upsert(map);
+      debugPrint('[SyncService] pushTableToCloud id=$id OK');
+      return true;
+    } catch (e, st) {
+      debugPrint('[SyncService] pushTableToCloud ERROR: $e');
+      if (kDebugMode) debugPrint('$st');
+      return false;
+    }
+  }
+
+  /// Borra una mesa de Supabase.
+  Future<bool> deleteTableFromCloud(int id) async {
+    try {
+      final hasNet = await AppServices.connectivityService.isOnline;
+      if (!hasNet) return false;
+
+      await _sup.from('billiard_tables').delete().eq('billar_id', _prefs.billarId).eq('id', id);
+      return true;
+    } catch (e) {
+      debugPrint('[SyncService] deleteTableFromCloud ERROR: $e');
+      return false;
+    }
+  }
+
+  /// Descarga mesas de Supabase y las fusiona con las locales.
+  /// Solo actualiza/inserta; nunca borra mesas ocupadas ni locales no sincronizadas.
+  Future<void> pullTablesFromCloud() async {
+    try {
+      final hasNet = await AppServices.connectivityService.isOnline;
+      if (!hasNet) return;
+
+      final db = await _db.database;
+      final billarId = _prefs.billarId;
+
+      final response = await _sup
+          .from('billiard_tables')
+          .select()
+          .eq('billar_id', billarId)
+          .order('id', ascending: true);
+
+      final tables = response as List<dynamic>;
+      debugPrint('[SyncService] pullTablesFromCloud: ${tables.length} mesas');
+
+      if (tables.isEmpty) return;
+
+      await db.transaction((txn) async {
+        for (final t in tables) {
+          final id = t['id'] as int;
+          final existing = await txn.query(
+            'billiard_tables',
+            where: 'id = ? AND billar_id = ?',
+            whereArgs: [id, billarId],
+            limit: 1,
+          );
+
+          final cloudName = t['name']?.toString() ?? 'Mesa $id';
+          final cloudType = t['table_type']?.toString() ?? 'Pool';
+          final cloudOccupied = (t['is_occupied'] as num?)?.toInt() ?? 0;
+          final cloudStart = t['start_time']?.toString();
+          final cloudOrders = t['orders']?.toString() ?? '[]';
+
+          if (existing.isEmpty) {
+            await txn.insert('billiard_tables', {
+              'id': id,
+              'billar_id': billarId,
+              'name': cloudName,
+              'table_type': cloudType,
+              'is_occupied': cloudOccupied,
+              'start_time': cloudStart,
+              'orders': cloudOrders,
+            });
+          } else {
+            final local = existing.first;
+            final localOccupied = (local['is_occupied'] as num?)?.toInt() ?? 0;
+            // No sobreescribir mesa ocupada localmente para evitar perder ordenes/tiempo.
+            if (localOccupied == 1) continue;
+            await txn.update(
+              'billiard_tables',
+              {
+                'name': cloudName,
+                'table_type': cloudType,
+                'is_occupied': cloudOccupied,
+                'start_time': cloudStart,
+                'orders': cloudOrders,
+              },
+              where: 'id = ? AND billar_id = ?',
+              whereArgs: [id, billarId],
+            );
+          }
+        }
+      });
+
+      // Ajustar tableCount a la cantidad maxima de ids descargados
+      final maxId = tables.isEmpty
+          ? 0
+          : tables.map((t) => (t['id'] as num).toInt()).reduce((a, b) => a > b ? a : b);
+      if (maxId > 0) {
+        await _prefs.setTableCount(maxId);
+      }
+    } catch (e, st) {
+      debugPrint('[SyncService] pullTablesFromCloud ERROR: $e');
       if (kDebugMode) debugPrint('$st');
     }
   }

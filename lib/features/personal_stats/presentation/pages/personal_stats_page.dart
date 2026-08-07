@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../../../../core/theme/theme_provider.dart';
 
 class PersonalStatsPage extends StatefulWidget {
   const PersonalStatsPage({super.key});
@@ -36,8 +38,8 @@ class _PersonalStatsPageState extends State<PersonalStatsPage> {
           children: [
             _buildSectionTitle('RESUMEN GENERAL'),
             const SizedBox(height: 12),
-            GridView.count(
-              crossAxisCount: 2,
+            GridView.extent(
+              maxCrossAxisExtent: 220,
               shrinkWrap: true,
               physics: const NeverScrollableScrollPhysics(),
               mainAxisSpacing: 12,
@@ -85,36 +87,49 @@ class _PersonalStatsPageState extends State<PersonalStatsPage> {
   }
 
   Widget _buildStatCard(String label, String value, IconData icon, Color color) {
+    final style = context.watch<ThemeProvider>().cardStyle;
+    final solid = style == CardStyle.solidWhite;
+    final outlined = style == CardStyle.outlined;
+    final contentColor = solid ? Colors.white.withValues(alpha: 0.92) : color;
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(20),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            color.withValues(alpha: 0.15),
-            Theme.of(context).colorScheme.surface,
-          ],
+        color: solid ? color : (outlined ? Theme.of(context).colorScheme.surface : null),
+        gradient: (solid || outlined)
+            ? null
+            : LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  color.withValues(alpha: 0.15),
+                  Theme.of(context).colorScheme.surface,
+                ],
+              ),
+        border: Border.all(
+          color: solid ? Colors.white.withValues(alpha: 0.28) : color.withValues(alpha: outlined ? 1.0 : 0.3),
+          width: outlined ? 2 : 1.5,
         ),
-        border: Border.all(color: color.withValues(alpha: 0.3), width: 1.5),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Icon(icon, color: color, size: 26),
+          Icon(icon, color: contentColor, size: 26),
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
                 value,
-                style: TextStyle(color: color, fontSize: 26, fontWeight: FontWeight.bold),
+                style: TextStyle(color: contentColor, fontSize: 26, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 2),
               Text(
                 label,
-                style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12),
+                style: TextStyle(
+                  color: solid ? Colors.white.withValues(alpha: 0.75) : Colors.white.withValues(alpha: 0.4),
+                  fontSize: 12,
+                ),
               ),
             ],
           ),

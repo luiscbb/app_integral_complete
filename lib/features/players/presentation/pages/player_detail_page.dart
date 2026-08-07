@@ -48,8 +48,8 @@ class _StatsTab extends StatelessWidget {
         children: [
           _SectionTitle('RESUMEN'),
           const SizedBox(height: 12),
-          GridView.count(
-            crossAxisCount: 2,
+          GridView.extent(
+            maxCrossAxisExtent: 220,
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             mainAxisSpacing: 12,

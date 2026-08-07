@@ -1,16 +1,40 @@
 import 'package:flutter/material.dart';
 import '../../core/storage/preferences_service.dart';
 
+/// Estilos visuales disponibles para las tarjetas (módulos, mesas, stats,
+/// jugadores). Los tres conviven como opciones seleccionables en Config.
+enum CardStyle {
+  /// Fondo con degradado sutil del color + acento de borde (diseño original).
+  gradient,
+  /// Fondo neutro con contorno del color dominante e icono/texto coloreados.
+  outlined,
+  /// Fondo sólido del color dominante con icono/texto en blanco.
+  solidWhite,
+}
+
 class ThemeProvider extends ChangeNotifier {
   bool _isDark = true;
+  bool _isSolid = false;
+  CardStyle _cardStyle = CardStyle.gradient;
   Color _primaryColor = const Color(0xFFE53935);
 
   bool get isDark => _isDark;
+  bool get isSolid => _isSolid;
+  CardStyle get cardStyle => _cardStyle;
   Color get primaryColor => _primaryColor;
 
   void init() {
     final prefs = PreferencesService();
     _isDark = prefs.isDarkTheme;
+    _isSolid = prefs.isSolidTheme;
+    final storedIndex = prefs.cardStyleIndex;
+    if (storedIndex >= 0 && storedIndex < CardStyle.values.length) {
+      _cardStyle = CardStyle.values[storedIndex];
+    } else {
+      // Migración: si no hay preferencia guardada aún, se respeta lo que el
+      // usuario tenía configurado con el switch anterior (sólido blanco).
+      _cardStyle = _isSolid ? CardStyle.solidWhite : CardStyle.gradient;
+    }
     _primaryColor = Color(prefs.primaryColorValue);
   }
 
@@ -21,6 +45,18 @@ class ThemeProvider extends ChangeNotifier {
     final surface = _isDark ? const Color(0xFF121212) : Colors.white;
     final card = _isDark ? const Color(0xFF1A1A1A) : const Color(0xFFFAFAFA);
 
+    final secondary = _isSolid ? _primaryColor : _primaryColor.withValues(alpha: 0.7);
+    final chipBg = _isSolid ? _primaryColor.withValues(alpha: 0.25) : _primaryColor.withValues(alpha: 0.15);
+    final inputFill = _isSolid
+        ? (_isDark ? const Color(0xFF2A2A2A) : const Color(0xFFE0E0E0))
+        : (_isDark ? Colors.white : Colors.black).withValues(alpha: 0.05);
+    final trackColor = _isSolid
+        ? (_isDark ? Colors.white24 : Colors.black26)
+        : _primaryColor.withValues(alpha: 0.2);
+    final divider = _isSolid
+        ? (_isDark ? const Color(0xFF333333) : const Color(0xFFBDBDBD))
+        : (_isDark ? Colors.white10 : Colors.black12);
+
     return ThemeData(
       useMaterial3: true,
       brightness: _isDark ? Brightness.dark : Brightness.light,
@@ -30,7 +66,7 @@ class ThemeProvider extends ChangeNotifier {
         brightness: _isDark ? Brightness.dark : Brightness.light,
         primary: _primaryColor,
         onPrimary: Colors.white,
-        secondary: _primaryColor.withValues(alpha: 0.7),
+        secondary: secondary,
         onSecondary: Colors.white,
         error: Colors.red,
         onError: Colors.white,
@@ -70,7 +106,7 @@ class ThemeProvider extends ChangeNotifier {
       ),
       progressIndicatorTheme: ProgressIndicatorThemeData(
         color: _primaryColor,
-        linearTrackColor: _primaryColor.withValues(alpha: 0.2),
+        linearTrackColor: trackColor,
       ),
       floatingActionButtonTheme: FloatingActionButtonThemeData(
         backgroundColor: _primaryColor,
@@ -85,7 +121,7 @@ class ThemeProvider extends ChangeNotifier {
         textStyle: TextStyle(color: _isDark ? Colors.white : Colors.black87),
       ),
       chipTheme: ChipThemeData(
-        backgroundColor: _primaryColor.withValues(alpha: 0.15),
+        backgroundColor: chipBg,
         selectedColor: _primaryColor,
         labelStyle: TextStyle(color: _isDark ? Colors.white : Colors.black87),
         secondaryLabelStyle: TextStyle(color: Colors.white),
@@ -93,7 +129,7 @@ class ThemeProvider extends ChangeNotifier {
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: (_isDark ? Colors.white : Colors.black).withValues(alpha: 0.05),
+        fillColor: inputFill,
         labelStyle: TextStyle(color: _isDark ? Colors.white54 : Colors.black54),
         hintStyle: TextStyle(color: _isDark ? Colors.white24 : Colors.black26),
         border: OutlineInputBorder(
@@ -102,7 +138,7 @@ class ThemeProvider extends ChangeNotifier {
         ),
         prefixIconColor: _primaryColor,
       ),
-      dividerTheme: DividerThemeData(color: _isDark ? Colors.white10 : Colors.black12),
+      dividerTheme: DividerThemeData(color: divider),
       cardTheme: CardThemeData(
         color: card,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -121,6 +157,20 @@ class ThemeProvider extends ChangeNotifier {
   void toggleTheme() {
     _isDark = !_isDark;
     PreferencesService().isDarkTheme = _isDark;
+    notifyListeners();
+  }
+
+  void toggleSolid() {
+    _isSolid = !_isSolid;
+    PreferencesService().isSolidTheme = _isSolid;
+    notifyListeners();
+  }
+
+  void setCardStyle(CardStyle style) {
+    _cardStyle = style;
+    _isSolid = style != CardStyle.gradient;
+    PreferencesService().cardStyleIndex = style.index;
+    PreferencesService().isSolidTheme = _isSolid;
     notifyListeners();
   }
 

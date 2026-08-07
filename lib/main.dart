@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:ui';
 
+import 'package:app_links/app_links.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
@@ -47,7 +49,7 @@ void main() async {
 
   await Supabase.initialize(
     url: supabaseUrl,
-    anonKey: supabaseAnonKey,
+    publishableKey: supabaseAnonKey,
   );
   debugPrint('[MAIN] Supabase init done');
 
@@ -65,8 +67,74 @@ void main() async {
   debugPrint('[MAIN] runApp done');
 }
 
-class BaumarPOSApp extends StatelessWidget {
+class BaumarPOSApp extends StatefulWidget {
   const BaumarPOSApp({super.key});
+
+  @override
+  State<BaumarPOSApp> createState() => _BaumarPOSAppState();
+}
+
+class _BaumarPOSAppState extends State<BaumarPOSApp> {
+  final _navigatorKey = GlobalKey<NavigatorState>();
+  final _appLinks = AppLinks();
+  StreamSubscription? _deepLinkSubscription;
+  StreamSubscription? _authSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _initDeepLinkListener();
+    _initAuthStateListener();
+  }
+
+  void _initDeepLinkListener() async {
+    // Capturar link cuando la app está cerrada o en segundo plano.
+    final initial = await _appLinks.getInitialLink();
+    _handleDeepLink(initial);
+    _deepLinkSubscription = _appLinks.uriLinkStream.listen(_handleDeepLink);
+  }
+
+  void _handleDeepLink(Uri? uri) async {
+    if (uri == null) return;
+    debugPrint('[AUTH] Deep link recibido: $uri');
+    if (uri.scheme != 'com.example.app_integral_complete') return;
+
+    final fragment = uri.fragment;
+    final params = Uri.splitQueryString(fragment);
+    final type = uri.queryParameters['type'] ?? params['type'];
+    final accessToken = params['access_token'];
+
+    // Links de recuperación de Supabase v2 usan PKCE. Si hay access_token en
+    // el fragmento, establecemos sesión manualmente; si no, confiamos en que
+    // Supabase ya procesó el URI y navegamos a cambiar contraseña.
+    if (type == 'recovery') {
+      try {
+        if (accessToken != null && accessToken.isNotEmpty) {
+          await Supabase.instance.client.auth.setSession(accessToken);
+        }
+        _navigatorKey.currentState?.pushReplacementNamed(AppRoutes.resetPassword);
+      } catch (e) {
+        debugPrint('[AUTH] Error procesando deep link: $e');
+      }
+    }
+  }
+
+  void _initAuthStateListener() {
+    // Fallback por si Supabase ya procesó la sesión de recuperación.
+    _authSubscription = Supabase.instance.client.auth.onAuthStateChange.listen((data) async {
+      debugPrint('[AUTH] event=${data.event} session=${data.session != null}');
+      if (data.event == AuthChangeEvent.passwordRecovery) {
+        _navigatorKey.currentState?.pushReplacementNamed(AppRoutes.resetPassword);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _deepLinkSubscription?.cancel();
+    _authSubscription?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -75,6 +143,7 @@ class BaumarPOSApp extends StatelessWidget {
       title: 'Baumar POS',
       debugShowCheckedModeBanner: false,
       theme: themeProvider.currentTheme,
+      navigatorKey: _navigatorKey,
       initialRoute: AppRoutes.splash,
       onGenerateRoute: AppRouter.onGenerateRoute,
     );

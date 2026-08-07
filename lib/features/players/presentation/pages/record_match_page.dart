@@ -39,10 +39,13 @@ class _RecordMatchPageState extends State<RecordMatchPage> {
       create: (_) => PlayersProvider(),
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('REGISTRAR PARTIDA', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+          title: const Text(
+            'REGISTRAR PARTIDA',
+            style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2),
+          ),
         ),
         body: Consumer<PlayersProvider>(
-          builder: (_, provider, __) {
+          builder: (_, provider, _) {
             if (provider.isLoading) return Center(child: CircularProgressIndicator(color: primary));
             final players = provider.players;
 
@@ -54,21 +57,36 @@ class _RecordMatchPageState extends State<RecordMatchPage> {
                   _SectionTitle('MODALIDAD'),
                   Wrap(
                     spacing: 10,
-                    children: _games.map((g) => ChoiceChip(
-                      label: Text(g),
-                      selected: _gameType == g,
-                      onSelected: (_) => setState(() => _gameType = g),
-                      selectedColor: primary.withValues(alpha: 0.25),
-                      checkmarkColor: primary,
-                      side: BorderSide(color: _gameType == g ? primary : Colors.white12),
-                    )).toList(),
+                    children:
+                        _games
+                            .map(
+                              (g) => ChoiceChip(
+                                label: Text(g),
+                                selected: _gameType == g,
+                                onSelected: (_) => setState(() => _gameType = g),
+                                selectedColor: primary.withValues(alpha: 0.25),
+                                checkmarkColor: primary,
+                                side: BorderSide(color: _gameType == g ? primary : Colors.white12),
+                              ),
+                            )
+                            .toList(),
                   ),
                   const SizedBox(height: 24),
                   _SectionTitle('JUGADORES'),
                   const SizedBox(height: 12),
-                  _PlayerPicker(label: 'Jugador 1', player: _p1, players: players, onPick: (p) => setState(() => _p1 = p)),
+                  _PlayerPicker(
+                    label: 'Jugador 1',
+                    player: _p1,
+                    players: players,
+                    onPick: (p) => setState(() => _p1 = p),
+                  ),
                   const SizedBox(height: 12),
-                  _PlayerPicker(label: 'Jugador 2', player: _p2, players: players, onPick: (p) => setState(() => _p2 = p)),
+                  _PlayerPicker(
+                    label: 'Jugador 2',
+                    player: _p2,
+                    players: players,
+                    onPick: (p) => setState(() => _p2 = p),
+                  ),
                   const SizedBox(height: 24),
                   _SectionTitle('RESULTADO'),
                   const SizedBox(height: 12),
@@ -79,17 +97,29 @@ class _RecordMatchPageState extends State<RecordMatchPage> {
                         FilterChip(
                           label: Text('Gana ${_p1!.displayName}'),
                           selected: _winner == _p1 && !_isDraw,
-                          onSelected: (_) => setState(() { _winner = _p1; _isDraw = false; }),
+                          onSelected:
+                              (_) => setState(() {
+                                _winner = _p1;
+                                _isDraw = false;
+                              }),
                         ),
                         FilterChip(
                           label: Text('Gana ${_p2!.displayName}'),
                           selected: _winner == _p2 && !_isDraw,
-                          onSelected: (_) => setState(() { _winner = _p2; _isDraw = false; }),
+                          onSelected:
+                              (_) => setState(() {
+                                _winner = _p2;
+                                _isDraw = false;
+                              }),
                         ),
                         FilterChip(
                           label: const Text('Empate'),
                           selected: _isDraw,
-                          onSelected: (_) => setState(() { _isDraw = true; _winner = null; }),
+                          onSelected:
+                              (_) => setState(() {
+                                _isDraw = true;
+                                _winner = null;
+                              }),
                         ),
                       ],
                     ),
@@ -121,17 +151,33 @@ class _RecordMatchPageState extends State<RecordMatchPage> {
                       hintStyle: const TextStyle(color: Colors.white38),
                       filled: true,
                       fillColor: Colors.white.withValues(alpha: 0.05),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                        borderSide: BorderSide.none,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 32),
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(backgroundColor: primary, padding: const EdgeInsets.symmetric(vertical: 18)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: primary,
+                        padding: const EdgeInsets.symmetric(vertical: 18),
+                      ),
                       icon: const Icon(Icons.save, color: Colors.white),
-                      label: const Text('GUARDAR PARTIDA', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, letterSpacing: 1)),
-                      onPressed: (_p1 != null && _p2 != null && (_winner != null || _isDraw)) ? _save : null,
+                      label: const Text(
+                        'GUARDAR PARTIDA',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1,
+                        ),
+                      ),
+                      onPressed:
+                          (_p1 != null && _p2 != null && (_winner != null || _isDraw))
+                              ? _save
+                              : null,
                     ),
                   ),
                 ],
@@ -168,7 +214,10 @@ class _SectionTitle extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.only(bottom: 8),
-    child: Text(text, style: const TextStyle(color: Colors.white38, fontSize: 12, letterSpacing: 2)),
+    child: Text(
+      text,
+      style: const TextStyle(color: Colors.white38, fontSize: 12, letterSpacing: 2),
+    ),
   );
 }
 
@@ -177,7 +226,12 @@ class _PlayerPicker extends StatelessWidget {
   final PlayerEntity? player;
   final List<PlayerEntity> players;
   final ValueChanged<PlayerEntity> onPick;
-  const _PlayerPicker({required this.label, required this.player, required this.players, required this.onPick});
+  const _PlayerPicker({
+    required this.label,
+    required this.player,
+    required this.players,
+    required this.onPick,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -187,17 +241,28 @@ class _PlayerPicker extends StatelessWidget {
         final picked = await showModalBottomSheet<PlayerEntity>(
           context: context,
           backgroundColor: const Color(0xFF1A1A1A),
-          builder: (_) => SafeArea(
-            child: ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: players.length,
-              itemBuilder: (_, i) => ListTile(
-                leading: CircleAvatar(backgroundColor: Colors.white10, child: Text(players[i].initials, style: const TextStyle(color: Colors.white))),
-                title: Text(players[i].displayName, style: const TextStyle(color: Colors.white)),
-                onTap: () => Navigator.pop(context, players[i]),
+          builder:
+              (_) => SafeArea(
+                child: ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: players.length,
+                  itemBuilder:
+                      (_, i) => ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: Colors.white10,
+                          child: Text(
+                            players[i].initials,
+                            style: const TextStyle(color: Colors.white),
+                          ),
+                        ),
+                        title: Text(
+                          players[i].displayName,
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                        onTap: () => Navigator.pop(context, players[i]),
+                      ),
+                ),
               ),
-            ),
-          ),
         );
         if (picked != null) onPick(picked);
       },
@@ -213,12 +278,19 @@ class _PlayerPicker extends StatelessWidget {
             CircleAvatar(
               radius: 20,
               backgroundColor: Colors.white10,
-              child: player == null
-                  ? const Icon(Icons.person_add, color: Colors.white38)
-                  : Text(player!.initials, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              child:
+                  player == null
+                      ? const Icon(Icons.person_add, color: Colors.white38)
+                      : Text(
+                        player!.initials,
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      ),
             ),
             const SizedBox(width: 12),
-            Text(player?.displayName ?? label, style: TextStyle(color: player == null ? Colors.white38 : Colors.white, fontSize: 15)),
+            Text(
+              player?.displayName ?? label,
+              style: TextStyle(color: player == null ? Colors.white38 : Colors.white, fontSize: 15),
+            ),
           ],
         ),
       ),

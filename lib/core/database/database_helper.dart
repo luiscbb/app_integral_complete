@@ -1,7 +1,8 @@
 import 'dart:io';
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart' as ffi;
+import 'package:sqflite/sqflite.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -18,8 +19,8 @@ class DatabaseHelper {
   Future<Database> _initDB(String filePath) async {
     String path;
     if (Platform.isWindows || Platform.isLinux) {
-      sqfliteFfiInit();
-      databaseFactory = databaseFactoryFfi;
+      ffi.sqfliteFfiInit();
+      databaseFactory = ffi.databaseFactoryFfi;
       final dir = await getApplicationDocumentsDirectory();
       path = join(dir.path, 'BaumarSolutions', 'database', filePath);
       final file = File(path);
@@ -30,10 +31,51 @@ class DatabaseHelper {
       final dbPath = await getDatabasesPath();
       path = join(dbPath, filePath);
     }
-    return await openDatabase(path, version: 7, onCreate: _createDB, onUpgrade: _upgradeDB);
+    return await openDatabase(path, version: 13, onCreate: _createDB, onUpgrade: _upgradeDB);
   }
-
   Future<void> _upgradeDB(Database db, int oldV, int newV) async {
+    if (oldV < 12) {
+      await db.execute("ALTER TABLE products ADD COLUMN presentation TEXT DEFAULT ''");
+    }
+    if (oldV < 11) {
+      // Migrar tabla providers a nueva estructura con más campos
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS providers_new (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          name         TEXT NOT NULL,
+          phone        TEXT DEFAULT '',
+          email        TEXT DEFAULT '',
+          address      TEXT DEFAULT '',
+          contact_name TEXT DEFAULT '',
+          notes        TEXT DEFAULT '',
+          category     TEXT DEFAULT 'General',
+          visit_days   TEXT DEFAULT ''
+        )
+      ''');
+      try {
+        await db.execute('''
+          INSERT INTO providers_new (id, name, phone, address, category)
+          SELECT id, name, phone, address, category FROM providers
+        ''');
+        await db.execute('DROP TABLE providers');
+        await db.execute('ALTER TABLE providers_new RENAME TO providers');
+      } catch (_) {
+        // Si falla, simplemente dejamos la nueva tabla
+      }
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS provider_products (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          provider_id INTEGER NOT NULL,
+          product_id  INTEGER NOT NULL,
+          UNIQUE(provider_id, product_id),
+          FOREIGN KEY (provider_id) REFERENCES providers (id) ON DELETE CASCADE,
+          FOREIGN KEY (product_id)  REFERENCES products  (id) ON DELETE CASCADE
+        )
+      ''');
+    }
+    if (oldV < 10) {
+      await db.execute("ALTER TABLE billiard_tables ADD COLUMN table_type TEXT NOT NULL DEFAULT 'Pool'");
+    }
     if (oldV < 2) {
       await db.execute('ALTER TABLE sales_history ADD COLUMN paid REAL NOT NULL DEFAULT 0');
     }
@@ -98,6 +140,78 @@ class DatabaseHelper {
         )
       ''');
     }
+    if (oldV < 9) {
+      await db.execute('ALTER TABLE products ADD COLUMN synced INTEGER NOT NULL DEFAULT 0');
+      await db.execute('ALTER TABLE products ADD COLUMN cloud_id TEXT');
+    }
+    if (oldV < 8) {
+      await db.execute('ALTER TABLE match_results ADD COLUMN player_score INTEGER NOT NULL DEFAULT 0');
+      await db.execute('ALTER TABLE match_results ADD COLUMN opponent_score INTEGER NOT NULL DEFAULT 0');
+      await db.execute('ALTER TABLE match_results ADD COLUMN accuracy REAL NOT NULL DEFAULT 0');
+      await db.execute('ALTER TABLE match_results ADD COLUMN efficiency REAL NOT NULL DEFAULT 0');
+    }
+    if (oldV < 13) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS temp_reservations (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          source      TEXT    NOT NULL,
+          source_id   INTEGER NOT NULL DEFAULT 0,
+          product_id  INTEGER NOT NULL,
+          quantity    REAL    NOT NULL,
+          created_at  TEXT    NOT NULL
+        )
+      ''');
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS inventory_movements (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          billar_id      TEXT    NOT NULL DEFAULT 'BILLAR_001',
+          product_id     INTEGER NOT NULL,
+          movement_type  TEXT    NOT NULL,
+          quantity       REAL    NOT NULL,
+          unit_cost      REAL    NOT NULL DEFAULT 0,
+          unit_price     REAL    NOT NULL DEFAULT 0,
+          reference_id   INTEGER,
+          reference_type TEXT,
+          notes          TEXT    DEFAULT '',
+          created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+          synced         INTEGER NOT NULL DEFAULT 0,
+          cloud_id       TEXT
+        )
+      ''');
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS cash_outflows (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          billar_id      TEXT    NOT NULL DEFAULT 'BILLAR_001',
+          outflow_type   TEXT    NOT NULL,
+          amount         REAL    NOT NULL,
+          description    TEXT    NOT NULL DEFAULT '',
+          payment_method TEXT    DEFAULT 'Efectivo',
+          created_by     TEXT    DEFAULT '',
+          created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+          synced         INTEGER NOT NULL DEFAULT 0,
+          cloud_id       TEXT
+        )
+      ''');
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS cashier_sessions (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          billar_id      TEXT    NOT NULL DEFAULT 'BILLAR_001',
+          opened_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+          closed_at      TEXT,
+          opening_amount REAL    NOT NULL DEFAULT 0,
+          closing_amount REAL,
+          expected_amount REAL,
+          difference     REAL,
+          is_closed      INTEGER NOT NULL DEFAULT 0,
+          partial_closures TEXT  DEFAULT '[]',
+          notes          TEXT    DEFAULT '',
+          created_by     TEXT    DEFAULT '',
+          closed_by      TEXT    DEFAULT '',
+          synced         INTEGER NOT NULL DEFAULT 0,
+          cloud_id       TEXT
+        )
+      ''');
+    }
   }
 
   Future<void> _createDB(Database db, int version) async {
@@ -117,7 +231,10 @@ class DatabaseHelper {
         is_promo        INTEGER NOT NULL DEFAULT 0,
         parent_id       INTEGER,
         pieces_per_unit INTEGER NOT NULL DEFAULT 1,
-        category        TEXT    DEFAULT ''
+        category        TEXT    DEFAULT '',
+        presentation    TEXT    DEFAULT '',
+        synced          INTEGER NOT NULL DEFAULT 0,
+        cloud_id        TEXT
       )
     ''');
 
@@ -144,6 +261,7 @@ class DatabaseHelper {
         id          INTEGER PRIMARY KEY,
         billar_id   TEXT    NOT NULL DEFAULT $billarId,
         name        TEXT    NOT NULL,
+        table_type  TEXT    NOT NULL DEFAULT 'Pool',
         is_occupied INTEGER NOT NULL DEFAULT 0,
         start_time  TEXT,
         orders      TEXT    DEFAULT '[]'
@@ -178,11 +296,26 @@ class DatabaseHelper {
 
     await db.execute('''
       CREATE TABLE providers (
-        id       INTEGER PRIMARY KEY AUTOINCREMENT,
-        name     TEXT NOT NULL,
-        phone    TEXT DEFAULT '',
-        address  TEXT DEFAULT '',
-        category TEXT DEFAULT 'Lunes'
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        name         TEXT NOT NULL,
+        phone        TEXT DEFAULT '',
+        email        TEXT DEFAULT '',
+        address      TEXT DEFAULT '',
+        contact_name TEXT DEFAULT '',
+        notes        TEXT DEFAULT '',
+        category     TEXT DEFAULT 'General',
+        visit_days   TEXT DEFAULT ''
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE provider_products (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider_id INTEGER NOT NULL,
+        product_id  INTEGER NOT NULL,
+        UNIQUE(provider_id, product_id),
+        FOREIGN KEY (provider_id) REFERENCES providers (id) ON DELETE CASCADE,
+        FOREIGN KEY (product_id)  REFERENCES products  (id) ON DELETE CASCADE
       )
     ''');
 
@@ -220,15 +353,7 @@ class DatabaseHelper {
       )
     ''');
 
-    for (int i = 1; i <= 8; i++) {
-      await db.insert('billiard_tables', {
-        'id': i,
-        'billar_id': 'BILLAR_001',
-        'name': 'Mesa $i',
-        'is_occupied': 0,
-        'orders': '[]',
-      });
-    }
+    // No se precargan mesas por defecto; se crean en InitialSetup o ConfigPage.
 
     await db.execute('''
       CREATE TABLE players (
@@ -256,21 +381,85 @@ class DatabaseHelper {
       CREATE TABLE match_results (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         game_type   TEXT    NOT NULL DEFAULT 'Bola 8',
-        player1_id  INTEGER NOT NULL,
-        player2_id  INTEGER NOT NULL,
+        player1_id  INTEGER,
+        player2_id  INTEGER,
         winner_id   INTEGER,
         is_draw     INTEGER NOT NULL DEFAULT 0,
         golden_break INTEGER NOT NULL DEFAULT 0,
         break_and_run INTEGER NOT NULL DEFAULT 0,
+        player_score INTEGER NOT NULL DEFAULT 0,
+        opponent_score INTEGER NOT NULL DEFAULT 0,
+        accuracy    REAL    NOT NULL DEFAULT 0,
+        efficiency  REAL    NOT NULL DEFAULT 0,
         notes       TEXT    DEFAULT '',
         date        TEXT    NOT NULL DEFAULT (datetime('now')),
-        synced      INTEGER NOT NULL DEFAULT 0,
-        FOREIGN KEY (player1_id) REFERENCES players(id) ON DELETE CASCADE,
-        FOREIGN KEY (player2_id) REFERENCES players(id) ON DELETE CASCADE,
-        FOREIGN KEY (winner_id) REFERENCES players(id) ON DELETE SET NULL
+        synced      INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE temp_reservations (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        source      TEXT    NOT NULL,
+        source_id   INTEGER NOT NULL DEFAULT 0,
+        product_id  INTEGER NOT NULL,
+        quantity    REAL    NOT NULL,
+        created_at  TEXT    NOT NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE inventory_movements (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        billar_id      TEXT    NOT NULL DEFAULT $billarId,
+        product_id     INTEGER NOT NULL,
+        movement_type  TEXT    NOT NULL,
+        quantity       REAL    NOT NULL,
+        unit_cost      REAL    NOT NULL DEFAULT 0,
+        unit_price     REAL    NOT NULL DEFAULT 0,
+        reference_id   INTEGER,
+        reference_type TEXT,
+        notes          TEXT    DEFAULT '',
+        created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+        synced         INTEGER NOT NULL DEFAULT 0,
+        cloud_id       TEXT
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE cash_outflows (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        billar_id      TEXT    NOT NULL DEFAULT $billarId,
+        outflow_type   TEXT    NOT NULL,
+        amount         REAL    NOT NULL,
+        description    TEXT    NOT NULL DEFAULT '',
+        payment_method TEXT    DEFAULT 'Efectivo',
+        created_by     TEXT    DEFAULT '',
+        created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+        synced         INTEGER NOT NULL DEFAULT 0,
+        cloud_id       TEXT
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE cashier_sessions (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        billar_id      TEXT    NOT NULL DEFAULT $billarId,
+        opened_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+        closed_at      TEXT,
+        opening_amount REAL    NOT NULL DEFAULT 0,
+        closing_amount REAL,
+        expected_amount REAL,
+        difference     REAL,
+        is_closed      INTEGER NOT NULL DEFAULT 0,
+        partial_closures TEXT  DEFAULT '[]',
+        notes          TEXT    DEFAULT '',
+        created_by     TEXT    DEFAULT '',
+        closed_by      TEXT    DEFAULT '',
+        synced         INTEGER NOT NULL DEFAULT 0,
+        cloud_id       TEXT
       )
     ''');
 
   }
-
-  }
+}

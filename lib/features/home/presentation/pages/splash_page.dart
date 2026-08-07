@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../../core/routes/app_routes.dart';
 import '../../../../core/services/config_remote_repository.dart';
@@ -19,6 +20,10 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
   late AnimationController _controller;
   late Animation<double> _scaleAnimation;
   late Animation<double> _rotationAnimation;
+  bool _isOffline = false;
+  String _statusMessage = 'INICIANDO...';
+
+  ImageProvider? _logoImage;
 
   @override
   void initState() {
@@ -35,54 +40,118 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
 
     _controller.forward();
 
-    Timer(const Duration(seconds: 2), () async {
+    _loadSplashLogo();
+
+    Future.delayed(const Duration(seconds: 2), () async {
       if (!mounted) return;
-      await _checkSessionAndNavigate();
+      _checkSessionAndNavigate();
+    });
+  }
+
+  void _loadSplashLogo() {
+    // El splash siempre muestra el logo de la app principal (Baumar).
+    // El logo del negocio cliente solo se ve dentro de la app (header, tickets, config).
+    _logoImage = null;
+    debugPrint('[SplashPage] Usando logo de app principal en splash');
+  }
+
+  void _setOfflineStatus(String message) {
+    if (!mounted) return;
+    setState(() {
+      _isOffline = true;
+      _statusMessage = message;
     });
   }
 
   Future<void> _checkSessionAndNavigate() async {
     final prefs = PreferencesService();
+    final start = DateTime.now();
+    debugPrint('[SplashPage] _checkSessionAndNavigate start $start');
 
-    if (prefs.isFirstRun) {
-      // Aun no se configuro localmente. Intentar recuperar sesion existente.
-      final remote = ConfigRemoteRepository();
-      final remoteSettings = await remote.fetchSettings();
+    try {
+      final session = Supabase.instance.client.auth.currentSession;
+      debugPrint('[SplashPage] session=${session != null}');
 
-      if (remoteSettings != null && mounted) {
-        // Hay config en la nube: restaurar localmente y saltar setup
-        final tableCount = (remoteSettings['table_count'] as num?)?.toInt() ?? 8;
-        final primaryColor = (remoteSettings['primary_color'] as num?)?.toInt();
-        await prefs.setBusinessName(remoteSettings['business_name']?.toString() ?? 'Baumar Billar');
-        await prefs.setBillarId(remoteSettings['billar_id']?.toString() ?? 'BILLAR_001');
-        await prefs.setTableCount(tableCount);
-        await prefs.setHourlyRate((remoteSettings['hourly_rate'] as num?)?.toDouble() ?? 0.0);
-        if (primaryColor != null) {
-          await prefs.setPrimaryColorValue(primaryColor);
-          if (mounted) {
-            context.read<ThemeProvider>().setPrimaryColor(Color(primaryColor));
-          }
+      if (session == null) {
+        // No hay sesión activa: forzar login.
+        if (mounted) {
+          Navigator.of(context).pushReplacementNamed(AppRoutes.login);
         }
-        await prefs.setIsFirstRun(false);
+        return;
+      }
 
-        // Recrear mesas en la base de datos local
-        final repo = SalesRepository();
-        await repo.ensureTablesExist(tableCount);
+      final remote = ConfigRemoteRepository();
+      debugPrint('[SplashPage] fetchSettings start');
+      final remoteSettings = await remote.fetchSettings().timeout(
+        const Duration(seconds: 8),
+        onTimeout: () {
+          _setOfflineStatus('SIN CONEXIÓN - MODO LOCAL');
+          return null;
+        },
+      );
+      debugPrint('[SplashPage] fetchSettings end, tieneSettings=${remoteSettings != null}');
+
+      if (remoteSettings != null) {
+        await _applyRemoteSettings(prefs, remoteSettings);
 
         if (mounted) {
           Navigator.of(context).pushReplacementNamed(AppRoutes.home);
         }
         return;
       }
-    }
 
-    if (mounted) {
-      if (prefs.isFirstRun) {
+      // No hay configuración remota. Si localmente tampoco se configuró, ir al setup.
+      if (mounted) {
+        if (prefs.isFirstRun) {
+          Navigator.of(context).pushReplacementNamed(AppRoutes.initialSetup);
+        } else {
+          Navigator.of(context).pushReplacementNamed(AppRoutes.home);
+        }
+      }
+    } catch (e, st) {
+      debugPrint('[Splash] Error durante navegación inicial: $e');
+      debugPrint('[Splash] Stack: $st');
+      _setOfflineStatus('SIN CONEXIÓN - MODO LOCAL');
+      // En cualquier error de red/auth: descartar sesión y forzar login.
+      try {
+        await Supabase.instance.client.auth.signOut();
+      } catch (_) {
+        // Ignorar error al cerrar sesión.
+      }
+      if (mounted) {
         Navigator.of(context).pushReplacementNamed(AppRoutes.login);
-      } else {
-        Navigator.of(context).pushReplacementNamed(AppRoutes.home);
       }
     }
+    debugPrint('[SplashPage] _checkSessionAndNavigate end ${DateTime.now().difference(start).inMilliseconds}ms');
+  }
+
+  Future<void> _applyRemoteSettings(
+    PreferencesService prefs,
+    Map<String, dynamic> remoteSettings,
+  ) async {
+    // Siempre sincronizar la configuración remota activa (billar_id, tarifa, etc.)
+    // para evitar que distintos dispositivos usen configuraciones locales desfasadas.
+    final tableCount = (remoteSettings['table_count'] as num?)?.toInt() ?? 8;
+    final primaryColor = (remoteSettings['primary_color'] as num?)?.toInt();
+    final logoUrl = remoteSettings['logo_url']?.toString() ?? '';
+    debugPrint('[SplashPage] Remoto logo_url recibido: "$logoUrl"');
+    debugPrint('[SplashPage] Remoto business_name: ${remoteSettings['business_name']}');
+    await prefs.setBusinessName(remoteSettings['business_name']?.toString() ?? 'Baumar Billar');
+    await prefs.setBillarId(remoteSettings['billar_id']?.toString() ?? 'BILLAR_001');
+    await prefs.setTableCount(tableCount);
+    await prefs.setHourlyRate((remoteSettings['hourly_rate'] as num?)?.toDouble() ?? 0.0);
+    await prefs.setLogoUrl(logoUrl);
+    if (primaryColor != null) {
+      await prefs.setPrimaryColorValue(0xFF000000 | (primaryColor.toInt() & 0x00FFFFFF));
+      if (mounted) {
+        context.read<ThemeProvider>().setPrimaryColor(Color(prefs.primaryColorValue));
+      }
+    }
+    await prefs.setIsFirstRun(false);
+
+    // Recrear mesas en la base de datos local según la config remota
+    final repo = SalesRepository();
+    await repo.ensureTablesExist(tableCount);
   }
 
   @override
@@ -93,6 +162,7 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
 
   @override
   Widget build(BuildContext context) {
+    final primary = context.watch<ThemeProvider>().primaryColor;
     return Scaffold(
       backgroundColor: Colors.black,
       body: Center(
@@ -103,14 +173,25 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
               turns: _rotationAnimation,
               child: ScaleTransition(
                 scale: _scaleAnimation,
-                child: Image.asset('assets/baumar_8_personal-sf.png', width: 180, height: 180),
+                child: Container(
+                  width: 180,
+                  height: 180,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: primary.withValues(alpha: 0.5), width: 2),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: _logoImage != null
+                      ? Image(image: _logoImage!, fit: BoxFit.cover)
+                      : Image.asset('assets/baumar_8_personal-sf.png', fit: BoxFit.cover),
+                ),
               ),
             ),
             const SizedBox(height: 40),
             ScaleTransition(
               scale: _scaleAnimation,
               child: const Text(
-                "BAUMAR APPS",
+                "BAUMAR BILLIARDS POS",
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 22,
@@ -120,9 +201,35 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
               ),
             ),
             const SizedBox(height: 25),
-            const SizedBox(
+            if (_isOffline)
+              Container(
+                margin: const EdgeInsets.only(bottom: 16),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFF9800).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: const Color(0xFFFF9800).withValues(alpha: 0.6), width: 1),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.wifi_off, color: const Color(0xFFFF9800).withValues(alpha: 0.9), size: 18),
+                    const SizedBox(width: 8),
+                    Text(
+                      _statusMessage,
+                      style: TextStyle(
+                        color: const Color(0xFFFF9800).withValues(alpha: 0.9),
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            SizedBox(
               width: 40,
-              child: CircularProgressIndicator(color: Colors.blue, backgroundColor: Colors.white10),
+              child: CircularProgressIndicator(color: _isOffline ? const Color(0xFFFF9800) : primary, backgroundColor: Colors.white10),
             ),
           ],
         ),

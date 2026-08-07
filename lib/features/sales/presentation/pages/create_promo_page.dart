@@ -169,12 +169,24 @@ class _CreatePromoPageState extends State<CreatePromoPage> {
       );
       return;
     }
+    final price = double.tryParse(_priceCtrl.text) ?? _componentsCost;
+    if (price <= _componentsCost) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'El precio de la promo (\$${price.toStringAsFixed(2)}) debe ser mayor al costo de los productos (\$${_componentsCost.toStringAsFixed(2)})',
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
     setState(() => _saving = true);
     try {
       final promo = ProductEntity(
         id: widget.promo?.id,
         name: _nameCtrl.text.trim().toUpperCase(),
-        price: double.tryParse(_priceCtrl.text) ?? _componentsCost,
+        price: price,
         cost: _componentsCost,
         stock: 0,
         isPromo: 1,
