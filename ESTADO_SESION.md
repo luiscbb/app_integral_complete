@@ -387,4 +387,123 @@ Luego abre el `.exe` e inicia sesión con el **mismo correo/usuario** del celula
 
 ---
 
+## Sesión 2026-08-08 — Fix stock fantasma en Mesas de Billar
+
+### Problema reportado
+Producto con 10 pz, sin presentación caja:
+1. Al abrir una mesa de billar, el stock se mostraba como 9 pz sin haber agregado nada.
+2. Al ir a Venta Rápida, agregar 2 pz (sin cobrar) y volver a la mesa, el stock marcaba 7 pz.
+
+### Causa raíz
+`SaleItemEntity.quantity` tiene valor por defecto `1`. En `_TableDetailPage` se usaba `orElse: () => SaleItemEntity(productName: '', price: 0)` sin forzar `quantity: 0`, por lo que al consultar "¿cuántas piezas de este producto hay en la orden actual?" siempre devolvía 1 para productos que no estaban en la orden.
+
+### Corrección aplicada
+Archivo: `lib/features/sales/presentation/pages/billiard_tables_page.dart`
+- Se agregó helper `_quantityInOrder(int? productId)` que devuelve 0 cuando el producto no está en la orden.
+- Se reemplazaron los tres `firstWhere` manuales por el helper en:
+  - `_addProduct` (validación de stock).
+  - Filtro de productos visibles.
+  - Cálculo de `displayStock` para el badge de stock.
+
+### Verificación
+```
+dart analyze .
+```
+Resultado: 0 errores, 0 warnings visibles.
+
+### Pendiente de validación en runtime
+- [ ] Producto 10 pz → abrir mesa → debe mostrar 10 pz.
+- [ ] Venta Rápida 2 pz sin cobrar → volver a mesa → debe mostrar 8 pz.
+- [ ] Agregar 3 pz en mesa → debe reflejar stock disponible correcto para otras mesas/venta rápida.
+
+### Palabra clave para retomar mañana
+**"STOCK FANTASMA CORREGIDO"**
+
+---
+
+## Sesión 2026-08-08 — Fix stock fantasma en Mesas de Billar
+
+### Problema reportado
+Producto con 10 pz, sin presentación caja:
+1. Al abrir una mesa de billar, el stock se mostraba como 9 pz sin haber agregado nada.
+2. Al ir a Venta Rápida, agregar 2 pz (sin cobrar) y volver a la mesa, el stock marcaba 7 pz.
+
+### Causa raíz
+`SaleItemEntity.quantity` tiene valor por defecto `1`. En `_TableDetailPage` se usaba `orElse: () => SaleItemEntity(productName: '', price: 0)` sin forzar `quantity: 0`, por lo que al consultar "¿cuántas piezas de este producto hay en la orden actual?" siempre devolvía 1 para productos que no estaban en la orden.
+
+### Corrección aplicada
+Archivo: `lib/features/sales/presentation/pages/billiard_tables_page.dart`
+- Se agregó helper `_quantityInOrder(int? productId)` que devuelve 0 cuando el producto no está en la orden.
+- Se reemplazaron los tres `firstWhere` manuales por el helper en:
+  - `_addProduct` (validación de stock).
+  - Filtro de productos visibles.
+  - Cálculo de `displayStock` para el badge de stock.
+
+### Verificación
+```
+dart analyze .
+```
+Resultado: 0 errores, 0 warnings visibles.
+
+### Pendiente de validación en runtime
+- [ ] Producto 10 pz → abrir mesa → debe mostrar 10 pz.
+- [ ] Venta Rápida 2 pz sin cobrar → volver a mesa → debe mostrar 8 pz.
+- [ ] Agregar 3 pz en mesa → debe reflejar stock disponible correcto para otras mesas/venta rápida.
+
+### Palabra clave para retomar mañana
+**"STOCK FANTASMA CORREGIDO"**
+
+---
+
+## Sesión actual — Stock unificado: doble descuento y botones +/-
+
+### Paso a paso reportado por el usuario
+1. Artículo PruebaZ con 10 pz.
+2. Mesa 1: selecciona 3 pz.
+3. Venta Rápida: ve 7 pz (correcto).
+4. VR: selecciona 3 pz → disponible 4 pz (correcto).
+5. Sin cobrar, regresa a Mesa: ve 4 pz disponibles. Agrega 2 más → stock disponible muestra 2 pz.
+6. Sin cobrar, regresa a VR: **debería tener 2 pz disponibles**, pero el producto desaparece (como si fuera 0).
+7. Al cerrar la venta de la Mesa con 5 pz, VR pierde las 3 pz seleccionadas y muestra 5 pz disponibles.
+
+### Causas raíz identificadas
+1. **Doble descuento del carrito de VR:** `_salesRepo.getReservedQuantities()` ya incluye las reservas de `temp_reservations` (quick_sale). En `quick_sale_page.dart` se guardaban en `_tableReserved` y luego `_reservedFor()` restaba el carrito otra vez.
+2. **Cobro de mesa borra carrito de VR:** `SalesRepository.saveSale()` llamaba `clearQuickSaleReservation()` indiscriminadamente, sin importar si la venta era de mesa o de VR.
+3. **Faltan botones +/- en las tarjetas:** `ProductSaleCard.showButtons` estaba en `false`; solo se podía agregar tocando la tarjeta y solo en VR se podía quitar desde el BottomSheet de cobro.
+
+### Correcciones aplicadas
+- `lib/features/sales/data/repositories/sales_repository.dart`:
+  - `getReservedQuantities()` ahora acepta `excludeSource` y lo reenvía a `StockReservationService`.
+  - `saveSale()` solo limpia la reserva de VR cuando `saleType == 'Venta Rápida'`.
+- `lib/features/quick_sale/presentation/pages/quick_sale_page.dart`:
+  - `_load()` llama `getReservedQuantities(excludeSource: 'quick_sale')` para no contar dos veces el carrito de VR.
+  - `ProductSaleCard` se usa con `showButtons: true`.
+- `lib/features/sales/presentation/pages/billiard_tables_page.dart`:
+  - `ProductSaleCard` se usa con `showButtons: true`.
+
+### Verificación
+```
+dart analyze .
+```
+Resultado: 0 errores, 0 warnings visibles.
+
+### Commits
+- Commit local: `64b87a1` fix: stock unificado VR/mesas, botones +/- en tarjetas, UI cards.
+- **Push a GitHub pendiente:** no hay remoto `origin` configurado en este entorno. El usuario debe proporcionar la URL del repo o configurar el remoto localmente para hacer push.
+
+### Pendiente de validación en runtime
+Repetir el paso a paso:
+- [ ] Mesa 3 pz → VR muestra 7 pz.
+- [ ] VR 3 pz → VR muestra 4 pz disponibles.
+- [ ] Mesa +2 pz → VR debe mostrar 2 pz disponibles (producto visible).
+- [ ] Cobrar mesa (5 pz) → VR mantiene las 3 pz seleccionadas y muestra 2 pz disponibles.
+- [ ] Botones +/- visibles y funcionales en tarjetas de VR y Mesas.
+- [ ] Cards de Mesas no se desbordan.
+- [ ] Tema rojo: botón más aparece en verde; botón menos en rojo siempre.
+
+### Palabra clave para retomar
+**"STOCK UNIFICADO BOTONES"**
+
+---
+
 *Este archivo es solo un resumen de trabajo, no forma parte de la app. Puedes borrarlo cuando termines de revisar.*

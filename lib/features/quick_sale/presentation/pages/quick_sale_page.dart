@@ -59,7 +59,9 @@ class _QuickSalePageState extends State<QuickSalePage> {
         compMap[p.id!] = await _productRepo.getPromoComponents(p.id!);
       }
     }
-    final reserved = await _salesRepo.getReservedQuantities();
+    final reserved = await _salesRepo.getReservedQuantities(
+      excludeSource: 'quick_sale',
+    );
     // Restaurar carrito de venta rápida si había una reserva activa.
     final quickReserved = await _reservationService.getReservedQuantities(
       excludeSource: 'table',
@@ -544,6 +546,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
                         quantity: q,
                         onAdd: isBlocked ? () {} : () => _add(p),
                         onRemove: () => _remove(p.id!),
+                        showButtons: true,
                       ),
                     ),
                   );

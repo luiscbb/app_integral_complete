@@ -48,8 +48,11 @@ class SalesRepository {
       return id;
     });
 
-    // Limpiar reserva de venta rápida tras cobrar.
-    await _reservations.clearQuickSaleReservation();
+    // Limpiar reserva de venta rápida solo si la venta fue de tipo rápido.
+    // Las ventas de mesa no deben afectar el carrito pendiente de Venta Rápida.
+    if (saleType == 'Venta Rápida') {
+      await _reservations.clearQuickSaleReservation();
+    }
 
     // Registrar movimientos de inventario (kardex) para productos vendidos.
     for (final item in items) {
@@ -153,7 +156,12 @@ class SalesRepository {
   /// rápida activo, para no ofrecer existencias ya comprometidas.
   /// [excludeTableId] permite excluir la mesa actual si se quiere calcular
   /// solo lo reservado por "otras" mesas.
-  Future<Map<int, double>> getReservedQuantities({int? excludeTableId}) async {
+  /// [excludeSource] se reenvía a [StockReservationService] para omitir una
+  /// fuente de reservas temporales (ej. 'quick_sale').
+  Future<Map<int, double>> getReservedQuantities({
+    int? excludeTableId,
+    String? excludeSource,
+  }) async {
     final db = await _db.database;
     final billarId = _prefs.billarId;
     String where = 'billar_id = ? AND is_occupied = 1';
@@ -184,7 +192,7 @@ class SalesRepository {
     // Agregar reservas temporales del carrito de venta rápida solamente.
     // Las mesas ya se consideran desde billiard_tables.orders.
     final quickReservations = await _reservations.getReservedQuantities(
-      excludeSource: 'table',
+      excludeSource: excludeSource ?? 'table',
     );
     for (final entry in quickReservations.entries) {
       reserved[entry.key] = (reserved[entry.key] ?? 0) + entry.value;

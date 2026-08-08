@@ -44,6 +44,9 @@ class ProductSaleCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final primary = Theme.of(context).colorScheme.primary;
+    // Cuando el tema primario es rojo, el botón de agregar usa verde para
+    // mantener buen contraste y semántica de "añadir".
+    final addColor = primary == const Color(0xFFE53935) ? Colors.greenAccent : primary;
     if (_isOutOfStock && !showOutOfStock) {
       return const SizedBox.shrink();
     }
@@ -120,7 +123,7 @@ class ProductSaleCard extends StatelessWidget {
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           IconButton(
-                            icon: const Icon(Icons.remove_circle, color: Colors.white24, size: 20),
+                            icon: const Icon(Icons.remove_circle, color: Colors.redAccent, size: 20),
                             onPressed: onRemove,
                           ),
                           Text(
@@ -130,7 +133,7 @@ class ProductSaleCard extends StatelessWidget {
                           IconButton(
                             icon: Icon(
                               Icons.add_circle,
-                              color: _isOutOfStock ? Colors.red : primary,
+                              color: _isOutOfStock ? Colors.red : addColor,
                               size: 20,
                             ),
                             onPressed: _isOutOfStock ? null : onAdd,

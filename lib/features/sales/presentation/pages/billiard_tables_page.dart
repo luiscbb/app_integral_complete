@@ -356,6 +356,18 @@ class _TableDetailPageState extends State<_TableDetailPage> {
   Duration _elapsed = Duration.zero;
   DateTime? _startTime;
 
+  /// Cantidad de un producto ya agregado en la orden actual. Devuelve 0 si no
+  /// está, para evitar que el default `quantity=1` de [SaleItemEntity] cuente
+  /// como una pieza fantasma en el stock.
+  double _quantityInOrder(int? productId) {
+    if (productId == null) return 0;
+    final item = _orders.firstWhere(
+      (e) => e.productId == productId,
+      orElse: () => SaleItemEntity(productName: '', price: 0, quantity: 0),
+    );
+    return item.quantity;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -526,10 +538,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
 
   void _addProduct(ProductEntity p) {
     // Validar stock considerando lo ya reservado en otras mesas abiertas.
-    final currentQty = _orders.firstWhere(
-      (o) => o.productId == p.id,
-      orElse: () => SaleItemEntity(productName: '', price: 0, quantity: 0),
-    ).quantity;
+    final currentQty = _quantityInOrder(p.id);
     final reservedElsewhere = _reservedOthers[p.id] ?? 0;
     final availableStock = p.stock - reservedElsewhere;
     if (availableStock <= currentQty) {
@@ -912,17 +921,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                                         _products.where((p) {
                                           final reservedElsewhere = _reservedOthers[p.id] ?? 0;
                                           final availableStock = p.stock - reservedElsewhere;
-                                          final inThisOrder =
-                                              _orders
-                                                  .firstWhere(
-                                                    (e) => e.productId == p.id,
-                                                    orElse:
-                                                        () => SaleItemEntity(
-                                                          productName: '',
-                                                          price: 0,
-                                                        ),
-                                                  )
-                                                  .quantity;
+                                          final inThisOrder = _quantityInOrder(p.id);
                                           return availableStock > inThisOrder || inThisOrder > 0;
                                         }).toList();
                                     return GridView.builder(
@@ -931,22 +930,12 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                                         maxCrossAxisExtent: 160,
                                         mainAxisSpacing: 10,
                                         crossAxisSpacing: 10,
-                                        childAspectRatio: 0.7,
+                                        childAspectRatio: 0.6,
                                       ),
                                       itemCount: visibleProducts.length,
                                       itemBuilder: (_, i) {
                                         final p = visibleProducts[i];
-                                        final q =
-                                            _orders
-                                                .firstWhere(
-                                                  (e) => e.productId == p.id,
-                                                  orElse:
-                                                      () => SaleItemEntity(
-                                                        productName: '',
-                                                        price: 0,
-                                                      ),
-                                                )
-                                                .quantity;
+                                        final q = _quantityInOrder(p.id);
                                         final reservedElsewhere = _reservedOthers[p.id] ?? 0;
                                         final displayStock = p.stock - reservedElsewhere - q;
                                         return GestureDetector(
@@ -963,6 +952,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                                               );
                                               if (idx >= 0) _removeItem(idx);
                                             },
+                                            showButtons: true,
                                           ),
                                         );
                                       },
