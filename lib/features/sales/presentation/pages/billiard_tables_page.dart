@@ -536,6 +536,140 @@ class _TableDetailPageState extends State<_TableDetailPage> {
     return h > 0 ? '$h:$m:$s' : '$m:$s';
   }
 
+  /// Panel lateral/inferior con el resumen de consumo, tiempo y orden actual.
+  Widget _buildSidePanel() {
+    return Container(
+      color: const Color(0xFF1A1A1A),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            color: const Color(0xFF1A1A1A),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'CONSUMO',
+                      style: TextStyle(
+                        color: Colors.white54,
+                        letterSpacing: 2,
+                        fontSize: 11,
+                      ),
+                    ),
+                    Text(
+                      '\$${_consumoTotal.toStringAsFixed(2)}',
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+                if (_timeCost > 0) ...[
+                  const SizedBox(height: 4),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'TIEMPO',
+                        style: TextStyle(
+                          color: Colors.white54,
+                          letterSpacing: 2,
+                          fontSize: 11,
+                        ),
+                      ),
+                      Text(
+                        '\$${_timeCost.toStringAsFixed(2)}',
+                        style: const TextStyle(
+                          color: Colors.orangeAccent,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+                const Divider(color: Colors.white10, height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'TOTAL',
+                      style: TextStyle(
+                        color: Colors.white54,
+                        letterSpacing: 2,
+                        fontSize: 11,
+                      ),
+                    ),
+                    Text(
+                      '\$${_grandTotal.toStringAsFixed(2)}',
+                      style: const TextStyle(
+                        color: Colors.greenAccent,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          Flexible(
+            child:
+                _orders.isEmpty
+                    ? const EmptyState(
+                      message: 'Sin productos',
+                      icon: Icons.receipt_long_outlined,
+                    )
+                    : ListView.builder(
+                      padding: const EdgeInsets.all(8),
+                      itemCount: _orders.length,
+                      itemBuilder:
+                          (_, i) => ListTile(
+                            dense: true,
+                            title: Text(
+                              _orders[i].productName,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                              ),
+                            ),
+                            subtitle: Text(
+                              '${_orders[i].qtyLabel} x \$${_orders[i].price.toStringAsFixed(2)}',
+                              style: const TextStyle(
+                                color: Colors.white38,
+                                fontSize: 11,
+                              ),
+                            ),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  '\$${_orders[i].subtotal.toStringAsFixed(2)}',
+                                  style: const TextStyle(
+                                    color: Colors.greenAccent,
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: const Icon(
+                                    Icons.remove_circle,
+                                    color: Colors.white24,
+                                    size: 18,
+                                  ),
+                                  onPressed: () => _removeItem(i),
+                                ),
+                              ],
+                            ),
+                          ),
+                    ),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _addProduct(ProductEntity p) {
     // Validar stock considerando lo ya reservado en otras mesas abiertas.
     final currentQty = _quantityInOrder(p.id);
@@ -897,204 +1031,94 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                       ),
                     ),
                   Expanded(
-                    child: Row(
-                      children: [
-                        Expanded(
-                          flex: 3,
-                          child: Column(
-                            children: [
-                              const Padding(
-                                padding: EdgeInsets.all(12),
-                                child: Text(
-                                  'PRODUCTOS',
-                                  style: TextStyle(
-                                    color: Colors.white54,
-                                    fontSize: 12,
-                                    letterSpacing: 2,
-                                  ),
-                                ),
-                              ),
-                              Expanded(
-                                child: Builder(
-                                  builder: (_) {
-                                    final visibleProducts =
-                                        _products.where((p) {
-                                          final reservedElsewhere = _reservedOthers[p.id] ?? 0;
-                                          final availableStock = p.stock - reservedElsewhere;
-                                          final inThisOrder = _quantityInOrder(p.id);
-                                          return availableStock > inThisOrder || inThisOrder > 0;
-                                        }).toList();
-                                    return GridView.builder(
-                                      padding: const EdgeInsets.all(10),
-                                      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                                        maxCrossAxisExtent: 160,
-                                        mainAxisSpacing: 10,
-                                        crossAxisSpacing: 10,
-                                        childAspectRatio: 0.6,
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        final isWide = constraints.maxWidth > 700;
+                        final sidePanelWidth = isWide ? 200.0 : double.infinity;
+                        return Row(
+                          children: [
+                            Expanded(
+                              flex: 3,
+                              child: Column(
+                                children: [
+                                  const Padding(
+                                    padding: EdgeInsets.all(12),
+                                    child: Text(
+                                      'PRODUCTOS',
+                                      style: TextStyle(
+                                        color: Colors.white54,
+                                        fontSize: 12,
+                                        letterSpacing: 2,
                                       ),
-                                      itemCount: visibleProducts.length,
-                                      itemBuilder: (_, i) {
-                                        final p = visibleProducts[i];
-                                        final q = _quantityInOrder(p.id);
-                                        final reservedElsewhere = _reservedOthers[p.id] ?? 0;
-                                        final displayStock = p.stock - reservedElsewhere - q;
-                                        return GestureDetector(
-                                          onTap: () => _addProduct(p),
-                                          child: ProductSaleCard(
-                                            product: p.copyWith(
-                                              stock: displayStock < 0 ? 0 : displayStock,
-                                            ),
-                                            quantity: q.toInt(),
-                                            onAdd: () => _addProduct(p),
-                                            onRemove: () {
-                                              final idx = _orders.indexWhere(
-                                                (e) => e.productId == p.id,
-                                              );
-                                              if (idx >= 0) _removeItem(idx);
-                                            },
-                                            showButtons: true,
+                                    ),
+                                  ),
+                                  Expanded(
+                                    child: Builder(
+                                      builder: (_) {
+                                        final visibleProducts =
+                                            _products.where((p) {
+                                              final reservedElsewhere = _reservedOthers[p.id] ?? 0;
+                                              final availableStock = p.stock - reservedElsewhere;
+                                              final inThisOrder = _quantityInOrder(p.id);
+                                              return availableStock > inThisOrder || inThisOrder > 0;
+                                            }).toList();
+                                        return GridView.builder(
+                                          padding: const EdgeInsets.all(10),
+                                          gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
+                                            maxCrossAxisExtent: isWide ? 160 : 140,
+                                            mainAxisSpacing: 10,
+                                            crossAxisSpacing: 10,
+                                            childAspectRatio: isWide ? 0.6 : 0.55,
                                           ),
+                                          itemCount: visibleProducts.length,
+                                          itemBuilder: (_, i) {
+                                            final p = visibleProducts[i];
+                                            final q = _quantityInOrder(p.id);
+                                            final reservedElsewhere = _reservedOthers[p.id] ?? 0;
+                                            final displayStock = p.stock - reservedElsewhere - q;
+                                            return GestureDetector(
+                                              onTap: () => _addProduct(p),
+                                              child: ProductSaleCard(
+                                                product: p.copyWith(
+                                                  stock: displayStock < 0 ? 0 : displayStock,
+                                                ),
+                                                quantity: q.toInt(),
+                                                onAdd: () => _addProduct(p),
+                                                onRemove: () {
+                                                  final idx = _orders.indexWhere(
+                                                    (e) => e.productId == p.id,
+                                                  );
+                                                  if (idx >= 0) _removeItem(idx);
+                                                },
+                                                showButtons: true,
+                                              ),
+                                            );
+                                          },
                                         );
                                       },
-                                    );
-                                  },
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Container(width: 1, color: Colors.white10),
-                        SizedBox(
-                          width: 260,
-                          child: Column(
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.all(16),
-                                color: const Color(0xFF1A1A1A),
-                                child: Column(
-                                  children: [
-                                    Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        const Text(
-                                          'CONSUMO',
-                                          style: TextStyle(
-                                            color: Colors.white54,
-                                            letterSpacing: 2,
-                                            fontSize: 11,
-                                          ),
-                                        ),
-                                        Text(
-                                          '\$${_consumoTotal.toStringAsFixed(2)}',
-                                          style: const TextStyle(
-                                            color: Colors.white70,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
                                     ),
-                                    if (_timeCost > 0) ...[
-                                      const SizedBox(height: 4),
-                                      Row(
-                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          const Text(
-                                            'TIEMPO',
-                                            style: TextStyle(
-                                              color: Colors.white54,
-                                              letterSpacing: 2,
-                                              fontSize: 11,
-                                            ),
-                                          ),
-                                          Text(
-                                            '\$${_timeCost.toStringAsFixed(2)}',
-                                            style: const TextStyle(
-                                              color: Colors.orangeAccent,
-                                              fontWeight: FontWeight.bold,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ],
-                                    const Divider(color: Colors.white10, height: 12),
-                                    Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        const Text(
-                                          'TOTAL',
-                                          style: TextStyle(
-                                            color: Colors.white54,
-                                            letterSpacing: 2,
-                                            fontSize: 11,
-                                          ),
-                                        ),
-                                        Text(
-                                          '\$${_grandTotal.toStringAsFixed(2)}',
-                                          style: const TextStyle(
-                                            color: Colors.greenAccent,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 16,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
-                                ),
+                                  ),
+                                ],
                               ),
-                              Expanded(
-                                child:
-                                    _orders.isEmpty
-                                        ? const EmptyState(
-                                          message: 'Sin productos',
-                                          icon: Icons.receipt_long_outlined,
-                                        )
-                                        : ListView.builder(
-                                          padding: const EdgeInsets.all(8),
-                                          itemCount: _orders.length,
-                                          itemBuilder:
-                                              (_, i) => ListTile(
-                                                dense: true,
-                                                title: Text(
-                                                  _orders[i].productName,
-                                                  style: const TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 13,
-                                                  ),
-                                                ),
-                                                subtitle: Text(
-                                                  '${_orders[i].qtyLabel} x \$${_orders[i].price.toStringAsFixed(2)}',
-                                                  style: const TextStyle(
-                                                    color: Colors.white38,
-                                                    fontSize: 11,
-                                                  ),
-                                                ),
-                                                trailing: Row(
-                                                  mainAxisSize: MainAxisSize.min,
-                                                  children: [
-                                                    Text(
-                                                      '\$${_orders[i].subtotal.toStringAsFixed(2)}',
-                                                      style: const TextStyle(
-                                                        color: Colors.greenAccent,
-                                                      ),
-                                                    ),
-                                                    IconButton(
-                                                      icon: const Icon(
-                                                        Icons.remove_circle,
-                                                        color: Colors.white24,
-                                                        size: 18,
-                                                      ),
-                                                      onPressed: () => _removeItem(i),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                        ),
+                            ),
+                            if (isWide) Container(width: 1, color: Colors.white10),
+                            if (isWide)
+                              SizedBox(
+                                width: sidePanelWidth,
+                                child: _buildSidePanel(),
                               ),
-                            ],
-                          ),
-                        ),
-                      ],
+                          ],
+                        );
+                      },
                     ),
+                  ),
+                  // Panel de consumo/tiempo/total en la parte inferior en pantallas angostas.
+                  Builder(
+                    builder: (context) {
+                      final width = MediaQuery.of(context).size.width;
+                      if (width > 700) return const SizedBox.shrink();
+                      return _buildSidePanel();
+                    },
                   ),
                 ],
               ),
