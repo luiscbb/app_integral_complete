@@ -1034,7 +1034,6 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                     child: LayoutBuilder(
                       builder: (context, constraints) {
                         final isWide = constraints.maxWidth > 700;
-                        final sidePanelWidth = isWide ? 200.0 : double.infinity;
                         return Row(
                           children: [
                             Expanded(
@@ -1104,7 +1103,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                             if (isWide) Container(width: 1, color: Colors.white10),
                             if (isWide)
                               SizedBox(
-                                width: sidePanelWidth,
+                                width: 200,
                                 child: _buildSidePanel(),
                               ),
                           ],
@@ -1113,11 +1112,13 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                     ),
                   ),
                   // Panel de consumo/tiempo/total en la parte inferior en pantallas angostas.
-                  Builder(
-                    builder: (context) {
-                      final width = MediaQuery.of(context).size.width;
-                      if (width > 700) return const SizedBox.shrink();
-                      return _buildSidePanel();
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      if (constraints.maxWidth > 700) return const SizedBox.shrink();
+                      return SizedBox(
+                        height: 220,
+                        child: _buildSidePanel(),
+                      );
                     },
                   ),
                 ],
