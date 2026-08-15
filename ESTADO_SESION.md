@@ -9,11 +9,11 @@
 
 **Para asegurar continuidad y NO gastar saldo en re-hacer cosas ya vistas:**
 
-1. Al volver, di la **palabra clave**: `"MESA RESPONSIVE NAVEGACION"`.
+1. Al volver, di la **palabra clave**: `"RETOMAMOS MESA TICKET"`.
 2. El asistente debe leer **solo** la sección de abajo **"ESTADO ACTUAL — RESUMEN CLARO (LEER PRIMERO)"** — ahí está todo: qué está hecho, qué falta, y qué NO tocar.
 3. **NO** re-revisar ni re-hacer nada de lo que ya dice "COMMITEADO" o "hecho".
-4. La siguiente acción es **SOLO** que el usuario pruebe en celular y apruebe la UI.
-5. Cuando el usuario apruebe → recién ahí hacer **commit y push**.
+4. El layout de mesa ya fue **aprobado por el usuario** y el commit ya se hizo (local).
+5. Pendiente de esta sesión: revisar el **fix de doble ticket** y decidir el **push a GitHub**.
 
 > Si el asistente no tiene esta info, dile que abra `ESTADO_SESION.md` y lea la sección "ESTADO ACTUAL — RESUMEN CLARO".
 
@@ -21,34 +21,31 @@
 
 ## 🔝 ESTADO ACTUAL — RESUMEN CLARO (LEER PRIMERO)
 
-### Qué ya estaba HECHO y COMMITEADO (antes de esta ronda)
-Estos cambios YA están guardados en Git (commits previos), NO los hice en esta ronda:
-- **Stock unificado VR/mesas** → commit `79fce1b`.
-- **Botones +/− en las tarjetas** → commit `79fce1b`.
-- **Primer layout responsive** (panel inferior 220px, fix pantalla en blanco) → commit `102bc1e`.
-- (También: `2ad3360` layout celular, `79fce1b` stock, `a22e8f2` logo sync.)
+### Qué se hizo y VALIDÓ en esta ronda (celular, por el usuario)
+- **Layout de mesa APROBADO** por el usuario en el celular (cronómetro grande, INICIAR, VER TICKET, grid 2 columnas, costo de tiempo abajo). La UI está bien por ahora; mejoras se dejan para más adelante.
+- **Logo del negocio junto al nombre de la mesa**: el usuario confirmó que **ya se visualiza correctamente**. ✅
+- **Bug: doble ticket al tocar VER TICKET** (el usuario tocaba, no veía nada por la demora, volvía a tocar y se abrían 2 PDFs). **CORREGIDO** agregando un bloqueo anti doble toque en `billiard_tables_page.dart` (`_isOpeningTicket`): al tocar, el botón queda bloqueado mientras se genera el PDF y mientras la vista previa esté abierta; solo se desbloquea al cerrarla. `dart analyze` → sin errores.
 
-### Qué hice YO en esta ronda (SOLO en working tree, SIN commitear)
-En `lib/features/sales/presentation/pages/billiard_tables_page.dart` (sin commit, sin push):
-1. **Flecha de regreso del AppBar restaurada** (el logo ya no la bloquea → se puede salir de la mesa).
-2. Debajo del nombre: **cronómetro grande** + botón **INICIAR** + botón **VER TICKET** (quité tarifa/costo de arriba; el costo de tiempo queda solo abajo en CONSUMO/TIEMPO/TOTAL).
-3. **Grid en 2 columnas fijas** en celular (cambié de `MaxCrossAxisExtent` a `FixedCrossAxisCount`).
-- `dart analyze .` → **0 errores** (solo 6 avisos de estilo `info` en `reports`, no de mesas).
+### Estado Git (commit hecho, PUSH PENDIENTE)
+- Commit local **`c76f7f0`** — "fix: evita doble ticket en VER TICKET + layout mesa responsive".
+- Incluye `billiard_tables_page.dart` y `ESTADO_SESION.md`.
+- **La rama `master` está 1 commit adelante de `origin/master` (GitHub). El PUSH aún NO se hizo.** El usuario decidió detenerse hoy; queda pendiente subir a GitHub en la siguiente sesión (o cuando él lo pida).
+- El remoto `origin` ya está configurado: `https://github.com/luiscbb/app_integral_complete.git`.
 
-### Lo que FALTA (única tarea pendiente)
-1. **Validar en el celular** la UI de la mesa (flecha de regreso, cronómetro, VER TICKET, grid 2 columnas, costo de tiempo abajo).
-2. **Cuando el usuario APRUEBE** la UI → hacer commit y push a GitHub (NO antes).
-3. **Logo del negocio**: pendiente de configurar (`hasLogo: false`), NO es prioritario.
+### Lo que FALTA / PENDIENTE (para la siguiente sesión)
+1. **Decidir y hacer el `git push`** a GitHub (el commit ya está local).
+2. **Validar en runtime el fix de doble ticket**: tocar VER TICKET → esperar a que se genere → NO poder abrir un segundo ticket mientras la vista previa esté abierta o generándose; al cerrarla, sí se puede volver a abrir.
+3. **Logo del negocio**: ya se visualiza junto al nombre de la mesa ✅; revisar si queda algún otro lugar pendiente del logo (no prioritario).
 
 ### Lo que NO hay que hacer (para no gastar saldo de más)
 - ❌ **NO re-revisar** el bug de stock (ya corregido, commiteado y confirmado).
-- ❌ **NO re-hacer** el layout base de la mesa (ya commiteado).
+- ❌ **NO re-hacer** el layout base de la mesa (ya commiteado y aprobado).
 - ❌ **NO modificar** lógica de stock/ventas (está estable).
-- ❌ **NO hacer commit ni push** hasta que el usuario apruebe la UI en runtime.
-- ✅ La siguiente acción es **SOLO** que el usuario pruebe en celular y apruebe.
+- ❌ **NO re-abrir** el tema del doble ticket si el fix ya fue validado en runtime.
+- ✅ La siguiente acción de prioridad es hacer **push** (si el usuario lo confirma) y validar el fix de doble ticket.
 
 ### Palabra clave para retomar
-**"MESA RESPONSIVE NAVEGACION"**
+**"RETOMAMOS MESA TICKET"**
 
 ---
 
