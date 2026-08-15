@@ -1,5 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer';
+import 'dart:io';
+
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -351,6 +355,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
   bool _isLoading = true;
   bool _askedTimer = false;
   bool _isCheckingOut = false;
+  bool _isOpeningTicket = false; // Evita abrir dos tickets por taps rápidos.
   bool _initialized = false;
   Timer? _timer;
   Duration _elapsed = Duration.zero;
@@ -534,6 +539,38 @@ class _TableDetailPageState extends State<_TableDetailPage> {
     final m = _elapsed.inMinutes.remainder(60).toString().padLeft(2, '0');
     final s = _elapsed.inSeconds.remainder(60).toString().padLeft(2, '0');
     return h > 0 ? '$h:$m:$s' : '$m:$s';
+  }
+
+  /// Logo circular del negocio para mostrar junto al nombre de la mesa.
+  Widget _buildLogoCircle(BuildContext context, double radius) {
+    final logoUrl = _prefs.logoUrl;
+    final logoPath = _prefs.logoPath;
+    final hasLogo = logoUrl.isNotEmpty || logoPath.isNotEmpty;
+    final primaryColor = Theme.of(context).colorScheme.primary;
+    ImageProvider? image;
+    if (logoUrl.isNotEmpty) {
+      image = CachedNetworkImageProvider(logoUrl);
+    } else if (logoPath.isNotEmpty && File(logoPath).existsSync()) {
+      image = FileImage(File(logoPath));
+    }
+    return Container(
+      padding: const EdgeInsets.all(1.5),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: primaryColor.withValues(alpha: 0.5), width: 1.5),
+      ),
+      child: CircleAvatar(
+        radius: radius,
+        backgroundColor: const Color(0xFF1A1A1A),
+        backgroundImage: image,
+        onBackgroundImageError: image != null
+            ? (exception, stackTrace) {
+                log('[TableHeader] Error cargando logo: $exception');
+              }
+            : null,
+        child: hasLogo ? null : Icon(Icons.sports_bar_outlined, color: primaryColor, size: radius * 0.9),
+      ),
+    );
   }
 
   /// Panel lateral/inferior con el resumen de consumo, tiempo y orden actual.
@@ -891,145 +928,102 @@ class _TableDetailPageState extends State<_TableDetailPage> {
     final primary = context.watch<ThemeProvider>().primaryColor;
     return Scaffold(
       appBar: AppBar(
-        title: Text(
-          widget.tableData['name'] ?? 'Mesa',
-          style: TextStyle(color: primary, fontWeight: FontWeight.bold),
-        ),
-        actions: [
-          if (_startTime != null)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.white10,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.timer, size: 14, color: Colors.orangeAccent),
-                    const SizedBox(width: 4),
-                    Text(
-                      _elapsedStr,
-                      style: const TextStyle(
-                        color: Colors.orangeAccent,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14,
-                        fontFeatures: [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                  ],
-                ),
+        titleSpacing: 0,
+        title: Row(
+          children: [
+            const SizedBox(width: 8),
+            _buildLogoCircle(context, 16),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                widget.tableData['name'] ?? 'Mesa',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: primary, fontWeight: FontWeight.bold),
               ),
-            )
-          else if (_prefs.hourlyRate > 0)
-            TextButton.icon(
-              icon: const Icon(Icons.timer_outlined, color: Colors.orangeAccent),
-              label: const Text('INICIAR TIEMPO', style: TextStyle(color: Colors.orangeAccent)),
-              onPressed: () async {
-                await _salesRepo.occupyTable(widget.tableData['id']);
-                setState(() {
-                  _startTime = DateTime.now();
-                  _elapsed = Duration.zero;
-                });
-                _timer?.cancel();
-                _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-                  if (mounted) setState(() => _elapsed = DateTime.now().difference(_startTime!));
-                });
-              },
             ),
-          if (_orders.isNotEmpty)
-            TextButton.icon(
-              icon: const Icon(Icons.receipt_long, color: Colors.white),
-              label: const Text('VER TICKET', style: TextStyle(color: Colors.white)),
-              onPressed: () {
-                final items = List<SaleItemEntity>.from(_orders);
-                if (_timeCost > 0) {
-                  items.add(_buildTimeItem());
-                }
-                final previewTotal = items.fold<double>(0, (acc, e) => acc + e.price * e.quantity);
-                _ticket.showPreviewSheet(
-                  context: context,
-                  items: items,
-                  total: previewTotal,
-                  paid: 0,
-                  paymentMethod: 'Efectivo',
-                  saleType: widget.tableData['name'],
-                );
-              },
-            ),
-        ],
+          ],
+        ),
       ),
       body:
           _isLoading
               ? Center(child: CircularProgressIndicator(color: primary))
               : Column(
                 children: [
-                  if (_startTime != null && _prefs.hourlyRate > 0)
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                      color: Colors.orangeAccent.withValues(alpha: 0.1),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Row(
-                            children: [
-                              const Icon(Icons.attach_money, color: Colors.orangeAccent, size: 16),
-                              const SizedBox(width: 4),
-                              Text(
-                                'Tarifa: \$${_prefs.hourlyRate.toStringAsFixed(2)}/hr',
-                                style: const TextStyle(color: Colors.orangeAccent, fontSize: 12),
-                              ),
-                            ],
-                          ),
-                          Text(
-                            'Costo tiempo: \$${_timeCost.toStringAsFixed(2)}',
-                            style: const TextStyle(
-                              color: Colors.orangeAccent,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                      ),
-                    )
-                  else if (_startTime == null && _prefs.hourlyRate > 0)
-                    InkWell(
-                      onTap: () async {
-                        await _salesRepo.occupyTable(widget.tableData['id']);
-                        setState(() {
-                          _startTime = DateTime.now();
-                          _elapsed = Duration.zero;
-                        });
-                        _timer?.cancel();
-                        _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-                          if (mounted) {
-                            setState(() => _elapsed = DateTime.now().difference(_startTime!));
-                          }
-                        });
-                      },
-                      child: Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                        color: Colors.orangeAccent.withValues(alpha: 0.12),
-                        child: const Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.timer_outlined, color: Colors.orangeAccent, size: 16),
-                            SizedBox(width: 6),
-                            Text(
-                              'Cronómetro no iniciado · Toca aquí para cobrar tiempo',
-                              style: TextStyle(
-                                color: Colors.orangeAccent,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
+                  // Barra superior: cronómetro corriendo + botón Ver ticket.
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    color: Colors.orangeAccent.withValues(alpha: 0.12),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.timer, color: Colors.orangeAccent, size: 20),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: _startTime != null
+                              ? Text(
+                                  _elapsedStr,
+                                  style: const TextStyle(
+                                    color: Colors.orangeAccent,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 26,
+                                    fontFeatures: [FontFeature.tabularFigures()],
+                                  ),
+                                )
+                              : const Text(
+                                  'Cronómetro no iniciado',
+                                  style: TextStyle(
+                                    color: Colors.orangeAccent,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 16,
+                                  ),
+                                ),
                         ),
-                      ),
+                        if (_startTime == null && _prefs.hourlyRate > 0)
+                          TextButton.icon(
+                            icon: const Icon(Icons.play_circle, color: Colors.orangeAccent),
+                            label: const Text('INICIAR', style: TextStyle(color: Colors.orangeAccent)),
+                            onPressed: () async {
+                              await _salesRepo.occupyTable(widget.tableData['id']);
+                              setState(() {
+                                _startTime = DateTime.now();
+                                _elapsed = Duration.zero;
+                              });
+                              _timer?.cancel();
+                              _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+                                if (mounted) {
+                                  setState(() =>
+                                      _elapsed = DateTime.now().difference(_startTime!));
+                                }
+                              });
+                            },
+                          ),
+                        if (_orders.isNotEmpty)
+                          TextButton.icon(
+                            icon: const Icon(Icons.receipt_long, color: Colors.white),
+                            label: const Text('VER TICKET', style: TextStyle(color: Colors.white)),
+                            onPressed: () async {
+                              if (_isOpeningTicket) return; // Evita abrir dos tickets por taps rápidos.
+                              _isOpeningTicket = true;
+                              final items = List<SaleItemEntity>.from(_orders);
+                              if (_timeCost > 0) {
+                                items.add(_buildTimeItem());
+                              }
+                              final previewTotal =
+                                  items.fold<double>(0, (acc, e) => acc + e.price * e.quantity);
+                              await _ticket.showPreviewSheet(
+                                context: context,
+                                items: items,
+                                total: previewTotal,
+                                paid: 0,
+                                paymentMethod: 'Efectivo',
+                                saleType: widget.tableData['name'],
+                              );
+                              _isOpeningTicket = false;
+                            },
+                          ),
+                      ],
                     ),
+                  ),
                   Expanded(
                     child: LayoutBuilder(
                       builder: (context, constraints) {
@@ -1040,17 +1034,6 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                               flex: 3,
                               child: Column(
                                 children: [
-                                  const Padding(
-                                    padding: EdgeInsets.all(12),
-                                    child: Text(
-                                      'PRODUCTOS',
-                                      style: TextStyle(
-                                        color: Colors.white54,
-                                        fontSize: 12,
-                                        letterSpacing: 2,
-                                      ),
-                                    ),
-                                  ),
                                   Expanded(
                                     child: Builder(
                                       builder: (_) {
@@ -1063,11 +1046,11 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                                             }).toList();
                                         return GridView.builder(
                                           padding: const EdgeInsets.all(10),
-                                          gridDelegate: SliverGridDelegateWithMaxCrossAxisExtent(
-                                            maxCrossAxisExtent: isWide ? 160 : 140,
+                                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                                            crossAxisCount: isWide ? 4 : 2,
                                             mainAxisSpacing: 10,
                                             crossAxisSpacing: 10,
-                                            childAspectRatio: isWide ? 0.6 : 0.55,
+                                            childAspectRatio: isWide ? 0.75 : 0.65,
                                           ),
                                           itemCount: visibleProducts.length,
                                           itemBuilder: (_, i) {

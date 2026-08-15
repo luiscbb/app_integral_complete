@@ -3,6 +3,55 @@
 > Generado automáticamente para poder revisar avances mientras se recargan créditos.
 > Todo lo listado abajo ya está en el código (working tree), sin commitear.
 
+---
+
+## 🚀 CÓMO RETOMAR LA SESIÓN (leer esto primero al volver)
+
+**Para asegurar continuidad y NO gastar saldo en re-hacer cosas ya vistas:**
+
+1. Al volver, di la **palabra clave**: `"MESA RESPONSIVE NAVEGACION"`.
+2. El asistente debe leer **solo** la sección de abajo **"ESTADO ACTUAL — RESUMEN CLARO (LEER PRIMERO)"** — ahí está todo: qué está hecho, qué falta, y qué NO tocar.
+3. **NO** re-revisar ni re-hacer nada de lo que ya dice "COMMITEADO" o "hecho".
+4. La siguiente acción es **SOLO** que el usuario pruebe en celular y apruebe la UI.
+5. Cuando el usuario apruebe → recién ahí hacer **commit y push**.
+
+> Si el asistente no tiene esta info, dile que abra `ESTADO_SESION.md` y lea la sección "ESTADO ACTUAL — RESUMEN CLARO".
+
+---
+
+## 🔝 ESTADO ACTUAL — RESUMEN CLARO (LEER PRIMERO)
+
+### Qué ya estaba HECHO y COMMITEADO (antes de esta ronda)
+Estos cambios YA están guardados en Git (commits previos), NO los hice en esta ronda:
+- **Stock unificado VR/mesas** → commit `79fce1b`.
+- **Botones +/− en las tarjetas** → commit `79fce1b`.
+- **Primer layout responsive** (panel inferior 220px, fix pantalla en blanco) → commit `102bc1e`.
+- (También: `2ad3360` layout celular, `79fce1b` stock, `a22e8f2` logo sync.)
+
+### Qué hice YO en esta ronda (SOLO en working tree, SIN commitear)
+En `lib/features/sales/presentation/pages/billiard_tables_page.dart` (sin commit, sin push):
+1. **Flecha de regreso del AppBar restaurada** (el logo ya no la bloquea → se puede salir de la mesa).
+2. Debajo del nombre: **cronómetro grande** + botón **INICIAR** + botón **VER TICKET** (quité tarifa/costo de arriba; el costo de tiempo queda solo abajo en CONSUMO/TIEMPO/TOTAL).
+3. **Grid en 2 columnas fijas** en celular (cambié de `MaxCrossAxisExtent` a `FixedCrossAxisCount`).
+- `dart analyze .` → **0 errores** (solo 6 avisos de estilo `info` en `reports`, no de mesas).
+
+### Lo que FALTA (única tarea pendiente)
+1. **Validar en el celular** la UI de la mesa (flecha de regreso, cronómetro, VER TICKET, grid 2 columnas, costo de tiempo abajo).
+2. **Cuando el usuario APRUEBE** la UI → hacer commit y push a GitHub (NO antes).
+3. **Logo del negocio**: pendiente de configurar (`hasLogo: false`), NO es prioritario.
+
+### Lo que NO hay que hacer (para no gastar saldo de más)
+- ❌ **NO re-revisar** el bug de stock (ya corregido, commiteado y confirmado).
+- ❌ **NO re-hacer** el layout base de la mesa (ya commiteado).
+- ❌ **NO modificar** lógica de stock/ventas (está estable).
+- ❌ **NO hacer commit ni push** hasta que el usuario apruebe la UI en runtime.
+- ✅ La siguiente acción es **SOLO** que el usuario pruebe en celular y apruebe.
+
+### Palabra clave para retomar
+**"MESA RESPONSIVE NAVEGACION"**
+
+---
+
 ## Verificación de estado actual
 
 ```
@@ -503,6 +552,77 @@ Repetir el paso a paso:
 
 ### Palabra clave para retomar
 **"STOCK UNIFICADO BOTONES"**
+
+---
+
+## Sesión actual — Layout responsive de mesa + logo + navegación
+
+### Aclaración final del usuario (confirmada)
+1. **AppBar de la mesa**: logo del negocio a la izquierda + nombre de la mesa al lado. Sin botones de tiempo/ver ticket en el AppBar.
+2. **Tiempo y Ver ticket** van **inmediatamente debajo del nombre de la mesa**: cronómetro corriendo (al doble de tamaño) + botón "VER TICKET" (PDF compartible).
+3. La **tarifa** y el **costo de tiempo** NO van arriba; quedan resumidos abajo en el panel CONSUMO/TIEMPO/TOTAL.
+4. Grid de productos en **2 columnas exactas** (no 3), cards ~15% más pequeñas que VR.
+5. Altura de las cards: el usuario confirmó que **está bien** (el problema real era el ancho, ya resuelto con 2 columnas fijas).
+
+### Problemas detectados en runtime (reportados por el usuario)
+- **Pérdida del estado de una mesa tras desinstalar**: al desinstalar la app se pierde el estado local (start_time, órdenes) de mesas en curso. Es comportamiento esperado al no haber respaldo local/cloud de ese estado en tiempo real.
+- **El logo no se muestra**: el log muestra `logoUrl: "", logoPath: "", hasLogo: false` — no hay logo configurado en preferencias. Queda **pendiente** (el usuario lo dejó como no prioritario).
+- **Botón para salir de la mesa desapareció**: al poner el logo como `leading` del AppBar se sobrescribió la flecha de regreso. **CORREGIDO** moviendo el logo al título (Row) y dejando el `leading` por defecto.
+
+### Cambios aplicados en `billiard_tables_page.dart`
+- AppBar: `leading` por defecto (flecha de regreso restaurada) + `title` con `Row(logo + nombre)`.
+- Se eliminaron del AppBar los botones de tiempo/ver ticket (ya no van ahí).
+- Bloque superior reemplazado: ahora muestra **cronómetro corriendo** (letra grande ~26) + botón **INICIAR** (si no hay tiempo) + botón **VER TICKET** (si hay órdenes). Se quitó el texto de Tarifa/Costo tiempo de arriba.
+- Grid de productos: `SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: isWide ? 4 : 2)`, `childAspectRatio: isWide ? 0.75 : 0.65` (2 columnas en celular).
+- Se quitó el encabezado "PRODUCTOS".
+- Helper `_buildLogoCircle` agregado (usa `CachedNetworkImageProvider` o `FileImage`).
+
+### Verificación
+```
+dart analyze .
+```
+Resultado: 0 errores, 0 warnings.
+
+### Estado Git
+- Cambios sin commitear (el usuario pidió NO subir a Git hasta confirmar que la UI y la lógica quedaron claras y funcionales).
+
+### Pendiente de validación en runtime (celular)
+- [ ] Flecha de regreso visible y funcional para salir de la mesa.
+- [ ] Cronómetro corriendo arriba (debajo del nombre) en tamaño grande.
+- [ ] Botón VER TICKET arriba muestra el PDF compartible.
+- [ ] Grid en 2 columnas, sin desbordamiento.
+- [ ] Costo de tiempo solo en CONSUMO/TIEMPO/TOTAL (abajo).
+
+### Palabra clave para retomar
+**"MESA RESPONSIVE NAVEGACION"**
+
+---
+
+## Nota de cierre — Validación en curso (no validada aún)
+
+> ⚠️ El resumen autoritativo y más preciso está en la sección **"ESTADO ACTUAL — RESUMEN CLARO (LEER PRIMERO)"** al inicio de este archivo. Esta nota es solo histórico de la ronda.
+
+- Los cambios de **layout base** (stock, botones +/−, responsive 220px) ya estaban **commiteados** antes de esta ronda (commits `79fce1b`, `2ad3360`, `102bc1e`).
+- Lo que quedó **sin commitear** es solo el retoque de esta ronda en `billiard_tables_page.dart` (flecha de regreso restaurada, cronómetro + VER TICKET arriba, grid 2 columnas fijas).
+- **Pendiente de probar en celular** (por si no se logra validar ahora, queda constancia de qué revisar):
+  - [ ] Flecha de regreso del AppBar visible y funcional para salir de la mesa.
+  - [ ] Cronómetro grande corriendo debajo del nombre de la mesa.
+  - [ ] Botón VER TICKET arriba abre el PDF compartible.
+  - [ ] Grid en 2 columnas sin desbordamiento.
+  - [ ] Costo de tiempo solo en CONSUMO/TIEMPO/TOTAL (abajo).
+- **Logo**: aún sin configurar (`hasLogo: false`); pendiente, no prioritario.
+- **Git**: los cambios de esta ronda están SIN commitear y SIN push (a la espera de que el usuario APRUEBE la UI en runtime).
+- Archivo modificado: `lib/features/sales/presentation/pages/billiard_tables_page.dart`.
+
+---
+
+## Verificación realizada (fecha de hoy)
+
+- Se ejecutó `dart analyze .` de nuevo: **0 errores**. Los únicos 6 avisos son de estilo (`info`) en el módulo `reports`, NO en mesas.
+- El archivo `billiard_tables_page.dart` compila limpio (sin errores ni warnings).
+- El layout de mesa (flecha de regreso, cronómetro grande + VER TICKET arriba, grid 2 columnas, costo de tiempo solo abajo) **está aplicado en el código** y listo para validar en celular.
+- **Estado Git**: `ESTADO_SESION.md` y `billiard_tables_page.dart` modificados, SIN commitear y SIN push (esperando confirmación del usuario de la UI en runtime).
+- **Dónde estamos realmente**: pendiente solo la validación en celular del layout de mesa. No hay errores de compilación.
 
 ---
 
