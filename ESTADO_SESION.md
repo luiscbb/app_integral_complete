@@ -9,11 +9,11 @@
 
 **Para asegurar continuidad y NO gastar saldo en re-hacer cosas ya vistas:**
 
-1. Al volver, di la **palabra clave**: `"RETOMAMOS SINCRONIZACION MESAS"`.
+1. Al volver, di la **palabra clave**: `"RETOMAMOS TIEMPO MESAS"`.
 2. El asistente debe leer **solo** la sección de abajo **"ESTADO ACTUAL — RESUMEN CLARO (LEER PRIMERO)"** — ahí está todo: qué está hecho, qué falta, y qué NO tocar.
 3. **NO** re-revisar ni re-hacer nada de lo que ya dice "COMMITEADO" o "hecho".
-4. El layout de mesa ya fue **aprobado** y el **push a GitHub ya se hizo**.
-5. Pendiente de esta sesión: **habilitar Realtime en Supabase** (ejecutar `supabase/enable_realtime_tables.sql`) y **probar la sincronización de mesas en vivo** (celular <-> exe).
+4. La **sincronización Realtime de mesas YA funciona** (validada en línea). El script SQL ya se ejecutó en Supabase (no tocarlo).
+5. Pendiente: **commit + push del fix del tiempo** (`start_time` en UTC) y **validar en runtime** que el cronómetro/costo marque el tiempo real.
 
 > Si el asistente no tiene esta info, dile que abra `ESTADO_SESION.md` y lea la sección "ESTADO ACTUAL — RESUMEN CLARO".
 
@@ -21,43 +21,46 @@
 
 ## 🔝 ESTADO ACTUAL — RESUMEN CLARO (LEER PRIMERO)
 
-### Push a GitHub HECHO
-- Los commits `c76f7f0` (fix doble ticket + layout mesa) y `406de24` (ESTADO_SESION) **YA se subieron a GitHub** (`git push origin master` → `102bc1e..406de24`). Rama `master` al día con `origin/master`.
+### Sincronización en tiempo real de mesas — YA FUNCIONA ✅ (validada en línea)
+El usuario confirmó que la **actualización es inmediata** entre celular y exe: si ocupa/edita/libera una mesa en uno, el otro lo ve al instante. `[BilliardTablesPage] Realtime status: subscribed` se confirma en logs. **El Realtime ya está habilitado y el script SQL ya se ejecutó en Supabase (NO hay que volver a tocarlo).**
 
-### Nueva feature EN CURSO: Sincronización en tiempo real de mesas (celular <-> exe)
-Objetivo: que ambos dispositivos vean lo mismo en la base de datos; si ocupas/editas/liberas una mesa en uno, el otro lo ve en tiempo real sin duplicar información.
+### BUG DETECTADO Y CORREGIDO: conteo de tiempo incorrecto
+**Síntoma:** al iniciar una mesa, el monto/cronómetro marca un tiempo enorme (horas) aunque se acaba de iniciar.
 
-**Cambios hechos en código (SIN commitear aún):**
-1. `lib/features/sales/data/repositories/sales_repository.dart`:
-   - `occupyTable`, `freeTable`, `saveTableOrder` ahora **suben el estado de la mesa a Supabase** tras escribir en SQLite local (helper `_pushTableToCloud`). Así el cambio llega a la nube.
-   - `getTables(forceApply: true)` permite recargar con la nube como fuente de verdad.
-2. `lib/core/services/sync_service.dart`:
-   - `pullTablesFromCloud(forceApply: false)` — con `forceApply: true` sobreescribe también mesas ocupadas localmente (usado por Realtime).
-3. `lib/features/sales/presentation/pages/billiard_tables_page.dart`:
-   - **Suscripción Supabase Realtime** a `billiard_tables` (patrón igual a `home_page.dart`), filtrada manualmente por `billar_id`. Al llegar un cambio remoto, recarga las mesas con la nube como fuente de verdad.
-4. **Nuevo script `supabase/enable_realtime_tables.sql`** para habilitar Realtime en `billiard_tables` (y garantizar `billar_settings`).
+**Causa raíz (confirmada con log del APK):** `start_time` se guardaba con **hora local sin indicador de zona** (`DateTime.now().toIso8601String()`). La columna de Supabase es `timestamptz`, que **asume UTC**. Ejemplo real del log: `start_time: 2026-08-15T22:06:34+00:00` cuando la hora real era `22:06 local` (= `04:06` del día siguiente en UTC). Resultado: el reloj quedaba atrasado ~6h y el conteo marcaba horas de más.
 
-**⚠️ ACCIÓN REQUERIDA EN SUPABASE (manual, no se puede hacer desde el código):**
-- Ejecutar `supabase/enable_realtime_tables.sql` en el SQL Editor de Supabase para **habilitar Realtime en la tabla `billiard_tables`**. Sin esto, el Realtime no se disparará y la sincronización en vivo no funcionará.
+**Fix aplicado (SOLO código, NO requiere tocar Supabase):**
+- `lib/features/sales/data/repositories/sales_repository.dart` → `occupyTable` ahora guarda `start_time` en **UTC**: `DateTime.now().toUtc().toIso8601String()`. Así Supabase lo interpreta bien y ambos dispositivos calculan el mismo tiempo.
+- La lectura (`DateTime.tryParse`) ya maneja correctamente los valores UTC.
 
-### Lo que FALTA / PENDIENTE (para la siguiente sesión)
-1. **Ejecutar `supabase/enable_realtime_tables.sql`** en Supabase (habilitar Realtime en `billiard_tables`).
-2. **Compilar e instalar** el APK en el celular y el `.exe` en Windows (con los cambios de sincronización).
-3. **Probar en runtime**: con el celular y el exe con la misma sesión y mismo `billar_id`:
-   - Ocupar una mesa en el celular → verla ocupada en el exe en tiempo real (y viceversa).
-   - Agregar/quitar productos en una mesa en un dispositivo → ver el total/consumo reflejado en el otro.
-   - Liberar/cobrar la mesa en un dispositivo → verla libre en el otro.
-   - Revisar logs: `[BilliardTablesPage] Realtime status: ...` debe mostrar que la suscripción se conectó.
-4. Validar que no se dupliquen mesas ni se pierdan órdenes al sincronizar.
+**Cómo verificar que quedó corregido:**
+1. Instalar el **APK nuevo** (`build\app\outputs\flutter-apk\app-release.apk`) y abrir el **exe nuevo** (`build\windows\x64\runner\Release\app_integral_complete.exe`).
+2. **Liberar las mesas que quedaron ocupadas con el tiempo incorrecto** (las que se iniciaron con el bug tienen `start_time` malo en la nube).
+3. Iniciar una mesa nueva y confirmar que el cronómetro marca el tiempo real (segundos/minutos), no horas de golpe.
+
+**Nota sobre "el tiempo avanza pero el monto no cambia":** es comportamiento esperado. El costo de tiempo se redondea hacia arriba por hora (`ceil`), así que el monto solo sube al cruzar un bloque de hora completa (0→1h, 1→2h...), aunque el cronómetro corra en vivo.
+
+### Estado Git
+- Commit `7d43b2b` "feat: sincronizacion Realtime de mesas entre dispositivos" **YA pusheado** a GitHub.
+- **Fix del tiempo (start_time UTC) AÚN SIN commitear** — está en working tree (`sales_repository.dart`). Pendiente: commit + push (o dejar para el lunes, según el usuario).
+
+### Lo que FALTA / PENDIENTE (para retomar el lunes)
+1. **Commit + push del fix del tiempo** (`occupyTable` con `start_time` UTC).
+2. **Validar en runtime** el fix del tiempo con ambos programas nuevos:
+   - Instalar APK nuevo + abrir exe nuevo (mismo usuario, mismo `billar_id`).
+   - Liberar mesas con tiempo incorrecto y volver a iniciar.
+   - Confirmar que el cronómetro/costo refleja el tiempo real.
+3. Logo del negocio: pendiente, NO prioritario.
 
 ### Lo que NO hay que hacer (para no gastar saldo de más)
+- ❌ **NO re-ejecutar** `enable_realtime_tables.sql` (ya se ejecutó; Realtime ya funciona).
 - ❌ **NO re-revisar** el bug de stock (ya corregido, commiteado y confirmado).
 - ❌ **NO re-hacer** el layout base de la mesa (ya commiteado y aprobado).
-- ❌ **NO re-abrir** el tema del doble ticket (ya corregido y validado).
-- ✅ Prioridad: habilitar Realtime en Supabase y probar la sincronización en vivo.
+- ❌ **NO re-abrir** el doble ticket (ya corregido).
+- ✅ Prioridad: commit+push del fix de tiempo y validarlo en runtime.
 
 ### Palabra clave para retomar
-**"RETOMAMOS SINCRONIZACION MESAS"**
+**"RETOMAMOS TIEMPO MESAS"**
 
 ---
 

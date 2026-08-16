@@ -204,8 +204,10 @@ class SalesRepository {
 
   Future<void> occupyTable(int tableId) async {
     final db = await _db.database;
+    // Guardar en UTC para que Supabase (columna timestamptz) lo interprete
+    // correctamente y el calculo de tiempo coincida entre dispositivos.
     await db.update('billiard_tables',
-        {'is_occupied': 1, 'start_time': DateTime.now().toIso8601String()},
+        {'is_occupied': 1, 'start_time': DateTime.now().toUtc().toIso8601String()},
         where: 'id = ?', whereArgs: [tableId]);
     await _pushTableToCloud(tableId);
   }
