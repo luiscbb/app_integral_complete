@@ -9,11 +9,11 @@
 
 **Para asegurar continuidad y NO gastar saldo en re-hacer cosas ya vistas:**
 
-1. Al volver, di la **palabra clave**: `"RETOMAMOS TIEMPO MESAS"`.
+1. Al volver, di la **palabra clave**: `"RETOMAMOS ESTADO MESAS"`.
 2. El asistente debe leer **solo** la sección de abajo **"ESTADO ACTUAL — RESUMEN CLARO (LEER PRIMERO)"** — ahí está todo: qué está hecho, qué falta, y qué NO tocar.
 3. **NO** re-revisar ni re-hacer nada de lo que ya dice "COMMITEADO" o "hecho".
 4. La **sincronización Realtime de mesas YA funciona** (validada en línea). El script SQL ya se ejecutó en Supabase (no tocarlo).
-5. Pendiente: **commit + push del fix del tiempo** (`start_time` en UTC) y **validar en runtime** que el cronómetro/costo marque el tiempo real.
+5. Pendientes ya corregidos en código: **fix del tiempo** (`start_time` UTC) y **estado real de la nube al abrir el exe**. Falta **validar en runtime y hacer push**.
 
 > Si el asistente no tiene esta info, dile que abra `ESTADO_SESION.md` y lea la sección "ESTADO ACTUAL — RESUMEN CLARO".
 
@@ -40,16 +40,26 @@ El usuario confirmó que la **actualización es inmediata** entre celular y exe:
 
 **Nota sobre "el tiempo avanza pero el monto no cambia":** es comportamiento esperado. El costo de tiempo se redondea hacia arriba por hora (`ceil`), así que el monto solo sube al cruzar un bloque de hora completa (0→1h, 1→2h...), aunque el cronómetro corra en vivo.
 
-### Estado Git
-- Commit `7d43b2b` "feat: sincronizacion Realtime de mesas entre dispositivos" **YA pusheado** a GitHub.
-- **Fix del tiempo (start_time UTC) AÚN SIN commitear** — está en working tree (`sales_repository.dart`). Pendiente: commit + push (o dejar para el lunes, según el usuario).
+### BUG DETECTADO Y CORREGIDO: exe muestra mesas con estado viejo al abrir
+**Síntoma:** al abrir el exe al día siguiente, mostraba las 3 mesas ocupadas aunque en el celular ya se habían cerrado 2 (solo quedaba 1 trabajando). El exe no tomaba el estado real de la nube.
 
-### Lo que FALTA / PENDIENTE (para retomar el lunes)
-1. **Commit + push del fix del tiempo** (`occupyTable` con `start_time` UTC).
-2. **Validar en runtime** el fix del tiempo con ambos programas nuevos:
-   - Instalar APK nuevo + abrir exe nuevo (mismo usuario, mismo `billar_id`).
-   - Liberar mesas con tiempo incorrecto y volver a iniciar.
-   - Confirmar que el cronómetro/costo refleja el tiempo real.
+**Causa raíz:** `getTables()` llamaba a `pullTablesFromCloud(forceApply: false)`, y esa función **no sobreescribía las mesas "ocupadas" localmente**. El exe tenía guardado de la sesión anterior que las 3 estaban ocupadas, y aunque en la nube 2 ya estaban libres, el pull las respetaba (no las actualizaba).
+
+**Fix aplicado (SOLO código):** `getTables()` ahora usa siempre `forceApply: true` → el listado de mesas toma **la nube como fuente de verdad** al abrir y en cada recarga/Realtime. Es seguro porque el listado es solo vista (el detalle de la mesa usa su propio estado). Se eliminó el parámetro `forceApply` de `getTables`.
+
+**Cómo verificar:** abrir el exe nuevo → entrar a Mesas de Billar → debe mostrar solo la mesa que sigue trabajando (no las 3 viejas).
+
+### Estado Git
+- `7d43b2b` "feat: sincronizacion Realtime de mesas" — **YA pusheado**.
+- `b6427ec` "fix: start_time en UTC" — commit local **SIN push**.
+- `0a8d04a` "fix: listado de mesas toma estado real de la nube al abrir" — commit local **SIN push**.
+- Pendiente: **push** de `b6427ec` y `0a8d04a` a GitHub (cuando se validen).
+
+### Lo que FALTA / PENDIENTE
+1. **Validar en runtime** (ambos programas nuevos):
+   - Exe: al entrar a Mesas de Billar debe reflejar el estado real de la nube.
+   - Liberar mesas con tiempo incorrecto y volver a iniciar para confirmar el conteo de tiempo correcto.
+2. **Push a GitHub** de los 2 fixes (`b6427ec`, `0a8d04a`) tras validar.
 3. Logo del negocio: pendiente, NO prioritario.
 
 ### Lo que NO hay que hacer (para no gastar saldo de más)
@@ -57,10 +67,10 @@ El usuario confirmó que la **actualización es inmediata** entre celular y exe:
 - ❌ **NO re-revisar** el bug de stock (ya corregido, commiteado y confirmado).
 - ❌ **NO re-hacer** el layout base de la mesa (ya commiteado y aprobado).
 - ❌ **NO re-abrir** el doble ticket (ya corregido).
-- ✅ Prioridad: commit+push del fix de tiempo y validarlo en runtime.
+- ✅ Prioridad: validar los 2 fixes en runtime y hacer push.
 
 ### Palabra clave para retomar
-**"RETOMAMOS TIEMPO MESAS"**
+**"RETOMAMOS ESTADO MESAS"**
 
 ---
 
