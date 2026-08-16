@@ -6,6 +6,7 @@ import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../data/repositories/sales_repository.dart';
 import '../../domain/entities/sale_item_entity.dart';
@@ -27,9 +28,11 @@ class BilliardTablesPage extends StatefulWidget {
 class _BilliardTablesPageState extends State<BilliardTablesPage> {
   final _repo = SalesRepository();
   final _ticket = TicketService();
+  final _prefs = PreferencesService();
   List<Map<String, dynamic>> _tables = [];
   bool _isLoading = true;
   Timer? _ticker;
+  RealtimeChannel? _tablesChannel;
 
   @override
   void initState() {
@@ -38,6 +41,7 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
     _ticker = Timer.periodic(const Duration(seconds: 30), (_) {
       if (mounted) _load();
     });
+    _subscribeToTableChanges();
   }
 
   @override
@@ -49,6 +53,7 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
   @override
   void dispose() {
     _ticker?.cancel();
+    _tablesChannel?.unsubscribe();
     super.dispose();
   }
 
@@ -60,6 +65,49 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
         _isLoading = false;
       });
     }
+  }
+
+  /// Recarga aplicando la nube como fuente de verdad (se usa al llegar un
+  /// cambio Realtime desde otro dispositivo).
+  Future<void> _reloadFromCloud() async {
+    final t = await _repo.getTables(forceApply: true);
+    if (mounted) {
+      setState(() {
+        _tables = t;
+        _isLoading = false;
+      });
+    }
+  }
+
+  /// Escucha cambios en `billiard_tables` para que este dispositivo refleje en
+  /// tiempo real lo que pasa en otro (celular <-> exe). Filtra por `billar_id`.
+  void _subscribeToTableChanges() {
+    final billarId = _prefs.billarId;
+    debugPrint('[BilliardTablesPage] subscribeTables billarId=$billarId');
+    if (billarId.isEmpty) return;
+
+    _tablesChannel = Supabase.instance.client
+        .channel('public:billiard_tables')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'billiard_tables',
+          callback: (payload) async {
+            final newRecord = payload.newRecord;
+            if (newRecord.isEmpty) return;
+            // Filtrar manualmente por billar_id (Realtime no permite filtros simples aquí).
+            final recordBillarId = newRecord['billar_id']?.toString();
+            if (recordBillarId != billarId) {
+              debugPrint('[BilliardTablesPage] Cambio descartado (otro billar)');
+              return;
+            }
+            debugPrint('[BilliardTablesPage] Realtime cambio en billiard_tables: $newRecord');
+            await _reloadFromCloud();
+          },
+        )
+        .subscribe((status, [error]) {
+          debugPrint('[BilliardTablesPage] Realtime status: $status error: $error');
+        });
   }
 
   @override

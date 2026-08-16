@@ -149,6 +149,7 @@ class SalesRepository {
         {'orders': ordersJson, 'is_occupied': items.isEmpty ? 0 : 1},
         where: 'id = ?', whereArgs: [tableId]);
     // Ya no usamos temp_reservations para mesas; billiard_tables.orders es la fuente de verdad.
+    await _pushTableToCloud(tableId);
   }
 
   /// Suma las cantidades reservadas (aún no cobradas) de cada producto en
@@ -206,6 +207,7 @@ class SalesRepository {
     await db.update('billiard_tables',
         {'is_occupied': 1, 'start_time': DateTime.now().toIso8601String()},
         where: 'id = ?', whereArgs: [tableId]);
+    await _pushTableToCloud(tableId);
   }
 
   Future<void> freeTable(int tableId) async {
@@ -214,16 +216,38 @@ class SalesRepository {
         {'is_occupied': 0, 'start_time': null, 'orders': '[]'},
         where: 'id = ?', whereArgs: [tableId]);
     await _reservations.clearTableReservation(tableId);
+    await _pushTableToCloud(tableId);
   }
 
-  Future<List<Map<String, dynamic>>> getTables() async {
+  /// Sube el estado actual de una mesa (local) a Supabase para que otros
+  /// dispositivos la vean en tiempo real. Es fire-and-forget: si no hay red,
+  /// simplemente se ignora sin romper el flujo local.
+  Future<void> _pushTableToCloud(int tableId) async {
+    try {
+      final db = await _db.database;
+      final billarId = _prefs.billarId;
+      final rows = await db.query(
+        'billiard_tables',
+        where: 'id = ? AND billar_id = ?',
+        whereArgs: [tableId, billarId],
+        limit: 1,
+      );
+      if (rows.isEmpty) return;
+      await _sync.pushTableToCloud(rows.first);
+    } catch (e) {
+      if (kDebugMode) debugPrint('[SalesRepository] _pushTableToCloud error: $e');
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> getTables({bool forceApply = false}) async {
     final db = await _db.database;
     final billarId = _prefs.billarId;
 
     // Siempre intentar pull en primer plano para asegurar que estén al día
-    // (especialmente tras reinstalación o cambio de dispositivo).
+    // (especialmente tras reinstalación o cambio de dispositivo). forceApply
+    // se usa cuando llega un cambio Realtime para que la nube sea la fuente de verdad.
     try {
-      await _sync.pullTablesFromCloud();
+      await _sync.pullTablesFromCloud(forceApply: forceApply);
     } catch (e) {
       if (kDebugMode) debugPrint('[SalesRepository] pullTablesFromCloud error: $e');
     }

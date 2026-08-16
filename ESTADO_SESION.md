@@ -9,11 +9,11 @@
 
 **Para asegurar continuidad y NO gastar saldo en re-hacer cosas ya vistas:**
 
-1. Al volver, di la **palabra clave**: `"RETOMAMOS MESA TICKET"`.
+1. Al volver, di la **palabra clave**: `"RETOMAMOS SINCRONIZACION MESAS"`.
 2. El asistente debe leer **solo** la sección de abajo **"ESTADO ACTUAL — RESUMEN CLARO (LEER PRIMERO)"** — ahí está todo: qué está hecho, qué falta, y qué NO tocar.
 3. **NO** re-revisar ni re-hacer nada de lo que ya dice "COMMITEADO" o "hecho".
-4. El layout de mesa ya fue **aprobado por el usuario** y el commit ya se hizo (local).
-5. Pendiente de esta sesión: revisar el **fix de doble ticket** y decidir el **push a GitHub**.
+4. El layout de mesa ya fue **aprobado** y el **push a GitHub ya se hizo**.
+5. Pendiente de esta sesión: **habilitar Realtime en Supabase** (ejecutar `supabase/enable_realtime_tables.sql`) y **probar la sincronización de mesas en vivo** (celular <-> exe).
 
 > Si el asistente no tiene esta info, dile que abra `ESTADO_SESION.md` y lea la sección "ESTADO ACTUAL — RESUMEN CLARO".
 
@@ -21,31 +21,43 @@
 
 ## 🔝 ESTADO ACTUAL — RESUMEN CLARO (LEER PRIMERO)
 
-### Qué se hizo y VALIDÓ en esta ronda (celular, por el usuario)
-- **Layout de mesa APROBADO** por el usuario en el celular (cronómetro grande, INICIAR, VER TICKET, grid 2 columnas, costo de tiempo abajo). La UI está bien por ahora; mejoras se dejan para más adelante.
-- **Logo del negocio junto al nombre de la mesa**: el usuario confirmó que **ya se visualiza correctamente**. ✅
-- **Bug: doble ticket al tocar VER TICKET** (el usuario tocaba, no veía nada por la demora, volvía a tocar y se abrían 2 PDFs). **CORREGIDO** agregando un bloqueo anti doble toque en `billiard_tables_page.dart` (`_isOpeningTicket`): al tocar, el botón queda bloqueado mientras se genera el PDF y mientras la vista previa esté abierta; solo se desbloquea al cerrarla. `dart analyze` → sin errores.
+### Push a GitHub HECHO
+- Los commits `c76f7f0` (fix doble ticket + layout mesa) y `406de24` (ESTADO_SESION) **YA se subieron a GitHub** (`git push origin master` → `102bc1e..406de24`). Rama `master` al día con `origin/master`.
 
-### Estado Git (commit hecho, PUSH PENDIENTE)
-- Commit local **`c76f7f0`** — "fix: evita doble ticket en VER TICKET + layout mesa responsive".
-- Incluye `billiard_tables_page.dart` y `ESTADO_SESION.md`.
-- **La rama `master` está 1 commit adelante de `origin/master` (GitHub). El PUSH aún NO se hizo.** El usuario decidió detenerse hoy; queda pendiente subir a GitHub en la siguiente sesión (o cuando él lo pida).
-- El remoto `origin` ya está configurado: `https://github.com/luiscbb/app_integral_complete.git`.
+### Nueva feature EN CURSO: Sincronización en tiempo real de mesas (celular <-> exe)
+Objetivo: que ambos dispositivos vean lo mismo en la base de datos; si ocupas/editas/liberas una mesa en uno, el otro lo ve en tiempo real sin duplicar información.
+
+**Cambios hechos en código (SIN commitear aún):**
+1. `lib/features/sales/data/repositories/sales_repository.dart`:
+   - `occupyTable`, `freeTable`, `saveTableOrder` ahora **suben el estado de la mesa a Supabase** tras escribir en SQLite local (helper `_pushTableToCloud`). Así el cambio llega a la nube.
+   - `getTables(forceApply: true)` permite recargar con la nube como fuente de verdad.
+2. `lib/core/services/sync_service.dart`:
+   - `pullTablesFromCloud(forceApply: false)` — con `forceApply: true` sobreescribe también mesas ocupadas localmente (usado por Realtime).
+3. `lib/features/sales/presentation/pages/billiard_tables_page.dart`:
+   - **Suscripción Supabase Realtime** a `billiard_tables` (patrón igual a `home_page.dart`), filtrada manualmente por `billar_id`. Al llegar un cambio remoto, recarga las mesas con la nube como fuente de verdad.
+4. **Nuevo script `supabase/enable_realtime_tables.sql`** para habilitar Realtime en `billiard_tables` (y garantizar `billar_settings`).
+
+**⚠️ ACCIÓN REQUERIDA EN SUPABASE (manual, no se puede hacer desde el código):**
+- Ejecutar `supabase/enable_realtime_tables.sql` en el SQL Editor de Supabase para **habilitar Realtime en la tabla `billiard_tables`**. Sin esto, el Realtime no se disparará y la sincronización en vivo no funcionará.
 
 ### Lo que FALTA / PENDIENTE (para la siguiente sesión)
-1. **Decidir y hacer el `git push`** a GitHub (el commit ya está local).
-2. **Validar en runtime el fix de doble ticket**: tocar VER TICKET → esperar a que se genere → NO poder abrir un segundo ticket mientras la vista previa esté abierta o generándose; al cerrarla, sí se puede volver a abrir.
-3. **Logo del negocio**: ya se visualiza junto al nombre de la mesa ✅; revisar si queda algún otro lugar pendiente del logo (no prioritario).
+1. **Ejecutar `supabase/enable_realtime_tables.sql`** en Supabase (habilitar Realtime en `billiard_tables`).
+2. **Compilar e instalar** el APK en el celular y el `.exe` en Windows (con los cambios de sincronización).
+3. **Probar en runtime**: con el celular y el exe con la misma sesión y mismo `billar_id`:
+   - Ocupar una mesa en el celular → verla ocupada en el exe en tiempo real (y viceversa).
+   - Agregar/quitar productos en una mesa en un dispositivo → ver el total/consumo reflejado en el otro.
+   - Liberar/cobrar la mesa en un dispositivo → verla libre en el otro.
+   - Revisar logs: `[BilliardTablesPage] Realtime status: ...` debe mostrar que la suscripción se conectó.
+4. Validar que no se dupliquen mesas ni se pierdan órdenes al sincronizar.
 
 ### Lo que NO hay que hacer (para no gastar saldo de más)
 - ❌ **NO re-revisar** el bug de stock (ya corregido, commiteado y confirmado).
 - ❌ **NO re-hacer** el layout base de la mesa (ya commiteado y aprobado).
-- ❌ **NO modificar** lógica de stock/ventas (está estable).
-- ❌ **NO re-abrir** el tema del doble ticket si el fix ya fue validado en runtime.
-- ✅ La siguiente acción de prioridad es hacer **push** (si el usuario lo confirma) y validar el fix de doble ticket.
+- ❌ **NO re-abrir** el tema del doble ticket (ya corregido y validado).
+- ✅ Prioridad: habilitar Realtime en Supabase y probar la sincronización en vivo.
 
 ### Palabra clave para retomar
-**"RETOMAMOS MESA TICKET"**
+**"RETOMAMOS SINCRONIZACION MESAS"**
 
 ---
 

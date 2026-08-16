@@ -673,7 +673,10 @@ class SyncService {
 
   /// Descarga mesas de Supabase y las fusiona con las locales.
   /// Solo actualiza/inserta; nunca borra mesas ocupadas ni locales no sincronizadas.
-  Future<void> pullTablesFromCloud() async {
+  /// Cuando [forceApply] es `true` (usado por Realtime), se sobreescribe también
+  /// la mesa si está ocupada localmente, porque la nube es la fuente de verdad
+  /// para propagar en tiempo real el estado entre dispositivos.
+  Future<void> pullTablesFromCloud({bool forceApply = false}) async {
     try {
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) return;
@@ -721,8 +724,9 @@ class SyncService {
           } else {
             final local = existing.first;
             final localOccupied = (local['is_occupied'] as num?)?.toInt() ?? 0;
-            // No sobreescribir mesa ocupada localmente para evitar perder ordenes/tiempo.
-            if (localOccupied == 1) continue;
+            // Por defecto no sobreescribir mesa ocupada localmente para evitar
+            // perder ordenes/tiempo. Con forceApply (Realtime) la nube manda.
+            if (!forceApply && localOccupied == 1) continue;
             await txn.update(
               'billiard_tables',
               {
