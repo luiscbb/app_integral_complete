@@ -67,10 +67,10 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
     }
   }
 
-  /// Recarga aplicando la nube como fuente de verdad (se usa al llegar un
-  /// cambio Realtime desde otro dispositivo).
+  /// Recarga el listado al llegar un cambio Realtime desde otro dispositivo.
+  /// `getTables()` ya usa la nube como fuente de verdad.
   Future<void> _reloadFromCloud() async {
-    final t = await _repo.getTables(forceApply: true);
+    final t = await _repo.getTables();
     if (mounted) {
       setState(() {
         _tables = t;

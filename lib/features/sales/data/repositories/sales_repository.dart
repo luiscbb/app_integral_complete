@@ -241,15 +241,15 @@ class SalesRepository {
     }
   }
 
-  Future<List<Map<String, dynamic>>> getTables({bool forceApply = false}) async {
+  Future<List<Map<String, dynamic>>> getTables() async {
     final db = await _db.database;
     final billarId = _prefs.billarId;
 
-    // Siempre intentar pull en primer plano para asegurar que estén al día
-    // (especialmente tras reinstalación o cambio de dispositivo). forceApply
-    // se usa cuando llega un cambio Realtime para que la nube sea la fuente de verdad.
+    // Siempre intentar pull en primer plano con la nube como fuente de verdad.
+    // El listado de mesas es solo vista (no edita), asi que refleja el estado
+    // real aunque la copia local tenga mesas "ocupadas" de una sesion anterior.
     try {
-      await _sync.pullTablesFromCloud(forceApply: forceApply);
+      await _sync.pullTablesFromCloud(forceApply: true);
     } catch (e) {
       if (kDebugMode) debugPrint('[SalesRepository] pullTablesFromCloud error: $e');
     }
