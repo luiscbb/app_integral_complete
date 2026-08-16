@@ -275,7 +275,7 @@ class SyncService {
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) return false;
 
-      await _sup.from('providers').upsert({...map, 'id': localId});
+      await _sup.from('providers').upsert({...map, 'id': localId, 'billar_id': _prefs.billarId});
       return true;
     } catch (e) {
       debugPrint('[SyncService] pushProvider ERROR: $e');
@@ -332,7 +332,7 @@ class SyncService {
 
       final db = await _db.database;
 
-      final remoteProviders = await _sup.from('providers').select();
+      final remoteProviders = await _sup.from('providers').select().eq('billar_id', _prefs.billarId);
       final remoteProducts = await _sup.from('provider_products').select();
 
       debugPrint('[SyncService] pullProvidersFromCloud: ${remoteProviders.length} proveedores, ${remoteProducts.length} relaciones');

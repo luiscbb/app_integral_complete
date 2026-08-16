@@ -310,7 +310,7 @@ class _InventoryPageState extends State<InventoryPage> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
       ),
       builder:
-          (_) => _ProductFormSheet(
+          (_) => ProductFormSheet(
             product: product,
             onSaved: () {
               Navigator.pop(context);
@@ -321,16 +321,16 @@ class _InventoryPageState extends State<InventoryPage> {
   }
 }
 
-class _ProductFormSheet extends StatefulWidget {
+class ProductFormSheet extends StatefulWidget {
   final ProductEntity? product;
   final VoidCallback onSaved;
-  const _ProductFormSheet({this.product, required this.onSaved});
+  const ProductFormSheet({super.key, this.product, required this.onSaved});
 
   @override
-  State<_ProductFormSheet> createState() => _ProductFormSheetState();
+  State<ProductFormSheet> createState() => ProductFormSheetState();
 }
 
-class _ProductFormSheetState extends State<_ProductFormSheet> {
+class ProductFormSheetState extends State<ProductFormSheet> {
   final _repo = ProductRepository();
   final _purchaseRepo = PurchasesRepository();
   late final TextEditingController _descCtrl;

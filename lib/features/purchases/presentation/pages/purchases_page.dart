@@ -1,13 +1,16 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:io';
 
 import '../../../../core/storage/preferences_service.dart';
 import '../../../inventory/data/repositories/product_repository.dart';
 import '../../../inventory/domain/entities/product_entity.dart';
+import '../../../inventory/presentation/pages/inventory_page.dart';
 import '../../data/repositories/purchases_repository.dart';
 import '../../domain/entities/provider_entity.dart';
 import '../../domain/entities/purchase_entity.dart';
@@ -25,23 +28,72 @@ class _PurchasesPageState extends State<PurchasesPage> with SingleTickerProvider
   late final TabController _tabs;
   final _repo = PurchasesRepository();
   final _productRepo = ProductRepository();
+  final _prefs = PreferencesService();
 
   List<ProviderEntity> _providers = [];
   List<ProductEntity> _products = [];
   List<Map<String, dynamic>> _history = [];
   bool _isLoading = true;
+  RealtimeChannel? _providersChannel;
+  RealtimeChannel? _purchasesChannel;
 
   @override
   void initState() {
     super.initState();
     _tabs = TabController(length: 3, vsync: this);
     _load();
+    _subscribeToChanges();
   }
 
   @override
   void dispose() {
     _tabs.dispose();
+    _providersChannel?.unsubscribe();
+    _purchasesChannel?.unsubscribe();
     super.dispose();
+  }
+
+  /// Escucha cambios en `providers` y `purchases` para reflejar en tiempo real
+  /// lo que pasa en otro dispositivo (celular <-> exe). Filtra por `billar_id`.
+  void _subscribeToChanges() {
+    final billarId = _prefs.billarId;
+    if (billarId.isEmpty) return;
+
+    _providersChannel = Supabase.instance.client
+        .channel('public:providers')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'providers',
+          callback: (payload) async {
+            final newRecord = payload.newRecord;
+            if (newRecord.isEmpty) return;
+            if (newRecord['billar_id']?.toString() != billarId) return;
+            debugPrint('[PurchasesPage] Realtime cambio en providers: $newRecord');
+            await _load();
+          },
+        )
+        .subscribe((status, [error]) {
+          debugPrint('[PurchasesPage] Realtime providers status: $status error: $error');
+        });
+
+    _purchasesChannel = Supabase.instance.client
+        .channel('public:purchases')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'purchases',
+          callback: (payload) async {
+            final newRecord = payload.newRecord;
+            if (newRecord.isEmpty) return;
+            if (newRecord['billar_id']?.toString() != billarId) return;
+            debugPrint('[PurchasesPage] Realtime cambio en purchases: $newRecord');
+            await _load();
+          },
+        )
+        .subscribe((status, [error]) {
+          debugPrint('[PurchasesPage] Realtime purchases status: $status error: $error');
+        });
   }
 
   Future<void> _load() async {
@@ -110,12 +162,18 @@ class _CartItem {
   double get subtotal => quantity * cost;
 }
 
-class _NewPurchaseTabState extends State<_NewPurchaseTab> {
+class _NewPurchaseTabState extends State<_NewPurchaseTab>
+    with AutomaticKeepAliveClientMixin {
   final _repo = PurchasesRepository();
   final _refCtrl = TextEditingController();
   ProviderEntity? _provider;
   final List<_CartItem> _cart = [];
   bool _saving = false;
+
+  // Mantiene vivo el carrito mientras se permanezca dentro del apartado de
+  // compras (al cambiar de pestana NUEVA COMPRA/PROVEEDORES/HISTORIAL).
+  @override
+  bool get wantKeepAlive => true;
 
   final List<TextEditingController> _qtyControllers = [];
   final List<TextEditingController> _costControllers = [];
@@ -304,6 +362,46 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab> {
                           ),
                         ),
                         const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: primary,
+                              side: BorderSide(color: primary.withValues(alpha: 0.5)),
+                            ),
+                            icon: const Icon(Icons.add_box_outlined),
+                            label: const Text(
+                              'NUEVO PRODUCTO',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            onPressed: () async {
+                              // Cerrar el picker y abrir el formulario de crear producto.
+                              Navigator.of(ctx).pop();
+                              await showModalBottomSheet(
+                                context: context,
+                                isScrollControlled: true,
+                                backgroundColor: const Color(0xFF1A1A1A),
+                                shape: const RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+                                ),
+                                builder: (_) => ProductFormSheet(
+                                  product: null,
+                                  onSaved: () {
+                                    Navigator.of(context).pop();
+                                    widget.onSaved();
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text('Producto creado'),
+                                        backgroundColor: Colors.green,
+                                      ),
+                                    );
+                                  },
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 12),
                         TextField(
                           controller: searchCtrl,
                           onChanged: (q) {
@@ -408,6 +506,7 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final primary = Theme.of(context).colorScheme.primary;
     return Column(
       children: [
