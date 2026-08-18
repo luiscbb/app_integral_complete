@@ -9,11 +9,11 @@
 
 **Para asegurar continuidad y NO gastar saldo en re-hacer cosas ya vistas:**
 
-1. Al volver, di la **palabra clave**: `"RETOMAMOS ESTADO MESAS"`.
+1. Al volver, di la **palabra clave**: `"RETOMAMOS COMPRAS PDF"`.
 2. El asistente debe leer **solo** la sección de abajo **"ESTADO ACTUAL — RESUMEN CLARO (LEER PRIMERO)"** — ahí está todo: qué está hecho, qué falta, y qué NO tocar.
 3. **NO** re-revisar ni re-hacer nada de lo que ya dice "COMMITEADO" o "hecho".
-4. La **sincronización Realtime de mesas YA funciona** (validada en línea). El script SQL ya se ejecutó en Supabase (no tocarlo).
-5. Pendientes ya corregidos en código: **fix del tiempo** (`start_time` UTC) y **estado real de la nube al abrir el exe**. Falta **validar en runtime y hacer push**.
+4. La **sincronización Realtime de mesas, proveedores y compras YA funciona** (validada en línea). Los scripts SQL de Realtime ya se ejecutaron en Supabase (no tocarlos).
+5. Pendiente principal: **diagnosticar por qué al cerrar una compra no se genera el comprobante PDF ni aparece en el historial** (el diagnóstico se interrumpió por corte de red).
 
 > Si el asistente no tiene esta info, dile que abra `ESTADO_SESION.md` y lea la sección "ESTADO ACTUAL — RESUMEN CLARO".
 
@@ -21,56 +21,46 @@
 
 ## 🔝 ESTADO ACTUAL — RESUMEN CLARO (LEER PRIMERO)
 
-### Sincronización en tiempo real de mesas — YA FUNCIONA ✅ (validada en línea)
-El usuario confirmó que la **actualización es inmediata** entre celular y exe: si ocupa/edita/libera una mesa en uno, el otro lo ve al instante. `[BilliardTablesPage] Realtime status: subscribed` se confirma en logs. **El Realtime ya está habilitado y el script SQL ya se ejecutó en Supabase (NO hay que volver a tocarlo).**
+### Sincronización en tiempo real — YA FUNCIONA ✅ (validada en línea)
+- **Mesas de billar**: ocupar/editar/liberar se refleja al instante entre celular y exe.
+- **Proveedores y Compras**: Realtime agregado y validado; se ven en ambos dispositivos.
+- Los scripts SQL de Realtime ya se ejecutaron en Supabase (NO re-ejecutar a menos que se agregue otra tabla).
 
-### BUG DETECTADO Y CORREGIDO: conteo de tiempo incorrecto
-**Síntoma:** al iniciar una mesa, el monto/cronómetro marca un tiempo enorme (horas) aunque se acaba de iniciar.
+### MÓDULO COMPRAS — cambios implementados y PUSHEADOS hoy (commit `4479b71`)
+1. **Opción "Nuevo Producto"** en Nueva Compra → AGREGAR PRODUCTO: abre el formulario de creación de producto del inventario (`ProductFormSheet` ahora público). Al guardar, el producto se crea y la lista se refresca.
+2. **Estado de compra persistente**: `_NewPurchaseTab` usa `AutomaticKeepAliveClientMixin` → el carrito NO se pierde al cambiar de pestaña dentro del apartado de Compras.
+3. **Realtime en compras**: suscripciones a las tablas `providers` y `purchases` en `_PurchasesPageState` (patrón de mesas, filtradas por `billar_id`).
+4. **Fix `billar_id` en proveedores** (era el motivo por el que el proveedor del celular no se veía en el exe):
+   - `pushProviderToCloud` ahora envía `billar_id` correcto (`sync_service.dart`).
+   - `pullProvidersFromCloud` ahora filtra por `billar_id`.
+   - `supabase/enable_realtime_tables.sql` actualizado para incluir `providers` y `purchases`.
+- `dart analyze .` → 0 errores. APK y EXE compilados. EXE corriendo.
 
-**Causa raíz (confirmada con log del APK):** `start_time` se guardaba con **hora local sin indicador de zona** (`DateTime.now().toIso8601String()`). La columna de Supabase es `timestamptz`, que **asume UTC**. Ejemplo real del log: `start_time: 2026-08-15T22:06:34+00:00` cuando la hora real era `22:06 local` (= `04:06` del día siguiente en UTC). Resultado: el reloj quedaba atrasado ~6h y el conteo marcaba horas de más.
+### PENDIENTE (tema nuevo, SIN resolver aún): comprobante PDF y historial al cerrar compra
+**Síntoma (reportado hoy):** al cerrar/guardar una compra, **ya no se genera el comprobante PDF** (con logo e info de la empresa) y **no aparece en el historial** para recuperarlo. El usuario nota que los datos (proveedores, compras) sí se ven en ambos dispositivos, pero el PDF y el historial fallan.
 
-**Fix aplicado (SOLO código, NO requiere tocar Supabase):**
-- `lib/features/sales/data/repositories/sales_repository.dart` → `occupyTable` ahora guarda `start_time` en **UTC**: `DateTime.now().toUtc().toIso8601String()`. Así Supabase lo interpreta bien y ambos dispositivos calculan el mismo tiempo.
-- La lectura (`DateTime.tryParse`) ya maneja correctamente los valores UTC.
+**Estado:** el diagnóstico se interrumpió por un corte de red. **Todavía NO se sabe la causa.** Rutas a revisar mañana:
+- `savePurchase` en `lib/features/purchases/data/repositories/purchases_repository.dart` (¿a qué tablas inserta localmente? ¿purchases/purchase_details?).
+- `_showPurchasePdf` y `_loadLogoBytes` en `purchases_page.dart` (¿el PDF falla por logo o por estructura?).
+- `getHistory` en `purchases_repository.dart` (¿consulta la tabla correcta?).
+- Tablas `purchases`/`purchase_details` en la nube (Supabase) vs. locales (SQLite) — verificar que existan y que `savePurchase`/`pushPurchaseToCloud` usen las columnas correctas.
+- Posible causa del historial vacío: la compra no se guarda en la tabla que consulta `getHistory`, o la tabla no existe/no tiene las columnas.
 
-**Cómo verificar que quedó corregido:**
-1. Instalar el **APK nuevo** (`build\app\outputs\flutter-apk\app-release.apk`) y abrir el **exe nuevo** (`build\windows\x64\runner\Release\app_integral_complete.exe`).
-2. **Liberar las mesas que quedaron ocupadas con el tiempo incorrecto** (las que se iniciaron con el bug tienen `start_time` malo en la nube).
-3. Iniciar una mesa nueva y confirmar que el cronómetro marca el tiempo real (segundos/minutos), no horas de golpe.
-
-**Nota sobre "el tiempo avanza pero el monto no cambia":** es comportamiento esperado. El costo de tiempo se redondea hacia arriba por hora (`ceil`), así que el monto solo sube al cruzar un bloque de hora completa (0→1h, 1→2h...), aunque el cronómetro corra en vivo.
-
-### BUG DETECTADO Y CORREGIDO: exe muestra mesas con estado viejo al abrir
-**Síntoma:** al abrir el exe al día siguiente, mostraba las 3 mesas ocupadas aunque en el celular ya se habían cerrado 2 (solo quedaba 1 trabajando). El exe no tomaba el estado real de la nube.
-
-**Causa raíz:** `getTables()` llamaba a `pullTablesFromCloud(forceApply: false)`, y esa función **no sobreescribía las mesas "ocupadas" localmente**. El exe tenía guardado de la sesión anterior que las 3 estaban ocupadas, y aunque en la nube 2 ya estaban libres, el pull las respetaba (no las actualizaba).
-
-**Fix aplicado (SOLO código):** `getTables()` ahora usa siempre `forceApply: true` → el listado de mesas toma **la nube como fuente de verdad** al abrir y en cada recarga/Realtime. Es seguro porque el listado es solo vista (el detalle de la mesa usa su propio estado). Se eliminó el parámetro `forceApply` de `getTables`.
-
-**Cómo verificar:** abrir el exe nuevo → entrar a Mesas de Billar → debe mostrar solo la mesa que sigue trabajando (no las 3 viejas).
+**Acción pendiente para mañana:** ejecutar el diagnóstico (leer esos archivos + revisar tablas), aplicar el fix, recompilar y validar.
 
 ### Estado Git
-- `7d43b2b` "feat: sincronizacion Realtime de mesas" — **YA pusheado**.
-- `b6427ec` "fix: start_time en UTC" — commit local **SIN push**.
-- `0a8d04a` "fix: listado de mesas toma estado real de la nube al abrir" — commit local **SIN push**.
-- Pendiente: **push** de `b6427ec` y `0a8d04a` a GitHub (cuando se validen).
-
-### Lo que FALTA / PENDIENTE
-1. **Validar en runtime** (ambos programas nuevos):
-   - Exe: al entrar a Mesas de Billar debe reflejar el estado real de la nube.
-   - Liberar mesas con tiempo incorrecto y volver a iniciar para confirmar el conteo de tiempo correcto.
-2. **Push a GitHub** de los 2 fixes (`b6427ec`, `0a8d04a`) tras validar.
-3. Logo del negocio: pendiente, NO prioritario.
+- `7d43b2b`, `b6427ec`, `0a8d04a`, `1e92b4b` — mesas (ya pusheados).
+- `4479b71` — compras (nuevo producto, estado, realtime, fix billar_id) — **YA pusheado**.
+- Pendiente: commit + push del fix del PDF/historial (cuando se resuelva).
 
 ### Lo que NO hay que hacer (para no gastar saldo de más)
-- ❌ **NO re-ejecutar** `enable_realtime_tables.sql` (ya se ejecutó; Realtime ya funciona).
-- ❌ **NO re-revisar** el bug de stock (ya corregido, commiteado y confirmado).
-- ❌ **NO re-hacer** el layout base de la mesa (ya commiteado y aprobado).
-- ❌ **NO re-abrir** el doble ticket (ya corregido).
-- ✅ Prioridad: validar los 2 fixes en runtime y hacer push.
+- ❌ **NO re-ejecutar** los scripts SQL de Realtime (ya ejecutados; Realtime funciona).
+- ❌ **NO re-revisar** bugs ya corregidos (stock, layout mesa, doble ticket, tiempo, estado al abrir, billar_id proveedores).
+- ❌ **NO re-hacer** los cambios de compras ya pusheados.
+- ✅ Prioridad: **diagnosticar y corregir el PDF/historial de compras**.
 
 ### Palabra clave para retomar
-**"RETOMAMOS ESTADO MESAS"**
+**"RETOMAMOS COMPRAS PDF"**
 
 ---
 
