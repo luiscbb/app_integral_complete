@@ -48,9 +48,15 @@
 
 **Acción pendiente para mañana:** ejecutar el diagnóstico (leer esos archivos + revisar tablas), aplicar el fix, recompilar y validar.
 
+### ✅ PUNTO FUNCIONAL CONFIRMADO (validado HOY 2026-08-18)
+- `dart analyze .` → **0 errores** (solo 6 avisos `info` de estilo en `lib/features/reports/...`, NO relacionados con compras ni con el bug del PDF).
+- Código de compras (commit `4479b71`) y MD (`55dabc9`) commiteados. Working tree limpio.
+- **Este es el punto funcional y estable** para retomar. No hay nada roto ni a medias en compras.
+
 ### Estado Git
 - `7d43b2b`, `b6427ec`, `0a8d04a`, `1e92b4b` — mesas (ya pusheados).
 - `4479b71` — compras (nuevo producto, estado, realtime, fix billar_id) — **YA pusheado**.
+- `55dabc9` — docs: actualiza ESTADO_SESION — **commit local, SIN push** (pendiente de push).
 - Pendiente: commit + push del fix del PDF/historial (cuando se resuelva).
 
 ### Lo que NO hay que hacer (para no gastar saldo de más)
