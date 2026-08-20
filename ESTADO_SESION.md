@@ -9,11 +9,11 @@
 
 **Para asegurar continuidad y NO gastar saldo en re-hacer cosas ya vistas:**
 
-1. Al volver, di la **palabra clave**: `"RETOMAMOS COMPRAS PDF"`.
+1. Al volver, di la **palabra clave**: `"RETOMAMOS VALIDACION COMPRAS"`.
 2. El asistente debe leer **solo** la sección de abajo **"ESTADO ACTUAL — RESUMEN CLARO (LEER PRIMERO)"** — ahí está todo: qué está hecho, qué falta, y qué NO tocar.
 3. **NO** re-revisar ni re-hacer nada de lo que ya dice "COMMITEADO" o "hecho".
 4. La **sincronización Realtime de mesas, proveedores y compras YA funciona** (validada en línea). Los scripts SQL de Realtime ya se ejecutaron en Supabase (no tocarlos).
-5. Pendiente principal: **diagnosticar por qué al cerrar una compra no se genera el comprobante PDF ni aparece en el historial** (el diagnóstico se interrumpió por corte de red).
+5. El bug del PDF/historial de compras **YA está corregido y pusheado** (commit `57bef5d`). Pendiente principal: **VALIDAR EN RUNTIME** — registrar una compra y confirmar que sale el PDF con el nuevo encabezado y aparece en el historial. El APK release ya quedó compilado (`build\app\outputs\flutter-apk\app-release.apk`, 2026-08-19).
 
 > Si el asistente no tiene esta info, dile que abra `ESTADO_SESION.md` y lea la sección "ESTADO ACTUAL — RESUMEN CLARO".
 
@@ -53,17 +53,19 @@
 ### Estado Git
 - `7d43b2b`, `b6427ec`, `0a8d04a`, `1e92b4b` — mesas (ya pusheados).
 - `4479b71` — compras (nuevo producto, estado, realtime, fix billar_id) — **YA pusheado**.
-- `55dabc9` — docs: actualiza ESTADO_SESION — **commit local, SIN push** (pendiente de push).
-- Pendiente: commit + push del fix del PDF/historial (cuando se resuelva).
+- `55dabc9`, `93980b0` — docs ESTADO_SESION — **YA pusheados**.
+- `57bef5d` — **fix PDF/historial de compras + encabezado como ventas** — **YA pusheado a GitHub**.
+- Working tree limpio (solo esta actualización del MD pendiente de commit).
 
 ### Lo que NO hay que hacer (para no gastar saldo de más)
 - ❌ **NO re-ejecutar** los scripts SQL de Realtime (ya ejecutados; Realtime funciona).
-- ❌ **NO re-revisar** bugs ya corregidos (stock, layout mesa, doble ticket, tiempo, estado al abrir, billar_id proveedores).
+- ❌ **NO re-revisar** bugs ya corregidos (stock, layout mesa, doble ticket, tiempo, estado al abrir, billar_id proveedores, PDF/historial de compras).
 - ❌ **NO re-hacer** los cambios de compras ya pusheados.
-- ✅ Prioridad: **diagnosticar y corregir el PDF/historial de compras**.
+- ❌ **NO recompilar** el APK (ya está compilado con el fix, 2026-08-19).
+- ✅ Prioridad: **validar en runtime el fix del PDF/historial** (instalar APK / correr exe, registrar una compra, confirmar PDF + historial).
 
 ### Palabra clave para retomar
-**"RETOMAMOS COMPRAS PDF"**
+**"RETOMAMOS VALIDACION COMPRAS"**
 
 ---
 
