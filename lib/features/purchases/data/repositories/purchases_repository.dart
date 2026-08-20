@@ -46,6 +46,14 @@ class PurchasesRepository {
   Future<int> savePurchase({required PurchaseEntity purchase}) async {
     final db = await _db.database;
 
+    // Registrar movimientos de inventario (kardex) FUERA de la transacción.
+    // `recordInventoryMovement` usa `_db.database` (no el objeto `txn`), y
+    // escribir sobre la misma conexión con una transacción activa hace que la
+    // operación falle y revierta toda la compra (historial/PDF no se generan).
+    // Se acumulan los datos durante el bucle y se insertan al final, replicando
+    // el patrón que ya usa `saveSale` en ventas.
+    final movements = <({int productId, double pieces, double costPerPiece})>[];
+
     final purchaseId = await db.transaction((txn) async {
       final id = await txn.insert('purchases', {
         'provider_id': purchase.providerId,
@@ -96,20 +104,29 @@ class PurchasesRepository {
             ]);
           }
 
-          // Registrar movimiento de inventario (kardex)
-          await _reports.recordInventoryMovement(
+          // Acumular el movimiento para registrarlo tras la transacción.
+          movements.add((
             productId: targetId,
-            movementType: 'purchase',
-            quantity: pieces,
-            unitCost: costPerPiece,
-            referenceId: id,
-            referenceType: 'purchases',
-            notes: 'Compra ${purchase.reference}',
-          );
+            pieces: pieces,
+            costPerPiece: costPerPiece,
+          ));
         }
       }
       return id;
     });
+
+    // Registrar movimientos de inventario (kardex) fuera de la transacción.
+    for (final m in movements) {
+      await _reports.recordInventoryMovement(
+        productId: m.productId,
+        movementType: 'purchase',
+        quantity: m.pieces,
+        unitCost: m.costPerPiece,
+        referenceId: purchaseId,
+        referenceType: 'purchases',
+        notes: 'Compra ${purchase.reference}',
+      );
+    }
 
     // Sincronizar stock de productos a Supabase
     for (final item in purchase.items) {

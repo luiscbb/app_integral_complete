@@ -39,14 +39,11 @@
 ### PENDIENTE (tema nuevo, SIN resolver aún): comprobante PDF y historial al cerrar compra
 **Síntoma (reportado hoy):** al cerrar/guardar una compra, **ya no se genera el comprobante PDF** (con logo e info de la empresa) y **no aparece en el historial** para recuperarlo. El usuario nota que los datos (proveedores, compras) sí se ven en ambos dispositivos, pero el PDF y el historial fallan.
 
-**Estado:** el diagnóstico se interrumpió por un corte de red. **Todavía NO se sabe la causa.** Rutas a revisar mañana:
-- `savePurchase` en `lib/features/purchases/data/repositories/purchases_repository.dart` (¿a qué tablas inserta localmente? ¿purchases/purchase_details?).
-- `_showPurchasePdf` y `_loadLogoBytes` en `purchases_page.dart` (¿el PDF falla por logo o por estructura?).
-- `getHistory` en `purchases_repository.dart` (¿consulta la tabla correcta?).
-- Tablas `purchases`/`purchase_details` en la nube (Supabase) vs. locales (SQLite) — verificar que existan y que `savePurchase`/`pushPurchaseToCloud` usen las columnas correctas.
-- Posible causa del historial vacío: la compra no se guarda en la tabla que consulta `getHistory`, o la tabla no existe/no tiene las columnas.
-
-**Acción pendiente para mañana:** ejecutar el diagnóstico (leer esos archivos + revisar tablas), aplicar el fix, recompilar y validar.
+**ESTADO ACTUAL: FIX APLICADO (2026-08-19).** Causa raíz encontrada y corregida:
+- **Causa raíz:** en `savePurchase` (`lib/features/purchases/data/repositories/purchases_repository.dart`) se llamaba a `_reports.recordInventoryMovement(...)` **DENTRO de `db.transaction(...)`**. Esa función usa `_db.database` (la misma conexión, no el objeto `txn`), y en SQLite escribir sobre la conexión mientras hay una transacción activa hace fallar la operación, lo que **revierte toda la transacción**: la compra no se inserta en `purchases` → historial vacío, y como `savePurchase` lanza excepción antes de llegar a `_showPurchasePdf`, el PDF nunca se genera.
+- **Fix:** se sacó `recordInventoryMovement` **fuera de la transacción** (acumulando los movimientos en una lista y registrándolos después de hacer `commit`), replicando el patrón que ya usa `saveSale` en ventas (que sí funciona).
+- **Mejora adicional (encabezado):** el PDF de compras (`_showPurchasePdf` en `purchases_page.dart`) ahora usa el **mismo encabezado que el ticket de ventas**: logo, nombre del negocio, eslogan, dirección en líneas (calle/no. → colonia/ciudad → estado/CP), WhatsApp, separador con el color primario, folio+fecha y "Atendió". Esto unifica la presentación entre ventas y compras.
+- **Verificación:** `dart analyze` sobre los archivos modificados → **"No issues found!"**. Falta validar en runtime (registrar una compra y ver que salga el PDF y aparezca en el historial).
 
 ### ✅ PUNTO FUNCIONAL CONFIRMADO (validado HOY 2026-08-18)
 - `dart analyze .` → **0 errores** (solo 6 avisos `info` de estilo en `lib/features/reports/...`, NO relacionados con compras ni con el bug del PDF).

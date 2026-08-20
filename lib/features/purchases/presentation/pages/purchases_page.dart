@@ -1237,11 +1237,6 @@ Future<void> _showPurchasePdf({
 }) async {
   final prefs = PreferencesService();
   final businessName = prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
-  final addressParts =
-      [prefs.businessStreet, prefs.businessExtNumber, prefs.businessColony, prefs.businessCity, prefs.businessState]
-          .where((s) => s.trim().isNotEmpty)
-          .join(', ');
-  final phone = prefs.businessPhone.trim().isNotEmpty ? prefs.businessPhone.trim() : prefs.businessWhatsapp.trim();
 
   pw.MemoryImage? logoImage;
   final logoBytes = await _loadLogoBytes();
@@ -1250,52 +1245,97 @@ Future<void> _showPurchasePdf({
   }
 
   final pdf = pw.Document();
-  final dateStr = '${DateTime.now().day.toString().padLeft(2, '0')}/${DateTime.now().month.toString().padLeft(2, '0')}/${DateTime.now().year}';
-  final hourStr = '${DateTime.now().hour.toString().padLeft(2, '0')}:${DateTime.now().minute.toString().padLeft(2, '0')}';
+  final now = DateTime.now();
+  final dateStr =
+      '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}  ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+
+  const black = PdfColors.black;
+  final primaryColor = PdfColor.fromInt(prefs.primaryColorValue);
+  const grey = PdfColors.grey700;
+
+  final titleStyle = pw.TextStyle(
+    fontWeight: pw.FontWeight.bold,
+    fontSize: 12,
+    color: black,
+    letterSpacing: 1,
+  );
+  final normalStyle = pw.TextStyle(fontSize: 9.5, color: black);
+  final boldStyle = pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10, color: black);
+  final italicStyle = pw.TextStyle(fontStyle: pw.FontStyle.italic, fontSize: 8.5, color: grey);
+  final smallStyle = pw.TextStyle(fontSize: 8, color: grey);
+  final tinyStyle = pw.TextStyle(fontSize: 7.5, color: grey);
+
+  // Dirección formateada en líneas (igual que el encabezado de ventas).
+  final headerLines = <String>[];
+  final addressPart1 = [
+    prefs.businessStreet,
+    if (prefs.businessExtNumber.isNotEmpty)
+      'No. ${prefs.businessExtNumber}${prefs.businessIntNumber.isNotEmpty ? ' Int. ${prefs.businessIntNumber}' : ''}',
+  ].where((s) => s.isNotEmpty).toList();
+  final addressPart2 = [
+    prefs.businessColony,
+    if (prefs.businessCity.isNotEmpty) prefs.businessCity,
+  ].where((s) => s.isNotEmpty).toList();
+  final addressPart3 = [
+    if (prefs.businessState.isNotEmpty) prefs.businessState,
+    if (prefs.businessZipCode.isNotEmpty) 'CP ${prefs.businessZipCode}',
+  ].where((s) => s.isNotEmpty).toList();
+  if (addressPart1.isNotEmpty) headerLines.add(addressPart1.join(' | '));
+  if (addressPart2.isNotEmpty) headerLines.add(addressPart2.join(' | '));
+  if (addressPart3.isNotEmpty) headerLines.add(addressPart3.join(' | '));
 
   pdf.addPage(
     pw.Page(
       pageFormat: PdfPageFormat.roll80,
       build: (pw.Context ctx) {
         return pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          crossAxisAlignment: pw.CrossAxisAlignment.center,
           children: [
-            if (logoImage != null)
+            pw.SizedBox(height: 4),
+            if (logoImage != null) ...[
+              pw.Center(child: pw.Image(logoImage, width: 56, height: 56)),
+              pw.SizedBox(height: 4),
+            ],
+            pw.Center(child: pw.Text(businessName.toUpperCase(), style: titleStyle)),
+            pw.SizedBox(height: 1),
+            if (prefs.businessSlogan.isNotEmpty)
               pw.Center(
-                child: pw.Container(
-                  height: 60,
-                  margin: const pw.EdgeInsets.only(bottom: 6),
-                  child: pw.Image(logoImage),
-                ),
+                child: pw.Text('"${prefs.businessSlogan}"', style: italicStyle),
               ),
-            pw.Center(
-              child: pw.Text(
-                businessName.toUpperCase(),
-                style: pw.TextStyle(fontSize: 13, fontWeight: pw.FontWeight.bold),
-              ),
+            pw.SizedBox(height: 2),
+            ...headerLines.map(
+              (line) => pw.Center(child: pw.Text(line, style: tinyStyle)),
             ),
-            if (addressParts.isNotEmpty)
-              pw.Center(child: pw.Text(addressParts, style: const pw.TextStyle(fontSize: 8))),
-            if (phone.isNotEmpty)
-              pw.Center(child: pw.Text('Tel: $phone', style: const pw.TextStyle(fontSize: 8))),
-            pw.SizedBox(height: 6),
+            if (prefs.businessWhatsapp.isNotEmpty)
+              pw.Row(
+                mainAxisAlignment: pw.MainAxisAlignment.center,
+                children: [
+                  pw.Text('Whats: ', style: tinyStyle),
+                  pw.Text(prefs.businessWhatsapp, style: smallStyle),
+                ],
+              ),
+            pw.SizedBox(height: 2),
+            pw.Divider(color: primaryColor, thickness: 0.8),
             pw.Center(
               child: pw.Text(
                 'COMPROBANTE DE COMPRA',
-                style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold),
+                style: pw.TextStyle(fontSize: 11, fontWeight: pw.FontWeight.bold, color: black),
               ),
             ),
-            pw.SizedBox(height: 4),
-            pw.Center(child: pw.Text('Folio: C-$purchaseId', style: const pw.TextStyle(fontSize: 10))),
-            pw.Center(child: pw.Text('Fecha: $dateStr $hourStr', style: const pw.TextStyle(fontSize: 10))),
-            pw.Divider(),
-            pw.Text('Proveedor:', style: pw.TextStyle(fontSize: 10, fontWeight: pw.FontWeight.bold)),
-            pw.Text(providerName, style: const pw.TextStyle(fontSize: 10)),
+            pw.SizedBox(height: 2),
+            pw.Center(child: pw.Text('Folio: C-$purchaseId  |  $dateStr', style: smallStyle)),
+            if (prefs.userName.isNotEmpty)
+              pw.Center(child: pw.Text('Atendio: ${prefs.userName}', style: smallStyle)),
+            pw.SizedBox(height: 2),
+            pw.Divider(color: primaryColor, thickness: 0.8),
+            pw.Text('Proveedor:', style: boldStyle),
+            pw.Text(providerName, style: normalStyle),
             if (reference.isNotEmpty) ...[
               pw.SizedBox(height: 2),
-              pw.Text('Referencia: $reference', style: const pw.TextStyle(fontSize: 10)),
+              pw.Text('Referencia: $reference', style: normalStyle),
             ],
-            pw.Divider(),
+            pw.SizedBox(height: 2),
+            pw.Divider(color: primaryColor, thickness: 0.8),
             pw.Row(
               children: [
                 pw.Expanded(flex: 4, child: pw.Text('PRODUCTO', style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold))),
