@@ -31,9 +31,14 @@ class DatabaseHelper {
       final dbPath = await getDatabasesPath();
       path = join(dbPath, filePath);
     }
-    return await openDatabase(path, version: 13, onCreate: _createDB, onUpgrade: _upgradeDB);
+    return await openDatabase(path, version: 14, onCreate: _createDB, onUpgrade: _upgradeDB);
   }
   Future<void> _upgradeDB(Database db, int oldV, int newV) async {
+    if (oldV < 14) {
+      // Usuario logueado que realizó la compra (para detalle/PDF y cortes por turno)
+      await db.execute("ALTER TABLE purchases ADD COLUMN created_by TEXT DEFAULT ''");
+      await db.execute("ALTER TABLE purchase_details ADD COLUMN created_by TEXT DEFAULT ''");
+    }
     if (oldV < 12) {
       await db.execute("ALTER TABLE products ADD COLUMN presentation TEXT DEFAULT ''");
     }
@@ -326,6 +331,7 @@ class DatabaseHelper {
         total       REAL NOT NULL,
         date        TEXT NOT NULL,
         reference   TEXT DEFAULT '',
+        created_by  TEXT DEFAULT '',
         synced      INTEGER NOT NULL DEFAULT 0,
         cloud_id    TEXT
       )
@@ -338,6 +344,7 @@ class DatabaseHelper {
         product_id    INTEGER NOT NULL,
         quantity      REAL    NOT NULL,
         cost_per_unit REAL    NOT NULL,
+        created_by    TEXT    DEFAULT '',
         FOREIGN KEY (purchase_id) REFERENCES purchases (id) ON DELETE CASCADE
       )
     ''');

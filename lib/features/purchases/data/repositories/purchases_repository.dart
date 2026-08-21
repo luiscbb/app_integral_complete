@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../../../core/database/database_helper.dart';
 import '../../../../core/services/sync_service.dart';
+import '../../../../core/storage/preferences_service.dart';
 import '../../../../features/inventory/data/repositories/product_repository.dart';
 import '../../../reports/data/repositories/reports_repository.dart';
 import '../../domain/entities/provider_entity.dart';
@@ -45,6 +46,7 @@ class PurchasesRepository {
 
   Future<int> savePurchase({required PurchaseEntity purchase}) async {
     final db = await _db.database;
+    final createdBy = PreferencesService().userName;
 
     // Registrar movimientos de inventario (kardex) FUERA de la transacción.
     // `recordInventoryMovement` usa `_db.database` (no el objeto `txn`), y
@@ -60,6 +62,7 @@ class PurchasesRepository {
         'total': purchase.total,
         'date': DateTime.now().toIso8601String(),
         'reference': purchase.reference,
+        'created_by': createdBy,
         'synced': 0,
       });
       for (final item in purchase.items) {
@@ -68,6 +71,7 @@ class PurchasesRepository {
           'product_id': item.productId,
           'quantity': item.quantity,
           'cost_per_unit': item.costPerUnit,
+          'created_by': createdBy,
         });
 
         // Ajustar stock considerando cajas/paquetes.

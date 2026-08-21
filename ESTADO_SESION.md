@@ -13,7 +13,7 @@
 2. El asistente debe leer **solo** la sección de abajo **"ESTADO ACTUAL — RESUMEN CLARO (LEER PRIMERO)"** — ahí está todo: qué está hecho, qué falta, y qué NO tocar.
 3. **NO** re-revisar ni re-hacer nada de lo que ya dice "COMMITEADO" o "hecho".
 4. La **sincronización Realtime de mesas, proveedores y compras YA funciona** (validada en línea). Los scripts SQL de Realtime ya se ejecutaron en Supabase (no tocarlos).
-5. El bug del PDF/historial de compras **YA está corregido y pusheado** (commit `57bef5d`). Pendiente principal: **VALIDAR EN RUNTIME** — registrar una compra y confirmar que sale el PDF con el nuevo encabezado y aparece en el historial. El APK release ya quedó compilado (`build\app\outputs\flutter-apk\app-release.apk`, 2026-08-19).
+5. El bug del PDF/historial de compras **YA está corregido y pusheado** (commit `57bef5d`). Se agregó **usuario logueado en compras + botón REIMPRIMIR PDF** (avance `2026-08-19`). Pendiente: **recompilar y validar en runtime** que el usuario se vea y la reimpresión funcione.
 
 > Si el asistente no tiene esta info, dile que abra `ESTADO_SESION.md` y lea la sección "ESTADO ACTUAL — RESUMEN CLARO".
 
@@ -35,6 +35,15 @@
    - `pullProvidersFromCloud` ahora filtra por `billar_id`.
    - `supabase/enable_realtime_tables.sql` actualizado para incluir `providers` y `purchases`.
 - `dart analyze .` → 0 errores. APK y EXE compilados. EXE corriendo.
+
+### ✅ AVANCE 2026-08-19 — Usuario en compras + reimpresión PDF
+Implementado y verificado (`dart analyze` → "No issues found!" en los 4 archivos):
+1. **Usuario logueado (`created_by`)** que realizó la compra: se guarda en `purchases` y `purchase_details` (local + nube), se sincroniza (push/pull en `sync_service.dart`) y se muestra en el detalle del historial y en el PDF como "Atendió".
+2. **Botón REIMPRIMIR PDF** en el detalle de una compra del historial: regenera el PDF con los datos guardados de esa compra (reutiliza el generador de PDF).
+3. **Script Supabase ya ejecutado:** `supabase/add_purchase_created_by.sql` (agrega columna `created_by` a `purchases` y `purchase_details` en la nube). Ejecutado correctamente.
+4. **Migración BD local v14:** agrega `created_by` a las tablas locales; corre automáticamente al abrir la app (no hay que borrar nada).
+
+**Pendiente:** recompilar APK/EXE con estos cambios y validar en runtime que al registrar una compra se vea el usuario y funcione la reimpresión.
 
 ### PENDIENTE (tema nuevo, SIN resolver aún): comprobante PDF y historial al cerrar compra
 **Síntoma (reportado hoy):** al cerrar/guardar una compra, **ya no se genera el comprobante PDF** (con logo e info de la empresa) y **no aparece en el historial** para recuperarlo. El usuario nota que los datos (proveedores, compras) sí se ven en ambos dispositivos, pero el PDF y el historial fallan.

@@ -1234,9 +1234,11 @@ Future<void> _showPurchasePdf({
   required String reference,
   required List<_PurchasePdfItem> items,
   required double total,
+  String createdBy = '',
 }) async {
   final prefs = PreferencesService();
   final businessName = prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
+  final atendio = createdBy.trim().isNotEmpty ? createdBy.trim() : prefs.userName;
 
   pw.MemoryImage? logoImage;
   final logoBytes = await _loadLogoBytes();
@@ -1324,8 +1326,8 @@ Future<void> _showPurchasePdf({
             ),
             pw.SizedBox(height: 2),
             pw.Center(child: pw.Text('Folio: C-$purchaseId  |  $dateStr', style: smallStyle)),
-            if (prefs.userName.isNotEmpty)
-              pw.Center(child: pw.Text('Atendio: ${prefs.userName}', style: smallStyle)),
+            if (atendio.isNotEmpty)
+              pw.Center(child: pw.Text('Atendio: $atendio', style: smallStyle)),
             pw.SizedBox(height: 2),
             pw.Divider(color: primaryColor, thickness: 0.8),
             pw.Text('Proveedor:', style: boldStyle),
@@ -1435,6 +1437,14 @@ class _HistoryTab extends StatelessWidget {
                       '${date.day}/${date.month}/${date.year}${(h['reference'] ?? '').toString().isNotEmpty ? ' | ${h['reference']}' : ''}',
                       style: const TextStyle(color: Colors.white38, fontSize: 12),
                     ),
+                    if ((h['created_by'] ?? '').toString().trim().isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          'Usuario: ${h['created_by']}',
+                          style: const TextStyle(color: Colors.white54, fontSize: 12),
+                        ),
+                      ),
                     const Divider(color: Colors.white24, height: 24),
                     if (details.isEmpty)
                       const Text('Sin detalle disponible', style: TextStyle(color: Colors.white38))
@@ -1495,6 +1505,34 @@ class _HistoryTab extends StatelessWidget {
               ),
             ),
             actions: [
+              TextButton.icon(
+                onPressed: () {
+                  final pdfItems = details.map((d) {
+                    final qty = (d['quantity'] as num).toDouble();
+                    final cost = (d['cost_per_unit'] as num).toDouble();
+                    return _PurchasePdfItem(
+                      name: d['product_name']?.toString() ?? 'Producto',
+                      quantity: qty,
+                      cost: cost,
+                      subtotal: qty * cost,
+                    );
+                  }).toList();
+                  final total = (h['total'] as num).toDouble();
+                  Navigator.pop(ctx);
+                  _showPurchasePdf(
+                    context: context,
+                    purchaseId: h['id'] as int,
+                    providerName: h['provider_name']?.toString() ?? 'Sin proveedor',
+                    reference: (h['reference'] ?? '').toString(),
+                    items: pdfItems,
+                    total: total,
+                    createdBy: (h['created_by'] ?? '').toString(),
+                  );
+                },
+                style: TextButton.styleFrom(foregroundColor: const Color(0xFFFB8C00)),
+                icon: const Icon(Icons.print, size: 18),
+                label: const Text('REIMPRIMIR PDF'),
+              ),
               TextButton(
                 onPressed: () => Navigator.pop(ctx),
                 child: const Text('CERRAR', style: TextStyle(color: Colors.white38)),

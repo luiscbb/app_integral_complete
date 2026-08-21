@@ -153,6 +153,7 @@ class SyncService {
     required double total,
     required String date,
     required String reference,
+    String createdBy = '',
     required List<Map<String, dynamic>> items,
     String? existingCloudId,
   }) async {
@@ -171,6 +172,7 @@ class SyncService {
         'total': total,
         'date': date,
         'reference': reference,
+        'created_by': createdBy,
         'billar_id': billarId,
       };
 
@@ -191,6 +193,7 @@ class SyncService {
           'product_id': item['product_id'],
           'quantity': item['quantity'],
           'cost_per_unit': item['cost_per_unit'],
+          'created_by': item['created_by'] ?? createdBy,
         });
       }
 
@@ -457,6 +460,7 @@ class SyncService {
           total: (purchase['total'] as num).toDouble(),
           date: purchase['date'] as String,
           reference: purchase['reference'] as String,
+          createdBy: (purchase['created_by'] as String?) ?? '',
           items: details,
           existingCloudId: purchase['cloud_id'] as String?,
         );
@@ -603,6 +607,7 @@ class SyncService {
           'total': (purchase['total'] as num).toDouble(),
           'date': purchase['date'],
           'reference': purchase['reference'] ?? '',
+          'created_by': purchase['created_by'] ?? '',
           'synced': 1,
           'cloud_id': cid,
         });
@@ -614,6 +619,7 @@ class SyncService {
             'product_id': d['product_id'],
             'quantity': (d['quantity'] as num).toDouble(),
             'cost_per_unit': (d['cost_per_unit'] as num).toDouble(),
+            'created_by': d['created_by'] ?? '',
           });
         }
       }
