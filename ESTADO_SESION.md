@@ -45,6 +45,22 @@ Implementado y verificado (`dart analyze` → "No issues found!" en los 4 archiv
 
 **Pendiente:** recompilar APK/EXE con estos cambios y validar en runtime que al registrar una compra se vea el usuario y funcione la reimpresión.
 
+### 📋 VALIDACIÓN PENDIENTE AL RETOMAR (lista de control)
+Cuando el usuario retome, se le recuerda validar esto (en orden):
+1. **Fix PDF/historial:** registrar una compra → debe salir el PDF con el nuevo encabezado y aparecer en el historial.
+2. **Usuario logueado (`created_by`):** al registrar una compra, el PDF y el detalle deben mostrar "Atendió/Usuario: <nombre>".
+3. **Botón REIMPRIMIR PDF:** en el detalle de una compra del historial, debe regenerar/imprimir el PDF de esa compra.
+4. **Sincronización:** la compra registrada en un dispositivo debe verse en el otro (Realtime ya funciona).
+
+### 🔜 PUNTO 4 (NO PASAR POR ALTO) — Origen del dinero (Caja / directo del cajero)
+**Solicitado por el usuario y APROBADO para implementar** (pendiente de validar los puntos 1-3 antes):
+- Al registrar una compra, preguntar si el dinero sale de la **Caja** o es **directo del cajero** (u otro origen).
+- Guardar ese dato para efectos del **corte de efectivo al final de turno por cajero/usuario**.
+- Es un cambio de diseño mayor (toca modelo de datos + UI del formulario de compra + lógica de corte). **Aún NO implementado.**
+
+### 🗂️ PLAN: Después de validar → módulo INFORMES
+- Si la validación de los puntos 1-4 sale positiva, el siguiente bloque de trabajo es el **módulo de Informes** (compras/caja/kardex y corte de caja por turno/cajero), donde encaja el punto 4.
+
 ### PENDIENTE (tema nuevo, SIN resolver aún): comprobante PDF y historial al cerrar compra
 **Síntoma (reportado hoy):** al cerrar/guardar una compra, **ya no se genera el comprobante PDF** (con logo e info de la empresa) y **no aparece en el historial** para recuperarlo. El usuario nota que los datos (proveedores, compras) sí se ven en ambos dispositivos, pero el PDF y el historial fallan.
 
