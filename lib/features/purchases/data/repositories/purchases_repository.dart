@@ -158,6 +158,10 @@ class PurchasesRepository {
 
   Future<List<Map<String, dynamic>>> getHistory() async {
     final db = await _db.database;
+    // Descargar compras de la nube en background (igual que se hace con
+    // proveedores en `getProviders`). Sin esto, el historial solo muestra la
+    // BD local y no se ven las compras hechas desde el otro dispositivo.
+    unawaited(_sync.pullPurchasesFromCloud());
     return db.rawQuery('''
       SELECT p.*, pr.name as provider_name
       FROM purchases p

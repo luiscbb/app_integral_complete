@@ -13,7 +13,7 @@
 2. El asistente debe leer **solo** la sección de abajo **"ESTADO ACTUAL — RESUMEN CLARO (LEER PRIMERO)"** — ahí está todo: qué está hecho, qué falta, y qué NO tocar.
 3. **NO** re-revisar ni re-hacer nada de lo que ya dice "COMMITEADO" o "hecho".
 4. La **sincronización Realtime de mesas, proveedores y compras YA funciona** (validada en línea). Los scripts SQL de Realtime ya se ejecutaron en Supabase (no tocarlos).
-5. El bug del PDF/historial de compras **YA está corregido y pusheado** (commit `57bef5d`). Se agregó **usuario logueado en compras + botón REIMPRIMIR PDF** (avance `2026-08-19`). Pendiente: **recompilar y validar en runtime** que el usuario se vea y la reimpresión funcione.
+5. El bug del PDF/historial de compras **YA está corregido y pusheado** (commit `57bef5d`). Se agregó **usuario logueado en compras + botón REIMPRIMIR PDF** (avance `2026-08-19`). Además, en la sesión `2026-08-23` se corrigió la **sincronización de compras entre dispositivos** (el historial ahora descarga las compras remotas) y se **restauró el working tree** (una reversión sin commitear había deshecho `created_by` + REIMPRIMIR PDF). Pendiente: **recompilar y validar en runtime**.
 
 > Si el asistente no tiene esta info, dile que abra `ESTADO_SESION.md` y lea la sección "ESTADO ACTUAL — RESUMEN CLARO".
 
@@ -45,12 +45,22 @@ Implementado y verificado (`dart analyze` → "No issues found!" en los 4 archiv
 
 **Pendiente:** recompilar APK/EXE con estos cambios y validar en runtime que al registrar una compra se vea el usuario y funcione la reimpresión.
 
+### ✅ AVANCE 2026-08-23 — Fix sincronización de compras entre dispositivos
+**Contexto:** una reversión sin commitear había deshecho el avance `2026-08-19` (usuario logueado `created_by` + botón REIMPRIMIR PDF) y `ESTADO_SESION.md` quedó regresivo. Se restauró todo al punto commiteado.
+1. **Causa raíz encontrada (historial/sincronización):** las compras **sí se subían** a la nube, pero **ningún dispositivo las descargaba**. La función `pullPurchasesFromCloud()` **nunca se llamaba** en ningún flujo de la app (solo `pullProvidersFromCloud()` se llamaba desde `getProviders`). Por eso los **proveedores** se veían en ambos lados pero el **historial de compras** no.
+2. **Fix aplicado:** en `lib/features/purchases/data/repositories/purchases_repository.dart`, `getHistory()` ahora llama `unawaited(_sync.pullPurchasesFromCloud())` antes de consultar la BD local (mismo patrón que ya usa `getProviders` con proveedores). Así el historial descarga las compras remotas.
+3. **Se restauró el working tree:** se deshizo la reversión sin commitear → volvieron `created_by` (v14 BD) y el botón REIMPRIMIR PDF en `database_helper.dart`, `sync_service.dart`, `purchases_page.dart`.
+4. **Se borraron las bases locales del exe** (`Documents\BaumarSolutions` y `AppData\Roaming\com.example\app_integral_complete`) para validar desde cero con el esquema v14. El exe pedirá login de nuevo.
+
+**Verificación:** `dart analyze` sobre los 4 archivos del módulo compras → **"No issues found!"** (código 0). Falta validar en runtime (recompilar APK/EXE).
+
 ### 📋 VALIDACIÓN PENDIENTE AL RETOMAR (lista de control)
 Cuando el usuario retome, se le recuerda validar esto (en orden):
 1. **Fix PDF/historial:** registrar una compra → debe salir el PDF con el nuevo encabezado y aparecer en el historial.
 2. **Usuario logueado (`created_by`):** al registrar una compra, el PDF y el detalle deben mostrar "Atendió/Usuario: <nombre>".
 3. **Botón REIMPRIMIR PDF:** en el detalle de una compra del historial, debe regenerar/imprimir el PDF de esa compra.
-4. **Sincronización:** la compra registrada en un dispositivo debe verse en el otro (Realtime ya funciona).
+4. **Sincronización de compras:** la compra registrada en un dispositivo debe verse en el otro (ahora con `getHistory` → `pullPurchasesFromCloud` + Realtime).
+5. **Arranque limpio del exe:** tras borrar las bases, el exe pide login con el **mismo usuario** del celular y descarga proveedores + compras de la nube.
 
 ### 🔜 PUNTO 4 (NO PASAR POR ALTO) — Origen del dinero (Caja / directo del cajero)
 **Solicitado por el usuario y APROBADO para implementar** (pendiente de validar los puntos 1-3 antes):
@@ -78,16 +88,16 @@ Cuando el usuario retome, se le recuerda validar esto (en orden):
 ### Estado Git
 - `7d43b2b`, `b6427ec`, `0a8d04a`, `1e92b4b` — mesas (ya pusheados).
 - `4479b71` — compras (nuevo producto, estado, realtime, fix billar_id) — **YA pusheado**.
-- `55dabc9`, `93980b0` — docs ESTADO_SESION — **YA pusheados**.
-- `57bef5d` — **fix PDF/historial de compras + encabezado como ventas** — **YA pusheado a GitHub**.
-- Working tree limpio (solo esta actualización del MD pendiente de commit).
+- `55dabc9`, `93980b0`, `57bef5d` — docs + fix PDF/historial — **YA pusheados**.
+- `32083cd` — `created_by` (usuario en compras) + botón REIMPRIMIR PDF — **YA pusheado**.
+- `ef36ac3` — docs ESTADO_SESION (validación, punto 4 origen dinero, plan informes) — **YA pusheado**.
+- Working tree actual (SIN commitear): `lib/features/purchases/data/repositories/purchases_repository.dart` con el **fix de sincronización de compras** (`getHistory` → `pullPurchasesFromCloud`) + `ESTADO_SESION.md` actualizado. Pendiente: commit + push cuando se valide en runtime.
 
 ### Lo que NO hay que hacer (para no gastar saldo de más)
 - ❌ **NO re-ejecutar** los scripts SQL de Realtime (ya ejecutados; Realtime funciona).
-- ❌ **NO re-revisar** bugs ya corregidos (stock, layout mesa, doble ticket, tiempo, estado al abrir, billar_id proveedores, PDF/historial de compras).
+- ❌ **NO re-revisar** bugs ya corregidos (stock, layout mesa, doble ticket, tiempo, estado al abrir, billar_id proveedores, PDF/historial de compras, created_by, reimprimir).
 - ❌ **NO re-hacer** los cambios de compras ya pusheados.
-- ❌ **NO recompilar** el APK (ya está compilado con el fix, 2026-08-19).
-- ✅ Prioridad: **validar en runtime el fix del PDF/historial** (instalar APK / correr exe, registrar una compra, confirmar PDF + historial).
+- ✅ Prioridad: **recompilar APK/EXE y validar en runtime** (registrar una compra → PDF + historial + usuario + reimpresión + sincronización entre dispositivos). Las bases locales del exe ya se borraron; el celular debe desinstalarse o borrar datos para arrancar limpio.
 
 ### Palabra clave para retomar
 **"RETOMAMOS VALIDACION COMPRAS"**
