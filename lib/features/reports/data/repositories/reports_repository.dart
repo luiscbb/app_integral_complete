@@ -72,6 +72,24 @@ class ReportsRepository {
     return {'count': purchases.length.toDouble(), 'total': total};
   }
 
+  /// Solo compras cuyo dinero salió de la Caja (cash_source = 'caja').
+  /// Las pagadas por el cajero, transferencia o tarjeta NO afectan el
+  /// efectivo esperado del corte de caja.
+  Future<List<Map<String, dynamic>>> getPurchasesByDateRangeCashOnly(
+    DateTime start,
+    DateTime end,
+  ) async {
+    final db = await _db.database;
+    final s = DateTime(start.year, start.month, start.day).toIso8601String();
+    final e = DateTime(end.year, end.month, end.day, 23, 59, 59).toIso8601String();
+    return db.query(
+      'purchases',
+      where: "date >= ? AND date <= ? AND cash_source = 'caja'",
+      whereArgs: [s, e],
+      orderBy: 'date DESC',
+    );
+  }
+
   // ─────────────────────────────────────────────────────────────────
   // KARDEX / MOVIMIENTOS DE INVENTARIO
   // ─────────────────────────────────────────────────────────────────
@@ -149,7 +167,8 @@ class ReportsRepository {
 
   Future<Map<String, double>> getCashFlowSummary(DateTime start, DateTime end) async {
     final sales = await getSalesByDateRange(start, end);
-    final purchases = await getPurchasesByDateRange(start, end);
+    // Solo se resta del efectivo lo que realmente salió de la caja física.
+    final purchases = await getPurchasesByDateRangeCashOnly(start, end);
     final outflows = await getCashOutflows(start, end);
 
     double totalSales = 0;

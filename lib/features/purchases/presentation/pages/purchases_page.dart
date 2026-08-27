@@ -169,6 +169,7 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab>
   ProviderEntity? _provider;
   final List<_CartItem> _cart = [];
   bool _saving = false;
+  String _cashSource = CashSource.caja;
 
   // Mantiene vivo el carrito mientras se permanezca dentro del apartado de
   // compras (al cambiar de pestana NUEVA COMPRA/PROVEEDORES/HISTORIAL).
@@ -213,6 +214,7 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab>
       final purchase = PurchaseEntity(
         providerId: _provider?.id,
         reference: _refCtrl.text.toUpperCase(),
+        cashSource: _cashSource,
         items:
             _cart
                 .map(
@@ -249,10 +251,12 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab>
         reference: reference,
         items: itemsForPdf,
         total: total,
+        cashSource: _cashSource,
       );
 
       _refCtrl.clear();
       _provider = null;
+      _cashSource = CashSource.caja;
       for (final c in _qtyControllers) {
         c.dispose();
       }
@@ -565,6 +569,44 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab>
                         fillColor: Colors.white.withValues(alpha: 0.05),
                         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  const Text(
+                    'ORIGEN DEL DINERO:',
+                    style: TextStyle(
+                      color: Colors.white38,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: CashSource.values.map((v) {
+                        final selected = _cashSource == v;
+                        return ChoiceChip(
+                          label: Text(
+                            CashSource.label(v),
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: selected ? Colors.white : Colors.white70,
+                              fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                            ),
+                          ),
+                          selected: selected,
+                          selectedColor: primary,
+                          backgroundColor: Colors.white.withValues(alpha: 0.05),
+                          onSelected: (_) => setState(() => _cashSource = v),
+                        );
+                      }).toList(),
                     ),
                   ),
                 ],
@@ -1235,6 +1277,7 @@ Future<void> _showPurchasePdf({
   required List<_PurchasePdfItem> items,
   required double total,
   String createdBy = '',
+  String cashSource = CashSource.caja,
 }) async {
   final prefs = PreferencesService();
   final businessName = prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
@@ -1328,6 +1371,7 @@ Future<void> _showPurchasePdf({
             pw.Center(child: pw.Text('Folio: C-$purchaseId  |  $dateStr', style: smallStyle)),
             if (atendio.isNotEmpty)
               pw.Center(child: pw.Text('Atendio: $atendio', style: smallStyle)),
+            pw.Center(child: pw.Text('Origen: ${CashSource.label(cashSource)}', style: smallStyle)),
             pw.SizedBox(height: 2),
             pw.Divider(color: primaryColor, thickness: 0.8),
             pw.Text('Proveedor:', style: boldStyle),
@@ -1445,6 +1489,13 @@ class _HistoryTab extends StatelessWidget {
                           style: const TextStyle(color: Colors.white54, fontSize: 12),
                         ),
                       ),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        'Origen: ${CashSource.label((h['cash_source'] ?? 'caja').toString())}',
+                        style: const TextStyle(color: Colors.white54, fontSize: 12),
+                      ),
+                    ),
                     const Divider(color: Colors.white24, height: 24),
                     if (details.isEmpty)
                       const Text('Sin detalle disponible', style: TextStyle(color: Colors.white38))
@@ -1527,6 +1578,7 @@ class _HistoryTab extends StatelessWidget {
                     items: pdfItems,
                     total: total,
                     createdBy: (h['created_by'] ?? '').toString(),
+                    cashSource: (h['cash_source'] ?? 'caja').toString(),
                   );
                 },
                 style: TextButton.styleFrom(foregroundColor: const Color(0xFFFB8C00)),
@@ -1552,8 +1604,9 @@ class _HistoryTab extends StatelessWidget {
       itemBuilder: (_, i) {
         final h = history[i];
         final date = DateTime.tryParse(h['date'] ?? '') ?? DateTime.now();
+        final cashSource = (h['cash_source'] ?? 'caja').toString();
         return ListTile(
-          leading: const Icon(Icons.receipt, color: Color(0xFFFB8C00)),
+          leading: Icon(_cashSourceIcon(cashSource), color: _cashSourceColor(cashSource)),
           title: Text(
             h['provider_name'] ?? 'Sin proveedor',
             style: const TextStyle(color: Colors.white),
@@ -1570,5 +1623,35 @@ class _HistoryTab extends StatelessWidget {
         );
       },
     );
+  }
+}
+
+/// Icono/color según el origen del dinero, para distinguir a simple vista
+/// en la lista del historial sin necesidad de abrir el detalle.
+IconData _cashSourceIcon(String cashSource) {
+  switch (cashSource) {
+    case CashSource.cajero:
+      return Icons.person;
+    case CashSource.transferencia:
+      return Icons.swap_horiz;
+    case CashSource.tarjeta:
+      return Icons.credit_card;
+    case CashSource.caja:
+    default:
+      return Icons.point_of_sale;
+  }
+}
+
+Color _cashSourceColor(String cashSource) {
+  switch (cashSource) {
+    case CashSource.cajero:
+      return Colors.blueAccent;
+    case CashSource.transferencia:
+      return Colors.purpleAccent;
+    case CashSource.tarjeta:
+      return Colors.tealAccent;
+    case CashSource.caja:
+    default:
+      return const Color(0xFFFB8C00);
   }
 }

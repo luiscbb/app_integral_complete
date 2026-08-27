@@ -63,6 +63,7 @@ class PurchasesRepository {
         'date': DateTime.now().toIso8601String(),
         'reference': purchase.reference,
         'created_by': createdBy,
+        'cash_source': purchase.cashSource,
         'synced': 0,
       });
       for (final item in purchase.items) {

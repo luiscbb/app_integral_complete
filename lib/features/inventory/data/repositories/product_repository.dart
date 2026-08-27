@@ -94,27 +94,37 @@ class ProductRepository implements IProductRepository {
           };
 
           if (cleanMap['id'] != null) {
-            // Para productos EXISTENTES: update SOLO datos administrativos, NUNCA stock
+            // Para productos EXISTENTES: actualizar también el stock.
+            // La nube siempre refleja el último movimiento real (compra/venta),
+            // porque cada cambio de stock se sube de inmediato tras aplicarse
+            // (ver `_syncProductStockToCloud`, `decreaseStock`, `syncProductById`).
+            // Solo se excluyen los productos con cambios locales aún sin subir
+            // (synced = 0), para no pisar una venta/compra que no ha llegado a
+            // la nube todavía.
             final existing = await txn.query('products', where: 'id = ?', whereArgs: [cleanMap['id']]);
             if (existing.isNotEmpty) {
-              // Producto local existe: actualizar solo lo que NO es stock
+              final localSynced = (existing.first['synced'] as int?) ?? 1;
+              final updateMap = {
+                'name': cleanMap['name'],
+                'description': cleanMap['description'],
+                'price': cleanMap['price'],
+                'cost': cleanMap['cost'],
+                'image_path': cleanMap['image_path'],
+                'is_promo': cleanMap['is_promo'],
+                'parent_id': cleanMap['parent_id'],
+                'pieces_per_unit': cleanMap['pieces_per_unit'],
+                'category': cleanMap['category'],
+                'presentation': cleanMap['presentation'],
+                'billar_id': cleanMap['billar_id'],
+                'synced': 1,
+              };
+              if (localSynced != 0) {
+                // Sin cambios locales pendientes: es seguro tomar el stock de la nube.
+                updateMap['stock'] = cleanMap['stock'];
+              }
               await txn.update(
                 'products',
-                {
-                  'name': cleanMap['name'],
-                  'description': cleanMap['description'],
-                  'price': cleanMap['price'],
-                  'cost': cleanMap['cost'],
-                  'image_path': cleanMap['image_path'],
-                  'is_promo': cleanMap['is_promo'],
-                  'parent_id': cleanMap['parent_id'],
-                  'pieces_per_unit': cleanMap['pieces_per_unit'],
-                  'category': cleanMap['category'],
-                  'presentation': cleanMap['presentation'],
-                  'billar_id': cleanMap['billar_id'],
-                  'synced': 1,
-                  // NUNCA actualizar stock
-                },
+                updateMap,
                 where: 'id = ?',
                 whereArgs: [cleanMap['id']],
               );

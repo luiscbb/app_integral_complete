@@ -154,6 +154,7 @@ class SyncService {
     required String date,
     required String reference,
     String createdBy = '',
+    String cashSource = 'caja',
     required List<Map<String, dynamic>> items,
     String? existingCloudId,
   }) async {
@@ -173,6 +174,7 @@ class SyncService {
         'date': date,
         'reference': reference,
         'created_by': createdBy,
+        'cash_source': cashSource,
         'billar_id': billarId,
       };
 
@@ -461,6 +463,7 @@ class SyncService {
           date: purchase['date'] as String,
           reference: purchase['reference'] as String,
           createdBy: (purchase['created_by'] as String?) ?? '',
+          cashSource: (purchase['cash_source'] as String?) ?? 'caja',
           items: details,
           existingCloudId: purchase['cloud_id'] as String?,
         );
@@ -608,6 +611,7 @@ class SyncService {
           'date': purchase['date'],
           'reference': purchase['reference'] ?? '',
           'created_by': purchase['created_by'] ?? '',
+          'cash_source': purchase['cash_source'] ?? 'caja',
           'synced': 1,
           'cloud_id': cid,
         });
