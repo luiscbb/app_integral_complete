@@ -32,9 +32,14 @@
 - **Filtro por rango de fechas de compras:** se hará en **Informes**, no en Compras. Compras es operativo (lista reciente + `LIMIT 100`, ya suficiente); Informes es analítico y ya tiene `getPurchasesByDateRange` para eso. No duplicar la lógica en dos pantallas.
 - **Apartado de Compras: se considera completo** para pasar directo a Informes (proveedores, carrito, PDF, historial, origen del dinero, sync entre dispositivos, distinción visual por origen). No se identificó nada estructural faltante.
 
+### 📌 DECISIÓN DE DISEÑO — Ubicación del CORTE DE CAJA
+- El **corte de caja va DENTRO de Informes**, en la pestaña **"Caja"** (no como tarjeta nueva en el home). `ReportsPage` ya tiene 4 pestañas (Ventas/Compras/Caja/Kardex) y ya carga `getCashFlowSummary`; el corte es una operación sobre la caja, así que vive ahí. En la pestaña Caja quedará: resumen de flujo de caja + botones ABRIR TURNO / CORTE PARCIAL / CORTE TOTAL + ticket de corte (patrón de PDF/ticket ya usado en ventas y compras). Opcional a futuro: atajo en el home hacia esa misma pestaña.
+- **Trazabilidad entre cajeros (entrega/recepción de efectivo) visible desde la primera versión:** aunque los roles/login formales con contraseña se dejan para más adelante (eso sí involucra `auth` y es un paso mayor), la pantalla de caja mostrará desde el inicio **quién abrió la caja y con cuánto** (`created_by` + `opening_amount`) y **quién la cierra y con cuánto** (`closed_by` + `closing_amount`). La base ya lo soporta (`cashier_sessions`), solo hay que hacerlo visible. El "usuario/cajero" por ahora será un campo simple (nombre), no un sistema de cuentas. Esto evita rehacer la trazabilidad cuando lleguen los roles formales.
+
 ### 🔜 SIGUIENTE — Corte de caja / flujo de caja (validar + construir UI)
 - Código de origen del dinero ya filtra el corte: `getCashFlowSummary` en `reports_repository.dart` solo resta compras con `cash_source = 'caja'` (las de cajero/transferencia/tarjeta no afectan el efectivo esperado). **Falta probarlo en runtime** cuando haya una pantalla de corte visible.
 - Pantalla de UI de corte parcial/total con ticket **aún no se ha construido** (la base de datos `cashier_sessions` y la lógica en `ReportsRepository` ya existen: `openSession`, `getOpenSession`, `closeSession`, `addPartialClosure`).
+- Implementar en la pestaña "Caja" de Informes: ABRIR TURNO, CORTE PARCIAL, CORTE TOTAL, ticket de corte y sección visible de entrega/recepción entre cajeros.
 - Este es el siguiente paso a trabajar.
 
 ### Estado Git
