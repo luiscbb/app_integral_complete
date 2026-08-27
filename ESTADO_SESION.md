@@ -52,7 +52,9 @@
 - ❌ NO usar hot reload para probar cambios de repositorios/base de datos/sync — siempre reiniciar completo (F5 / hot restart) en ambos dispositivos.
 
 ### Palabra clave para retomar
-**"RETOMAMOS VALIDACION COMPRAS"**
+**"RETOMAMOS CORTE DE CAJA"**
+
+> Al retomar mañana: leer solo la sección "ESTADO ACTUAL — RESUMEN CLARO". El siguiente trabajo es el **corte de caja / módulo Informes** (construir la UI de corte parcial/total con ticket, que ya tiene base en `cashier_sessions` y `ReportsRepository`). Después de cimentar ese módulo, evaluar la idea (ya comentada con el usuario) de un proyecto nuevo clon con solo: venta rápida, mesas, inventario, compras, informes, control de caja y configuración — mismo negocio de billar, sin login, con base Supabase nueva y los mismos scripts SQL.
 
 ---
 
