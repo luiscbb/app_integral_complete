@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'dart:io';
+import 'dart:typed_data';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 import '../../../inventory/data/repositories/product_repository.dart';
 import '../../../inventory/domain/entities/product_entity.dart';
 import '../../../purchases/data/repositories/purchases_repository.dart';
@@ -9,6 +14,7 @@ import '../../../sales/presentation/services/ticket_service.dart';
 import '../../data/repositories/reports_repository.dart';
 import '../../../../core/routes/app_routes.dart';
 import '../../../../core/theme/theme_provider.dart';
+import '../../../../core/storage/preferences_service.dart';
 
 class ReportsPage extends StatefulWidget {
   const ReportsPage({super.key});
@@ -35,6 +41,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   List<ProductEntity> _products = [];
   int? _selectedProductId;
   List<Map<String, dynamic>> _movements = [];
+  Map<String, dynamic>? _openSession;
 
   @override
   void initState() {
@@ -55,6 +62,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final purchases = await _purchasesRepo.getHistory();
     final cashFlow = await _reportsRepo.getCashFlowSummary(_start, _end);
     final products = await _productRepo.getAll();
+    final openSession = await _reportsRepo.getOpenSession();
     List<Map<String, dynamic>> movements = [];
     if (_selectedProductId != null) {
       movements = await _reportsRepo.getInventoryMovements(_selectedProductId!);
@@ -66,6 +74,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
         _cashFlow = cashFlow;
         _products = products;
         _movements = movements;
+        _openSession = openSession;
         _isLoading = false;
       });
     }
@@ -287,6 +296,345 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     );
   }
 
+  Future<void> _openTurn() async {
+    final prefs = PreferencesService();
+    final nameCtrl = TextEditingController(text: prefs.userName);
+    final amountCtrl = TextEditingController();
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('ABRIR TURNO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameCtrl,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(labelText: 'Cajero (quien abre)', labelStyle: TextStyle(color: Colors.white38)),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: amountCtrl,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(labelText: 'Monto inicial en caja', labelStyle: TextStyle(color: Colors.white38)),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
+          ElevatedButton(
+            onPressed: () async {
+              final amount = double.tryParse(amountCtrl.text) ?? 0;
+              if (amount >= 0) {
+                await _reportsRepo.openSession(openingAmount: amount, createdBy: nameCtrl.text.trim().isEmpty ? prefs.userName : nameCtrl.text.trim());
+                if (ctx.mounted) Navigator.pop(ctx);
+                await _load();
+              }
+            },
+            child: const Text('ABRIR', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _partialCutoff() async {
+    final amountCtrl = TextEditingController();
+    final notesCtrl = TextEditingController();
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('CORTE PARCIAL', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: amountCtrl,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(labelText: 'Monto retirado', labelStyle: TextStyle(color: Colors.white38)),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: notesCtrl,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(labelText: 'Notas (opcional)', labelStyle: TextStyle(color: Colors.white38)),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
+          ElevatedButton(
+            onPressed: () async {
+              final amount = double.tryParse(amountCtrl.text) ?? 0;
+              if (amount > 0) {
+                await _reportsRepo.addPartialClosure(amount: amount, notes: notesCtrl.text.trim());
+                if (ctx.mounted) Navigator.pop(ctx);
+                await _load();
+                if (mounted) {
+                  final summary = await _reportsRepo.getCashFlowSummary(_start, _end);
+                  final session = _openSession;
+                  await _showCutoffPdf(
+                    openingAmount: (session?['opening_amount'] as num?)?.toDouble() ?? 0,
+                    openedBy: (session?['created_by'] ?? '').toString(),
+                    closingAmount: amount,
+                    closedBy: '',
+                    summary: summary,
+                    isPartial: true,
+                  );
+                }
+              }
+            },
+            child: const Text('GUARDAR', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _totalCutoff() async {
+    final prefs = PreferencesService();
+    final closedByCtrl = TextEditingController(text: prefs.userName);
+    final closingCtrl = TextEditingController();
+    final session = _openSession;
+    if (session == null) return;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('CORTE TOTAL', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Abrió: ${session['created_by'] ?? '?'}  con  \$${((session['opening_amount'] as num?) ?? 0).toStringAsFixed(2)}',
+                style: const TextStyle(color: Colors.white54, fontSize: 12)),
+            const SizedBox(height: 12),
+            TextField(
+              controller: closedByCtrl,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(labelText: 'Cajero que cierra', labelStyle: TextStyle(color: Colors.white38)),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: closingCtrl,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(labelText: 'Efectivo contado', labelStyle: TextStyle(color: Colors.white38)),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
+          ElevatedButton(
+            onPressed: () async {
+              final closing = double.tryParse(closingCtrl.text) ?? 0;
+              final closedBy = closedByCtrl.text.trim().isEmpty ? prefs.userName : closedByCtrl.text.trim();
+              await _reportsRepo.closeSession(closingAmount: closing, closedBy: closedBy);
+              if (ctx.mounted) Navigator.pop(ctx);
+              await _load();
+              if (mounted) {
+                final summary = await _reportsRepo.getCashFlowSummary(_start, _end);
+                await _showCutoffPdf(
+                  openingAmount: (session['opening_amount'] as num?)?.toDouble() ?? 0,
+                  openedBy: (session['created_by'] ?? '').toString(),
+                  closingAmount: closing,
+                  closedBy: closedBy,
+                  summary: summary,
+                  isPartial: false,
+                );
+              }
+            },
+            child: const Text('CERRAR TURNO', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showCutoffPdf({
+    required double openingAmount,
+    required String openedBy,
+    required double closingAmount,
+    required String closedBy,
+    required Map<String, double> summary,
+    required bool isPartial,
+  }) async {
+    final prefs = PreferencesService();
+    final businessName = prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
+    final primaryColor = PdfColor.fromInt(prefs.primaryColorValue);
+
+    pw.MemoryImage? logoImage;
+    final logoBytes = await _loadLogoBytes();
+    if (logoBytes != null) {
+      logoImage = pw.MemoryImage(logoBytes);
+    }
+
+    final pdf = pw.Document();
+    final now = DateTime.now();
+    final dateStr =
+        '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}  ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+
+    final titleStyle = pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12, color: PdfColors.black, letterSpacing: 1);
+    final normalStyle = pw.TextStyle(fontSize: 9.5, color: PdfColors.black);
+    final boldStyle = pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10, color: PdfColors.black);
+    final smallStyle = pw.TextStyle(fontSize: 8, color: PdfColors.grey700);
+
+    final sales = summary['sales'] ?? 0;
+    final purchases = summary['purchases'] ?? 0;
+    final outflows = summary['outflows'] ?? 0;
+    final net = summary['netCash'] ?? 0;
+    final expected = openingAmount + net;
+    final difference = closingAmount - expected;
+
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.roll80,
+        build: (pw.Context ctx) {
+          return pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.center,
+            children: [
+              pw.SizedBox(height: 4),
+              if (logoImage != null) ...[
+                pw.Center(child: pw.Image(logoImage, width: 56, height: 56)),
+                pw.SizedBox(height: 4),
+              ],
+              pw.Center(child: pw.Text(businessName.toUpperCase(), style: titleStyle)),
+              pw.SizedBox(height: 2),
+              pw.Center(child: pw.Text(isPartial ? 'CORTE PARCIAL DE CAJA' : 'CORTE TOTAL DE CAJA', style: boldStyle)),
+              pw.SizedBox(height: 2),
+              pw.Center(child: pw.Text(dateStr, style: smallStyle)),
+              pw.SizedBox(height: 2),
+              pw.Divider(color: primaryColor, thickness: 0.8),
+              pw.Text('Abrió: $openedBy', style: normalStyle),
+              pw.Text('Monto inicial: \$${openingAmount.toStringAsFixed(2)}', style: normalStyle),
+              if (!isPartial) ...[
+                pw.SizedBox(height: 2),
+                pw.Text('Cerró: $closedBy', style: normalStyle),
+              ],
+              pw.Divider(color: primaryColor, thickness: 0.8),
+              pw.Text('Ventas: \$${sales.toStringAsFixed(2)}', style: normalStyle),
+              pw.Text('Compras (caja): \$${purchases.toStringAsFixed(2)}', style: normalStyle),
+              pw.Text('Retiros/Gastos: \$${outflows.toStringAsFixed(2)}', style: normalStyle),
+              pw.SizedBox(height: 2),
+              pw.Divider(color: primaryColor, thickness: 0.8),
+              if (isPartial) ...[
+                pw.Text('Retiro parcial: \$${closingAmount.toStringAsFixed(2)}', style: boldStyle),
+              ] else ...[
+                pw.Text('Efectivo esperado: \$${expected.toStringAsFixed(2)}', style: boldStyle),
+                pw.Text('Efectivo contado: \$${closingAmount.toStringAsFixed(2)}', style: normalStyle),
+                pw.Text('Diferencia: \$${difference.toStringAsFixed(2)}', style: boldStyle),
+              ],
+              pw.SizedBox(height: 10),
+              pw.Center(child: pw.Text('Documento interno / control de caja', style: const pw.TextStyle(fontSize: 7))),
+            ],
+          );
+        },
+      ),
+    );
+
+    final bytes = await pdf.save();
+    if (!context.mounted) return;
+
+    // Vista previa dentro de la app (igual que venta rápida), con opciones
+    // de imprimir y compartir el PDF.
+    final fileName = 'corte_${now.millisecondsSinceEpoch}.pdf';
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.9,
+        maxChildSize: 0.95,
+        builder: (_, ctrl) => Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: const BoxDecoration(
+                color: Color(0xFF1A1A1A),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              ),
+              child: Row(
+                children: [
+                  Text(
+                    isPartial ? 'CORTE PARCIAL' : 'CORTE TOTAL',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.share, color: Colors.blue),
+                    onPressed: () => Printing.sharePdf(
+                      bytes: bytes,
+                      filename: fileName,
+                    ),
+                  ),
+                  IconButton(
+                    icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
+                    onPressed: () => Printing.layoutPdf(
+                      onLayout: (_) async => bytes,
+                      name: fileName,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white54),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: PdfPreview(
+                padding: const EdgeInsets.all(12),
+                build: (_) => Future.value(bytes),
+                allowSharing: false,
+                allowPrinting: false,
+                initialPageFormat: const PdfPageFormat(80 * PdfPageFormat.mm, 200 * PdfPageFormat.mm),
+                pageFormats: const {},
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<Uint8List?> _loadLogoBytes() async {
+    final prefs = PreferencesService();
+    if (prefs.logoPath.isNotEmpty) {
+      final file = File(prefs.logoPath);
+      if (await file.exists()) return file.readAsBytes();
+    }
+    if (prefs.logoUrl.isNotEmpty) {
+      try {
+        final client = HttpClient();
+        final req = await client.getUrl(Uri.parse(prefs.logoUrl));
+        final res = await req.close().timeout(const Duration(seconds: 8));
+        if (res.statusCode == 200) {
+          final bytes = <int>[];
+          await for (final chunk in res) {
+            bytes.addAll(chunk);
+          }
+          client.close();
+          return Uint8List.fromList(bytes);
+        }
+        client.close();
+      } catch (_) {}
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final primary = Theme.of(context).colorScheme.primary;
@@ -419,30 +767,87 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final purchases = _cashFlow['purchases'] ?? 0;
     final outflows = _cashFlow['outflows'] ?? 0;
     final net = _cashFlow['netCash'] ?? 0;
-    return Column(
-      children: [
-        _buildDateFilter(),
-        _StatsCard(label: 'Ingresos (ventas)', value: '\$${sales.toStringAsFixed(2)}', icon: Icons.arrow_upward, color: Colors.greenAccent),
-        const SizedBox(height: 12),
-        _StatsCard(label: 'Compras', value: '\$${purchases.toStringAsFixed(2)}', icon: Icons.shopping_cart, color: Colors.orangeAccent),
-        const SizedBox(height: 12),
-        _StatsCard(label: 'Retiros/Gastos', value: '\$${outflows.toStringAsFixed(2)}', icon: Icons.arrow_downward, color: Colors.redAccent),
-        const SizedBox(height: 12),
-        _StatsCard(label: 'Efectivo neto', value: '\$${net.toStringAsFixed(2)}', icon: Icons.account_balance_wallet, color: primary),
-        const SizedBox(height: 12),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-              icon: const Icon(Icons.money_off, color: Colors.white),
-              label: const Text('REGISTRAR RETIRO / GASTO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-              onPressed: _addOutflow,
-            ),
+    final session = _openSession;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _buildDateFilter(),
+          const SizedBox(height: 8),
+          _StatsCard(label: 'Ingresos (ventas)', value: '\$${sales.toStringAsFixed(2)}', icon: Icons.arrow_upward, color: Colors.greenAccent),
+          const SizedBox(height: 12),
+          _StatsCard(label: 'Compras', value: '\$${purchases.toStringAsFixed(2)}', icon: Icons.shopping_cart, color: Colors.orangeAccent),
+          const SizedBox(height: 12),
+          _StatsCard(label: 'Retiros/Gastos', value: '\$${outflows.toStringAsFixed(2)}', icon: Icons.arrow_downward, color: Colors.redAccent),
+          const SizedBox(height: 12),
+          _StatsCard(label: 'Efectivo neto', value: '\$${net.toStringAsFixed(2)}', icon: Icons.account_balance_wallet, color: primary),
+          const SizedBox(height: 12),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.symmetric(vertical: 14)),
+            icon: const Icon(Icons.money_off, color: Colors.white),
+            label: const Text('REGISTRAR RETIRO / GASTO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            onPressed: _addOutflow,
           ),
-        ),
-      ],
+          const Divider(color: Colors.white10, height: 32),
+          // ── Sección de TURNO / CORTE DE CAJA ──
+          if (session == null) ...[
+            Text(
+              'SIN TURNO ABIERTO',
+              style: TextStyle(color: primary, fontWeight: FontWeight.bold, letterSpacing: 1),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(backgroundColor: primary, padding: const EdgeInsets.symmetric(vertical: 14)),
+              icon: const Icon(Icons.play_circle, color: Colors.white),
+              label: const Text('ABRIR TURNO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              onPressed: _openTurn,
+            ),
+          ] else ...[
+            Text(
+              'TURNO ABIERTO',
+              style: TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold, letterSpacing: 1),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            _TurnInfoRow(icon: Icons.person, label: 'Abrió', value: (session['created_by'] ?? '?').toString()),
+            _TurnInfoRow(
+              icon: Icons.payments,
+              label: 'Monto inicial',
+              value: '\$${((session['opening_amount'] as num?) ?? 0).toStringAsFixed(2)}',
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.orangeAccent, padding: const EdgeInsets.symmetric(vertical: 12)),
+                    icon: const Icon(Icons.content_cut, color: Colors.white, size: 18),
+                    label: const Text('CORTE PARCIAL', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                    onPressed: _partialCutoff,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.symmetric(vertical: 12)),
+                    icon: const Icon(Icons.stop_circle, color: Colors.white, size: 18),
+                    label: const Text('CORTE TOTAL', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                    onPressed: _totalCutoff,
+                  ),
+                ),
+              ],
+            ),
+          ],
+          const SizedBox(height: 8),
+          Text(
+            'El corte de caja permite registrar quién abre y quién cierra la caja, y cuánto dinero se entrega entre turnos.',
+            style: const TextStyle(color: Colors.white24, fontSize: 11),
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
     );
   }
 
@@ -505,6 +910,29 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                 ),
         ),
       ],
+    );
+  }
+}
+
+class _TurnInfoRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  const _TurnInfoRow({required this.icon, required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Icon(icon, color: Colors.white54, size: 18),
+          const SizedBox(width: 8),
+          Text('$label:', style: const TextStyle(color: Colors.white54, fontSize: 13)),
+          const Spacer(),
+          Text(value, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+        ],
+      ),
     );
   }
 }
