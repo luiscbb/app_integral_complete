@@ -1,5 +1,7 @@
 # Estado de la sesión (para retomar)
 
+> **01/09/26 — última actualización**
+
 > Generado automáticamente para poder revisar avances mientras se recargan créditos.
 > Todo lo listado abajo ya está en el código (working tree), sin commitear salvo que se indique lo contrario.
 
