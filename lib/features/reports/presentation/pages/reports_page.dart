@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -42,6 +42,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   int? _selectedProductId;
   List<Map<String, dynamic>> _movements = [];
   Map<String, dynamic>? _openSession;
+  List<String> _concepts = [];
 
   @override
   void initState() {
@@ -63,6 +64,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final cashFlow = await _reportsRepo.getCashFlowSummary(_start, _end);
     final products = await _productRepo.getAll();
     final openSession = await _reportsRepo.getOpenSession();
+    final concepts = await _reportsRepo.getConcepts();
     List<Map<String, dynamic>> movements = [];
     if (_selectedProductId != null) {
       movements = await _reportsRepo.getInventoryMovements(_selectedProductId!);
@@ -75,6 +77,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
         _products = products;
         _movements = movements;
         _openSession = openSession;
+        _concepts = concepts;
         _isLoading = false;
       });
     }
@@ -237,7 +240,8 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   }
 
   Future<void> _addOutflow() async {
-    String type = 'expense';
+    final prefs = PreferencesService();
+    String type = _concepts.isNotEmpty ? _concepts.first : 'GASTO';
     final descCtrl = TextEditingController();
     final amountCtrl = TextEditingController();
     await showDialog(
@@ -248,18 +252,34 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            DropdownButtonFormField<String>(
-              value: type,
-              dropdownColor: const Color(0xFF1A1A1A),
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(labelText: 'Tipo', labelStyle: TextStyle(color: Colors.white38)),
-              items: const [
-                DropdownMenuItem(value: 'withdrawal', child: Text('Retiro de efectivo')),
-                DropdownMenuItem(value: 'expense', child: Text('Gasto')),
-                DropdownMenuItem(value: 'refund', child: Text('Devolución')),
-                DropdownMenuItem(value: 'other', child: Text('Otro')),
+            Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    value: type,
+                    dropdownColor: const Color(0xFF1A1A1A),
+                    style: const TextStyle(color: Colors.white),
+                    decoration: const InputDecoration(labelText: 'Concepto', labelStyle: TextStyle(color: Colors.white38)),
+                    items: [
+                      if (_concepts.isEmpty)
+                        const DropdownMenuItem(value: 'GASTO', child: Text('GASTO')),
+                      ..._concepts.map((c) => DropdownMenuItem(value: c, child: Text(c))),
+                    ],
+                    onChanged: (v) => type = v!,
+                  ),
+                ),
+                IconButton(
+                  icon: Icon(Icons.add_circle, color: Theme.of(ctx).colorScheme.primary),
+                  tooltip: 'Agregar concepto',
+                  onPressed: () async {
+                    await _showAddConceptDialog(ctx);
+                    await _reloadConceptsOnly();
+                    if (ctx.mounted && _concepts.isNotEmpty) {
+                      type = _concepts.first;
+                    }
+                  },
+                ),
               ],
-              onChanged: (v) => type = v!,
             ),
             TextField(
               controller: amountCtrl,
@@ -270,7 +290,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
             TextField(
               controller: descCtrl,
               style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(labelText: 'Descripción', labelStyle: TextStyle(color: Colors.white38)),
+              decoration: const InputDecoration(labelText: 'Descripción (opcional)', labelStyle: TextStyle(color: Colors.white38)),
             ),
           ],
         ),
@@ -279,14 +299,232 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
           ElevatedButton(
             onPressed: () async {
               final amount = double.tryParse(amountCtrl.text) ?? 0;
-              if (amount > 0 && descCtrl.text.trim().isNotEmpty) {
-                await _reportsRepo.addCashOutflow(
-                  outflowType: type,
-                  amount: amount,
-                  description: descCtrl.text.trim(),
+              if (amount <= 0) {
+                if (ctx.mounted) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    const SnackBar(
+                      content: Text('Ingresa un monto válido mayor a 0'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+                return;
+              }
+              if (type.isEmpty) {
+                if (ctx.mounted) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    const SnackBar(
+                      content: Text('Selecciona un concepto'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+                return;
+              }
+              await _reportsRepo.addCashOutflow(
+                outflowType: type,
+                amount: amount,
+                description: descCtrl.text.trim(),
+                createdBy: prefs.userName,
+              );
+              if (ctx.mounted) Navigator.pop(ctx);
+              await _load();
+              if (mounted) {
+                await _showCashReceiptPdf(
+                  title: 'COMPROBANTE DE RETIRO / GASTO',
+                  subtitle: 'Concepto: $type',
+                  bodyLines: [
+                    'Monto: ${_fmt(amount)}',
+                    if (descCtrl.text.trim().isNotEmpty) 'Descripción: ${descCtrl.text.trim()}',
+                    'Registrado por: ${prefs.userName}',
+                  ],
+                  boldLabel: 'Total en caja',
+                  boldAmount: _currentCashTotal(),
                 );
+              }
+            },
+            child: const Text('GUARDAR', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _reloadConceptsOnly() async {
+    final concepts = await _reportsRepo.getConcepts();
+    if (mounted) setState(() => _concepts = concepts);
+  }
+
+  Future<void> _showAddConceptDialog(BuildContext parentCtx) async {
+    final ctrl = TextEditingController();
+    await showDialog(
+      context: parentCtx,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('NUEVO CONCEPTO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          textCapitalization: TextCapitalization.characters,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(labelText: 'Nombre del concepto', labelStyle: TextStyle(color: Colors.white38)),
+          inputFormatters: [
+            TextInputFormatter.withFunction(
+              (oldValue, newValue) => newValue.copyWith(text: newValue.text.toUpperCase()),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
+          ElevatedButton(
+            onPressed: () async {
+              final name = ctrl.text.trim();
+              if (name.isNotEmpty) {
+                await _reportsRepo.addConcept(name);
                 if (ctx.mounted) Navigator.pop(ctx);
-                await _load();
+              }
+            },
+            child: const Text('CREAR', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showConceptManager() async {
+    await _reloadConceptsOnly();
+    if (!mounted) return;
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setSheetState) => DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: 0.8,
+            maxChildSize: 0.95,
+            builder: (_, ctrl) => Column(
+              children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF1A1A1A),
+                    borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Text('CONCEPTOS DE RETIRO / GASTO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
+                      const Spacer(),
+                      IconButton(
+                        icon: Icon(Icons.add, color: Theme.of(ctx).colorScheme.primary),
+                        tooltip: 'Agregar concepto',
+                        onPressed: () async {
+                          await _showAddConceptDialog(ctx);
+                          final concepts = await _reportsRepo.getConcepts();
+                          setSheetState(() => _concepts = concepts);
+                        },
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white54),
+                        onPressed: () => Navigator.pop(ctx),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(color: Colors.white10, height: 1),
+                Expanded(
+                  child: _concepts.isEmpty
+                      ? const Center(child: Text('Sin conceptos. Agrega uno con el +', style: TextStyle(color: Colors.white24)))
+                      : ListView.builder(
+                          controller: ctrl,
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          itemCount: _concepts.length,
+                          itemBuilder: (_, i) {
+                            final c = _concepts[i];
+                            return ListTile(
+                              leading: const Icon(Icons.label, color: Colors.orangeAccent),
+                              title: Text(c, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.edit, color: Colors.white54),
+                                    tooltip: 'Renombrar',
+                                    onPressed: () async {
+                                      await _showRenameConceptDialog(ctx, c);
+                                      final concepts = await _reportsRepo.getConcepts();
+                                      setSheetState(() => _concepts = concepts);
+                                    },
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete, color: Colors.redAccent),
+                                    tooltip: 'Eliminar',
+                                    onPressed: () async {
+                                      final ok = await showDialog<bool>(
+                                        context: ctx,
+                                        builder: (dctx) => AlertDialog(
+                                          backgroundColor: const Color(0xFF1A1A1A),
+                                          title: const Text('ELIMINAR CONCEPTO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
+                                          content: Text('¿Eliminar "$c"?', style: const TextStyle(color: Colors.white70)),
+                                          actions: [
+                                            TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
+                                            ElevatedButton(
+                                              onPressed: () => Navigator.pop(dctx, true),
+                                              child: const Text('ELIMINAR', style: TextStyle(color: Colors.white)),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                      if (ok == true) {
+                                        await _reportsRepo.deleteConcept(c);
+                                        final concepts = await _reportsRepo.getConcepts();
+                                        setSheetState(() => _concepts = concepts);
+                                      }
+                                    },
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _showRenameConceptDialog(BuildContext parentCtx, String current) async {
+    final ctrl = TextEditingController(text: current);
+    await showDialog(
+      context: parentCtx,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('RENOMBRAR CONCEPTO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          textCapitalization: TextCapitalization.characters,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(labelText: 'Nuevo nombre', labelStyle: TextStyle(color: Colors.white38)),
+          inputFormatters: [
+            TextInputFormatter.withFunction(
+              (oldValue, newValue) => newValue.copyWith(text: newValue.text.toUpperCase()),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
+          ElevatedButton(
+            onPressed: () async {
+              final name = ctrl.text.trim();
+              if (name.isNotEmpty) {
+                await _reportsRepo.renameConcept(current, name);
+                if (ctx.mounted) Navigator.pop(ctx);
               }
             },
             child: const Text('GUARDAR', style: TextStyle(color: Colors.white)),
@@ -328,9 +566,21 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
             onPressed: () async {
               final amount = double.tryParse(amountCtrl.text) ?? 0;
               if (amount >= 0) {
-                await _reportsRepo.openSession(openingAmount: amount, createdBy: nameCtrl.text.trim().isEmpty ? prefs.userName : nameCtrl.text.trim());
+                final cashier = nameCtrl.text.trim().isEmpty ? prefs.userName : nameCtrl.text.trim();
+                await _reportsRepo.openSession(openingAmount: amount, createdBy: cashier);
                 if (ctx.mounted) Navigator.pop(ctx);
                 await _load();
+                if (mounted) {
+                  await _showCashReceiptPdf(
+                    title: 'COMPROBANTE DE APERTURA',
+                    subtitle: 'Cajero que abre: $cashier',
+                    bodyLines: [
+                      'Monto inicial en caja: ${_fmt(amount)}',
+                    ],
+                    boldLabel: 'Total en caja',
+                    boldAmount: _currentCashTotal(),
+                  );
+                }
               }
             },
             child: const Text('ABRIR', style: TextStyle(color: Colors.white)),
@@ -411,7 +661,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Abrió: ${session['created_by'] ?? '?'}  con  \$${((session['opening_amount'] as num?) ?? 0).toStringAsFixed(2)}',
+            Text('Abrió: ${session['created_by'] ?? '?'}  con  ${_fmt(((session['opening_amount'] as num?) ?? 0).toDouble())}',
                 style: const TextStyle(color: Colors.white54, fontSize: 12)),
             const SizedBox(height: 12),
             TextField(
@@ -511,23 +761,26 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
               pw.SizedBox(height: 2),
               pw.Divider(color: primaryColor, thickness: 0.8),
               pw.Text('Abrió: $openedBy', style: normalStyle),
-              pw.Text('Monto inicial: \$${openingAmount.toStringAsFixed(2)}', style: normalStyle),
+              pw.Text('Monto inicial: ${_fmt(openingAmount)}', style: normalStyle),
               if (!isPartial) ...[
                 pw.SizedBox(height: 2),
                 pw.Text('Cerró: $closedBy', style: normalStyle),
               ],
               pw.Divider(color: primaryColor, thickness: 0.8),
-              pw.Text('Ventas: \$${sales.toStringAsFixed(2)}', style: normalStyle),
-              pw.Text('Compras (caja): \$${purchases.toStringAsFixed(2)}', style: normalStyle),
-              pw.Text('Retiros/Gastos: \$${outflows.toStringAsFixed(2)}', style: normalStyle),
+              pw.Text('Ventas: ${_fmt(sales)}', style: normalStyle),
+              pw.Text('Compras (caja): ${_fmt(purchases)}', style: normalStyle),
+              pw.Text('Retiros/Gastos: ${_fmt(outflows)}', style: normalStyle),
+              pw.SizedBox(height: 2),
+              pw.Divider(color: primaryColor, thickness: 0.8),
+              pw.Text('Total en caja: ${_fmt(expected)}', style: boldStyle),
               pw.SizedBox(height: 2),
               pw.Divider(color: primaryColor, thickness: 0.8),
               if (isPartial) ...[
-                pw.Text('Retiro parcial: \$${closingAmount.toStringAsFixed(2)}', style: boldStyle),
+                pw.Text('Retiro parcial: ${_fmt(closingAmount)}', style: boldStyle),
               ] else ...[
-                pw.Text('Efectivo esperado: \$${expected.toStringAsFixed(2)}', style: boldStyle),
-                pw.Text('Efectivo contado: \$${closingAmount.toStringAsFixed(2)}', style: normalStyle),
-                pw.Text('Diferencia: \$${difference.toStringAsFixed(2)}', style: boldStyle),
+                pw.Text('Efectivo esperado: ${_fmt(expected)}', style: boldStyle),
+                pw.Text('Efectivo contado: ${_fmt(closingAmount)}', style: normalStyle),
+                pw.Text('Diferencia: ${_fmt(difference)}', style: boldStyle),
               ],
               pw.SizedBox(height: 10),
               pw.Center(child: pw.Text('Documento interno / control de caja', style: const pw.TextStyle(fontSize: 7))),
@@ -633,6 +886,148 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       } catch (_) {}
     }
     return null;
+  }
+
+  /// Formatea un monto como moneda con separador de miles: $1,234.56
+  String _fmt(double v) {
+    final fixed = v.toStringAsFixed(2);
+    final neg = fixed.startsWith('-');
+    final body = neg ? fixed.substring(1) : fixed;
+    final parts = body.split('.');
+    final intPart = parts[0];
+    final buf = StringBuffer();
+    for (var i = 0; i < intPart.length; i++) {
+      if (i > 0 && (intPart.length - i) % 3 == 0) buf.write(',');
+      buf.write(intPart[i]);
+    }
+    return '${neg ? '-' : ''}\$${buf.toString()}.${parts[1]}';
+  }
+
+  /// Total en caja actual = monto inicial del turno abierto + flujo neto del periodo.
+  double _currentCashTotal() {
+    final net = _cashFlow['netCash'] ?? 0;
+    final opening = (_openSession?['opening_amount'] as num?)?.toDouble() ?? 0;
+    return opening + net;
+  }
+
+  /// Vista previa reutilizable de un PDF con opciones imprimir/compartir/cerrar.
+  Future<void> _showPdfPreview(Uint8List bytes, String title, String fileName) async {
+    if (!context.mounted) return;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (ctx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.9,
+        maxChildSize: 0.95,
+        builder: (_, ctrl) => Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: const BoxDecoration(
+                color: Color(0xFF1A1A1A),
+                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+              ),
+              child: Row(
+                children: [
+                  Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.share, color: Colors.blue),
+                    onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
+                  ),
+                  IconButton(
+                    icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
+                    onPressed: () => Printing.layoutPdf(onLayout: (_) async => bytes, name: fileName),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white54),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: PdfPreview(
+                padding: const EdgeInsets.all(12),
+                build: (_) => Future.value(bytes),
+                allowSharing: false,
+                allowPrinting: false,
+                initialPageFormat: const PdfPageFormat(80 * PdfPageFormat.mm, 200 * PdfPageFormat.mm),
+                pageFormats: const {},
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Comprobante genérico de caja (retiro/gasto o apertura de turno).
+  Future<void> _showCashReceiptPdf({
+    required String title,
+    required String subtitle,
+    required List<String> bodyLines,
+    required String boldLabel,
+    required double boldAmount,
+  }) async {
+    final prefs = PreferencesService();
+    final businessName = prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
+    final primaryColor = PdfColor.fromInt(prefs.primaryColorValue);
+
+    pw.MemoryImage? logoImage;
+    final logoBytes = await _loadLogoBytes();
+    if (logoBytes != null) {
+      logoImage = pw.MemoryImage(logoBytes);
+    }
+
+    final pdf = pw.Document();
+    final now = DateTime.now();
+    final dateStr =
+        '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}  ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+
+    final titleStyle = pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12, color: PdfColors.black, letterSpacing: 1);
+    final normalStyle = pw.TextStyle(fontSize: 9.5, color: PdfColors.black);
+    final boldStyle = pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10, color: PdfColors.black);
+    final smallStyle = pw.TextStyle(fontSize: 8, color: PdfColors.grey700);
+
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.roll80,
+        build: (pw.Context ctx) {
+          return pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.center,
+            children: [
+              pw.SizedBox(height: 4),
+              if (logoImage != null) ...[
+                pw.Center(child: pw.Image(logoImage, width: 56, height: 56)),
+                pw.SizedBox(height: 4),
+              ],
+              pw.Center(child: pw.Text(businessName.toUpperCase(), style: titleStyle)),
+              pw.SizedBox(height: 2),
+              pw.Center(child: pw.Text(title, style: boldStyle)),
+              pw.SizedBox(height: 2),
+              pw.Center(child: pw.Text(dateStr, style: smallStyle)),
+              pw.SizedBox(height: 2),
+              pw.Divider(color: primaryColor, thickness: 0.8),
+              if (subtitle.isNotEmpty) pw.Text(subtitle, style: normalStyle),
+              pw.Divider(color: primaryColor, thickness: 0.8),
+              ...bodyLines.map((l) => pw.Text(l, style: normalStyle)),
+              pw.Divider(color: primaryColor, thickness: 0.8),
+              pw.Text('$boldLabel: ${_fmt(boldAmount)}', style: boldStyle),
+              pw.SizedBox(height: 10),
+              pw.Center(child: pw.Text('Documento interno / control de caja', style: const pw.TextStyle(fontSize: 7))),
+            ],
+          );
+        },
+      ),
+    );
+
+    final bytes = await pdf.save();
+    if (!context.mounted) return;
+    await _showPdfPreview(bytes, title, 'caja_${now.millisecondsSinceEpoch}.pdf');
   }
 
   @override
@@ -775,19 +1170,28 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
         children: [
           _buildDateFilter(),
           const SizedBox(height: 8),
-          _StatsCard(label: 'Ingresos (ventas)', value: '\$${sales.toStringAsFixed(2)}', icon: Icons.arrow_upward, color: Colors.greenAccent),
+          _StatsCard(label: 'Ingresos (ventas)', value: _fmt(sales), icon: Icons.arrow_upward, color: Colors.greenAccent),
           const SizedBox(height: 12),
-          _StatsCard(label: 'Compras', value: '\$${purchases.toStringAsFixed(2)}', icon: Icons.shopping_cart, color: Colors.orangeAccent),
+          _StatsCard(label: 'Compras', value: _fmt(purchases), icon: Icons.shopping_cart, color: Colors.orangeAccent),
           const SizedBox(height: 12),
-          _StatsCard(label: 'Retiros/Gastos', value: '\$${outflows.toStringAsFixed(2)}', icon: Icons.arrow_downward, color: Colors.redAccent),
+          _StatsCard(label: 'Retiros/Gastos', value: _fmt(outflows), icon: Icons.arrow_downward, color: Colors.redAccent),
           const SizedBox(height: 12),
-          _StatsCard(label: 'Efectivo neto', value: '\$${net.toStringAsFixed(2)}', icon: Icons.account_balance_wallet, color: primary),
+          _StatsCard(label: 'Efectivo neto', value: _fmt(net), icon: Icons.account_balance_wallet, color: primary),
+          const SizedBox(height: 12),
+          _StatsCard(label: 'Total en caja', value: _fmt(_currentCashTotal()), icon: Icons.payments, color: Colors.tealAccent),
           const SizedBox(height: 12),
           ElevatedButton.icon(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.symmetric(vertical: 14)),
             icon: const Icon(Icons.money_off, color: Colors.white),
             label: const Text('REGISTRAR RETIRO / GASTO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
             onPressed: _addOutflow,
+          ),
+          const SizedBox(height: 8),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2A2A2A), padding: const EdgeInsets.symmetric(vertical: 14)),
+            icon: Icon(Icons.category, color: Colors.orangeAccent),
+            label: const Text('CONCEPTOS (catalogo)', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            onPressed: _showConceptManager,
           ),
           const Divider(color: Colors.white10, height: 32),
           // ── Sección de TURNO / CORTE DE CAJA ──
@@ -815,7 +1219,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
             _TurnInfoRow(
               icon: Icons.payments,
               label: 'Monto inicial',
-              value: '\$${((session['opening_amount'] as num?) ?? 0).toStringAsFixed(2)}',
+              value: _fmt(((session['opening_amount'] as num?) ?? 0).toDouble()),
             ),
             const SizedBox(height: 12),
             Row(

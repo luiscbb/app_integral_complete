@@ -63,22 +63,28 @@ El usuario pidió dejar esto fraccionado en etapas y que se le indique cómo ir 
 ### 🗂️ PROGRESO POR ETAPAS (LEER ESTO PRIMERO AL RETOMAR) — REGLA DE NO DESVÍO
 > **Regla acordada con el usuario:** se avanza por etapas en orden, UNA a la vez. Al terminar la etapa en curso, **PARAR y reportar**. NO iniciar la siguiente etapa (ni desviarse a otra cosa) hasta que el usuario lo confirme explícitamente. No saltarse etapas.
 
-- **Etapa 1 — Comprobante retiro + comprobante apertura + formato moneda + total en caja:** `⬜ pendiente`
-  - B) Comprobante PDF para cada retiro/gasto (hoy NO sale).
-  - C) Comprobante al abrir turno (monto inicial + quién recibe).
-  - D) Formato moneda ($ con separador de miles) donde se requiera.
-  - E) Mostrar "total en caja actual" en pantalla y ticket.
-  - *Validación:* reiniciar completo el EXE → Informes → Caja → abrir turno (comprobante) → retiro (comprobante) → corte (total en caja). Con el exe basta.
-- **Etapa 2 — Catálogo de conceptos de retiro/gasto (tabla Supabase):** `⬜ pendiente`
-  - A) Catálogo de conceptos como las categorías de inventario, guardado en Supabase, crear/editar. Al registrar retiro se elige concepto. Sin contraseña.
-  - *Requiere:* script SQL nuevo (proporcionarlo al iniciar esta etapa) + reinicio completo.
+- **Etapa 1 — Comprobante retiro + comprobante apertura + formato moneda + total en caja:** `✅ implementada y validada en runtime`
+  - B) Comprobante PDF para cada retiro/gasto — implementado (vista previa + imprimir/compartir).
+  - C) Comprobante al abrir turno (monto inicial + quién recibe) — implementado.
+  - D) Formato moneda ($ con separador de miles) — implementado vía helper `_fmt()` en pestaña Caja y PDFs.
+  - E) Mostrar "total en caja actual" en pantalla y ticket — implementado (tarjeta + línea en ticket).
+  - **Fix aplicado:** el retiro NO descontaba del total en caja. Causa: `addCashOutflow` no fijaba `created_at` (default de SQLite con espacio+UTC), así que el filtro por rango de fechas (que usa formato ISO con 'T') no lo encontraba. Corregido: `addCashOutflow` ahora fija `created_at` con `DateTime.now().toIso8601String()`. **Validado:** abrir turno 200 → retiro 100 → "total en caja" marca 100.
+  - **Fix aplicado:** el retiro exigía descripción para guardar. Corregido: ahora solo basta el concepto y el monto; la descripción es opcional.
+  - **Validado en runtime por el usuario:** el retiro ya muestra la info correcta (descuenta del total en caja).
+- **Etapa 2 — Catálogo de conceptos de retiro/gasto (tabla Supabase):** `✅ implementada y con SQL ejecutado` (falta validación final completa en runtime)
+  - A) Catálogo de conceptos como las categorías de inventario, guardado en Supabase, con crear/renombrar/eliminar. Al registrar retiro se elige concepto del catálogo (dropdown + botón + para agregar). Sin contraseña.
+  - **SQL `supabase/add_cash_outflow_concepts.sql` ya ejecutado en Supabase por el usuario.**
+  - Implementación: tabla local `cash_outflow_concepts` (DB version 16) + métodos `getConcepts/addConcept/renameConcept/deleteConcept` con sync por upsert `(billar_id, name)` en `reports_repository.dart` + botón "CONCEPTOS (catalogo)" y gestor (crear/renombrar/eliminar) en la pestaña Caja de `reports_page.dart`. La tabla local SÍ tiene respaldo en Supabase (sube/descarga conceptos, compartidos por `billar_id`).
+  - **Fix aplicado:** los campos de crear/renombrar concepto solo dejaban escribir una letra. Causa: `onChanged: (v) => ctrl.text = v.toUpperCase()` reescribía el texto y rompía la composición del teclado. Corregido: se usa `TextInputFormatter.withFunction` para poner en mayúsculas sin romper la escritura.
+  - **Fix aplicado:** el botón GUARDAR no daba feedback si faltaba el monto/concepto. Corregido: ahora muestra aviso "Ingresa un monto válido mayor a 0" o "Selecciona un concepto".
+  - *Validación restante:* reinicio completo del EXE → Informes → Caja → "CONCEPTOS (catálogo)" (crear/renombrar/eliminar) → registrar retiro con descripción de varias palabras → GUARDAR → comprobante + descuento del "total en caja".
 - **Etapa 3 — Contraseña cancelación ventas/mesas (futuro):** `⬜ pendiente`
   - No implementar aún. Trabajarlo aparte.
 
-### ▶️ PRÓXIMO PASO INMEDIATO (cuando el usuario diga "adelante con etapa 1")
-- Empezar la **Etapa 1** en `lib/features/reports/presentation/pages/reports_page.dart` (y `reports_repository.dart` si hace falta).
-- Orden interno sugerido dentro de la Etapa 1: B) retiro con comprobante → C) apertura con comprobante → E) total en caja → D) formato moneda.
-- Al terminar la Etapa 1: correr `dart analyze lib`, reportar al usuario, y **ESPERAR su confirmación** antes de tocar la Etapa 2.
+### ▶️ PRÓXIMO PASO INMEDIATO (validación final de Etapa 2)
+- El SQL de conceptos **ya se ejecutó en Supabase**. Falta la **validación final en runtime** del EXE:
+- Reinicio completo del EXE → Informes → Caja → botón "CONCEPTOS (catalogo)" (crear/renombrar/eliminar) → registrar retiro eligiendo un concepto, escribiendo una descripción de varias palabras → GUARDAR → debe salir comprobante y descuenta del "total en caja".
+- Si la Etapa 2 queda validada: correr `dart analyze lib` (ya da 0 errores), reportar al usuario, y **ESPERAR su confirmación** antes de la Etapa 3 (contraseña cancelación ventas/mesas).
 
 ### 📌 DECISIONES DE DISEÑO — Corte de caja (confirmadas en esta ronda)
 - Los **RETIROS/GASTOS no llevan contraseña** (decisión del usuario).
@@ -88,13 +94,13 @@ El usuario pidió dejar esto fraccionado en etapas y que se le indique cómo ir 
 
 ### Estado Git
 - Último commit: `4283e85` — docs decisión ubicación corte de caja + trazabilidad entre cajeros. **Pusheado.**
-- Cambios de esta sesión (origen del dinero + fix de stock + corte de caja completo + correcciones de ticket) **aún sin commitear**.
+- Cambios de esta sesión (origen del dinero + fix de stock + corte de caja + Etapa 1 completa + Etapa 2 catálogo de conceptos + fixes de formato de fecha/descripción/campos de texto) **aún sin commitear**.
 - Working tree de código limpio salvo lo anterior. Solo quedan archivos de diagnóstico sueltos en la raíz (`an.txt`, `full.txt`, `analyze_full_out.txt`, `anerr.txt`, `fullerr.txt`, `verify_analyze.txt`, `analyze_out.txt`) que son residuos, no parte de la app.
 - `dart analyze lib` → **0 errores** (avisos `info` de estilo preexistentes en `lib/features/reports/...`, no bloqueantes).
-- Script `supabase/add_purchase_cash_source.sql` ya ejecutado en Supabase por el usuario, sin problemas.
+- Scripts SQL ya ejecutados en Supabase por el usuario, sin problemas: `add_purchase_cash_source.sql` y `add_cash_outflow_concepts.sql`.
 
 ### Lo que NO hay que hacer (para no gastar saldo de más)
-- ❌ NO re-ejecutar los scripts SQL de Realtime ni el de `add_purchase_cash_source.sql` (ya ejecutados, funcionan).
+- ❌ NO re-ejecutar los scripts SQL de Realtime ni el de `add_purchase_cash_source.sql` ni el de `add_cash_outflow_concepts.sql` (ya ejecutados, funcionan).
 - ❌ NO re-revisar bugs ya corregidos y validados (ver lista arriba).
 - ❌ NO re-hacer los cambios de compras/origen del dinero/stock/corte de caja ya implementados.
 - ❌ NO pedir tiempo real perfecto en historial de compras (decisión ya tomada: no es necesario).
@@ -104,7 +110,7 @@ El usuario pidió dejar esto fraccionado en etapas y que se le indique cómo ir 
 ### Palabra clave para retomar
 **"RETOMAMOS CORTE DE CAJA"**
 
-> Al retomar mañana: leer primero la sección **"🗂️ PROGRESO POR ETAPAS"** (continuar exactamente la etapa en curso, regla de NO desvío) y luego "ESTADO ACTUAL — RESUMEN CLARO". Las 3 etapas: 1) comprobante retiro + comprobante apertura + formato moneda + total en caja; 2) catálogo de conceptos de retiro con tabla Supabase; 3) futura, contraseña para cancelar ventas/mesas. Después de cimentar el corte de caja, evaluar la idea (ya comentada con el usuario) de un proyecto nuevo clon con solo: venta rápida, mesas, inventario, compras, informes, control de caja y configuración — mismo negocio de billar, sin login, con base Supabase nueva y los mismos scripts SQL.
+> Al retomar mañana: leer primero la sección **"🗂️ PROGRESO POR ETAPAS"** (continuar exactamente la etapa en curso, regla de NO desvío) y luego "ESTADO ACTUAL — RESUMEN CLARO". Las 3 etapas: 1) comprobante retiro + comprobante apertura + formato moneda + total en caja — **implementada y validada**; 2) catálogo de conceptos de retiro con tabla Supabase — **implementada y SQL ejecutado, falta validación final en runtime**; 3) futura, contraseña para cancelar ventas/mesas. Al validar la Etapa 2 y confirmar, evaluar la idea (ya comentada con el usuario) de un proyecto nuevo clon con solo: venta rápida, mesas, inventario, compras, informes, control de caja y configuración — mismo negocio de billar, sin login, con base Supabase nueva y los mismos scripts SQL.
 
 ---
 

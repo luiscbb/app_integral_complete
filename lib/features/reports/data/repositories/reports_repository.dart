@@ -1,5 +1,8 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
 import '../../../../core/database/database_helper.dart';
 import '../../../../core/storage/preferences_service.dart';
 
@@ -9,6 +12,8 @@ import '../../../../core/storage/preferences_service.dart';
 class ReportsRepository {
   final _db = DatabaseHelper.instance;
   final _prefs = PreferencesService();
+
+  SupabaseClient get _supabase => Supabase.instance.client;
 
   String get _billarId => _prefs.billarId;
 
@@ -149,6 +154,12 @@ class ReportsRepository {
       'description': description,
       'payment_method': paymentMethod,
       'created_by': createdBy,
+      // Importante: se fija created_at con el MISMO formato ISO (con 'T') que
+      // usan ventas/compras, para que el filtro por rango de fechas de
+      // getCashOutflows lo encuentre. Si se deja el default de SQLite
+      // (datetime('now'), con espacio y UTC) la comparación lexicográfica
+      // falla y el retiro no descuenta del flujo de caja.
+      'created_at': DateTime.now().toIso8601String(),
       'synced': 0,
     });
   }
@@ -266,5 +277,117 @@ class ReportsRepository {
       where: 'id = ?',
       whereArgs: [sessionId],
     );
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // CONCEPTOS DE RETIRO/GASTO (catálogo, patrón de categorías)
+  // ─────────────────────────────────────────────────────────────────
+
+  /// Devuelve los conceptos del catálogo (con pull en background desde la nube).
+  Future<List<String>> getConcepts() async {
+    final db = await _db.database;
+    _syncConceptsFromCloud().catchError((e) => debugPrint('[Concepts] Background sync error: $e'));
+    final rows = await db.query('cash_outflow_concepts', orderBy: 'name ASC');
+    return rows.map((m) => m['name'].toString()).toList();
+  }
+
+  /// Agrega un concepto (local + nube). Idempotente por (billar_id, name).
+  Future<void> addConcept(String name) async {
+    final clean = name.trim().toUpperCase();
+    if (clean.isEmpty) return;
+    final db = await _db.database;
+    try {
+      await db.insert('cash_outflow_concepts', {'name': clean, 'billar_id': _billarId});
+    } catch (e) {
+      debugPrint('[Concepts] addConcept aviso (posible duplicado): $e');
+    }
+    try {
+      await _supabase
+          .from('cash_outflow_concepts')
+          .upsert({'name': clean, 'billar_id': _billarId}, onConflict: 'billar_id,name');
+      debugPrint('[Supabase] Concepto sincronizado: $clean');
+    } catch (e) {
+      debugPrint('[Supabase] addConcept ERROR: $e');
+    }
+  }
+
+  /// Renombra un concepto (actualiza local + nube, y borra el nombre antiguo).
+  Future<void> renameConcept(String oldName, String newName) async {
+    final oldClean = oldName.trim().toUpperCase();
+    final newClean = newName.trim().toUpperCase();
+    if (oldClean.isEmpty || newClean.isEmpty || oldClean == newClean) return;
+    final db = await _db.database;
+    try {
+      await db.update(
+        'cash_outflow_concepts',
+        {'name': newClean},
+        where: 'name = ? AND billar_id = ?',
+        whereArgs: [oldClean, _billarId],
+      );
+    } catch (e) {
+      debugPrint('[Concepts] renameConcept local aviso: $e');
+    }
+    try {
+      await _supabase
+          .from('cash_outflow_concepts')
+          .upsert({'name': newClean, 'billar_id': _billarId}, onConflict: 'billar_id,name');
+      await _supabase
+          .from('cash_outflow_concepts')
+          .delete()
+          .eq('billar_id', _billarId)
+          .eq('name', oldClean);
+      debugPrint('[Supabase] Concepto renombrado: $oldClean -> $newClean');
+    } catch (e) {
+      debugPrint('[Supabase] renameConcept ERROR: $e');
+    }
+  }
+
+  /// Elimina un concepto (local + nube).
+  Future<void> deleteConcept(String name) async {
+    final clean = name.trim().toUpperCase();
+    if (clean.isEmpty) return;
+    final db = await _db.database;
+    try {
+      await db.delete(
+        'cash_outflow_concepts',
+        where: 'name = ? AND billar_id = ?',
+        whereArgs: [clean, _billarId],
+      );
+    } catch (e) {
+      debugPrint('[Concepts] deleteConcept local aviso: $e');
+    }
+    try {
+      await _supabase
+          .from('cash_outflow_concepts')
+          .delete()
+          .eq('billar_id', _billarId)
+          .eq('name', clean);
+      debugPrint('[Supabase] Concepto eliminado: $clean');
+    } catch (e) {
+      debugPrint('[Supabase] deleteConcept ERROR: $e');
+    }
+  }
+
+  /// Descarga los conceptos de la nube hacia la base local (idempotente).
+  Future<void> _syncConceptsFromCloud() async {
+    try {
+      final response = await _supabase
+          .from('cash_outflow_concepts')
+          .select()
+          .eq('billar_id', _billarId)
+          .timeout(const Duration(seconds: 8));
+      final db = await _db.database;
+      for (final item in (response as List)) {
+        final name = item['name']?.toString();
+        if (name == null || name.isEmpty) continue;
+        try {
+          await db.insert('cash_outflow_concepts', {'name': name, 'billar_id': _billarId});
+        } catch (_) {
+          // Ya existe localmente (UNIQUE), se ignora.
+        }
+      }
+    } catch (e) {
+      debugPrint('[Supabase] _syncConceptsFromCloud ERROR: $e');
+    }
   }
 }

@@ -31,9 +31,19 @@ class DatabaseHelper {
       final dbPath = await getDatabasesPath();
       path = join(dbPath, filePath);
     }
-    return await openDatabase(path, version: 15, onCreate: _createDB, onUpgrade: _upgradeDB);
+    return await openDatabase(path, version: 16, onCreate: _createDB, onUpgrade: _upgradeDB);
   }
   Future<void> _upgradeDB(Database db, int oldV, int newV) async {
+    if (oldV < 16) {
+      // Catálogo de conceptos de retiro/gasto de caja (patrón de categorías).
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS cash_outflow_concepts (
+          id        INTEGER PRIMARY KEY AUTOINCREMENT,
+          billar_id TEXT    NOT NULL DEFAULT 'BILLAR_001',
+          name      TEXT    NOT NULL UNIQUE
+        )
+      ''');
+    }
     if (oldV < 15) {
       // Origen del dinero de la compra (Caja/Cajero/Transferencia/Tarjeta),
       // para el corte de efectivo por turno/cajero.
@@ -451,6 +461,14 @@ class DatabaseHelper {
         created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
         synced         INTEGER NOT NULL DEFAULT 0,
         cloud_id       TEXT
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE cash_outflow_concepts (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        billar_id TEXT    NOT NULL DEFAULT $billarId,
+        name      TEXT    NOT NULL UNIQUE
       )
     ''');
 
