@@ -59,8 +59,8 @@ El usuario pidió dejar esto fraccionado en etapas y que se le indique cómo ir 
   - (E) Mostrar "total en caja actual" en pantalla y ticket — punto 8.
 - **Etapa 2 (requiere tabla nueva + script SQL Supabase):**
   - (A) Catálogo de CONCEPTOS de retiro/gasto (como las categorías de inventario), guardados en Supabase, con crear/editar. Al registrar un retiro se elige un concepto del catálogo. **Sin contraseña** (decisión del usuario). Puntos 1/9.
-- **Etapa 3 (pendiente futuro, NO implementar aún):**
-  - Contraseña de autorización para CANCELACIÓN de VENTAS/MESAS (no para retiros — decisión del usuario, punto 3). Trabajarlo aparte.
+- **Etapa 3 (implementar en la próxima sesión):**
+  - Contraseña de autorización para CANCELACIÓN de VENTAS (no para retiros — decisión del usuario, punto 3). Alcance ya decidido — ver detalle en "🗂️ PROGRESO POR ETAPAS".
 
 ### 🗂️ PROGRESO POR ETAPAS (LEER ESTO PRIMERO AL RETOMAR) — REGLA DE NO DESVÍO
 > **Regla acordada con el usuario:** se avanza por etapas en orden, UNA a la vez. Al terminar la etapa en curso, **PARAR y reportar**. NO iniciar la siguiente etapa (ni desviarse a otra cosa) hasta que el usuario lo confirme explícitamente. No saltarse etapas.
@@ -73,20 +73,25 @@ El usuario pidió dejar esto fraccionado en etapas y que se le indique cómo ir 
   - **Fix aplicado:** el retiro NO descontaba del total en caja. Causa: `addCashOutflow` no fijaba `created_at` (default de SQLite con espacio+UTC), así que el filtro por rango de fechas (que usa formato ISO con 'T') no lo encontraba. Corregido: `addCashOutflow` ahora fija `created_at` con `DateTime.now().toIso8601String()`. **Validado:** abrir turno 200 → retiro 100 → "total en caja" marca 100.
   - **Fix aplicado:** el retiro exigía descripción para guardar. Corregido: ahora solo basta el concepto y el monto; la descripción es opcional.
   - **Validado en runtime por el usuario:** el retiro ya muestra la info correcta (descuenta del total en caja).
-- **Etapa 2 — Catálogo de conceptos de retiro/gasto (tabla Supabase):** `✅ implementada y con SQL ejecutado` (falta validación final completa en runtime)
+- **Etapa 2 — Catálogo de conceptos de retiro/gasto (tabla Supabase):** `✅ implementada, SQL ejecutado y VALIDADA en runtime por el usuario` ("Informes → Caja: validado ok todo", "Registrar retiro/gasto ya funciona correctamente")
   - A) Catálogo de conceptos como las categorías de inventario, guardado en Supabase, con crear/renombrar/eliminar. Al registrar retiro se elige concepto del catálogo (dropdown + botón + para agregar). Sin contraseña.
   - **SQL `supabase/add_cash_outflow_concepts.sql` ya ejecutado en Supabase por el usuario.**
   - Implementación: tabla local `cash_outflow_concepts` (DB version 16) + métodos `getConcepts/addConcept/renameConcept/deleteConcept` con sync por upsert `(billar_id, name)` en `reports_repository.dart` + botón "CONCEPTOS (catalogo)" y gestor (crear/renombrar/eliminar) en la pestaña Caja de `reports_page.dart`. La tabla local SÍ tiene respaldo en Supabase (sube/descarga conceptos, compartidos por `billar_id`).
   - **Fix aplicado:** los campos de crear/renombrar concepto solo dejaban escribir una letra. Causa: `onChanged: (v) => ctrl.text = v.toUpperCase()` reescribía el texto y rompía la composición del teclado. Corregido: se usa `TextInputFormatter.withFunction` para poner en mayúsculas sin romper la escritura.
   - **Fix aplicado:** el botón GUARDAR no daba feedback si faltaba el monto/concepto. Corregido: ahora muestra aviso "Ingresa un monto válido mayor a 0" o "Selecciona un concepto".
   - *Validación restante:* reinicio completo del EXE → Informes → Caja → "CONCEPTOS (catálogo)" (crear/renombrar/eliminar) → registrar retiro con descripción de varias palabras → GUARDAR → comprobante + descuento del "total en caja".
-- **Etapa 3 — Contraseña cancelación ventas/mesas (futuro):** `⬜ pendiente`
-  - No implementar aún. Trabajarlo aparte.
+- **Etapa 3 — Contraseña cancelación ventas/mesas:** `🟡 alcance decidido, implementar en la próxima sesión`
+  - **Investigación ya hecha (evidencia en código):** la cancelación NO existe en ningún lado. El detalle de venta en `sales_history_page.dart` (modal ~línea 445) es de solo lectura, solo tiene "REIMPRIMIR/REENVIAR TICKET" (~líneas 526-548). `SalesRepository` NO tiene delete/cancel sobre `sales_history`/`sale_details`. El cobro de mesa `_checkout()` en `billiard_tables_page.dart` (~líneas 801-972) es irreversible (guarda venta → descuenta stock → `freeTable` borra orders). NO existe ningún sistema de PIN/contraseña de autorización en la app (crear desde cero; candidato: `PreferencesService`).
+  - **Alcance acordado con el usuario:**
+    1. Contraseña de autorización: diálogo PIN configurable en Configuración, guardada en `PreferencesService`.
+    2. Botón "ANULAR VENTA" en el detalle del Historial de ventas → pide contraseña → **DEVUELVE el stock** (crear `ProductRepository.increaseStock`, no existe) → anula la venta (debe salir de informes y del flujo de caja del corte).
+    3. **Mesas: FUERA del alcance automático.** Revertir mesa cobrada es complejo (el tiempo jugado no es producto, y la mesa ya quedó liberada con orders borrados). Flujo manual acordado: anular la venta errónea en Historial + volver a cobrar la mesa. Reversión automática de mesa queda documentada como mejora futura.
+    - Motivación del usuario: corregir ventas cerradas por error anulándolas y volviendo a vender bien (Venta Rápida o mesas).
+  - *Validación:* vender algo → anular en Historial con contraseña → verificar stock devuelto, venta fuera de informes y total en caja reintegrado → registrar la venta correcta.
 
-### ▶️ PRÓXIMO PASO INMEDIATO (validación final de Etapa 2)
-- El SQL de conceptos **ya se ejecutó en Supabase**. Falta la **validación final en runtime** del EXE:
-- Reinicio completo del EXE → Informes → Caja → botón "CONCEPTOS (catalogo)" (crear/renombrar/eliminar) → registrar retiro eligiendo un concepto, escribiendo una descripción de varias palabras → GUARDAR → debe salir comprobante y descuenta del "total en caja".
-- Si la Etapa 2 queda validada: correr `dart analyze lib` (ya da 0 errores), reportar al usuario, y **ESPERAR su confirmación** antes de la Etapa 3 (contraseña cancelación ventas/mesas).
+### ▶️ PRÓXIMO PASO INMEDIATO (implementar Etapa 3)
+- Implementar el alcance acordado de la **Etapa 3** (arriba): PIN en Configuración + "ANULAR VENTA" en Historial con devolución de stock.
+- Al terminar: correr `dart analyze lib`, reportar al usuario, y **ESPERAR su validación en runtime** antes de dar por cerrada la Etapa 3.
 
 ### 📌 DECISIONES DE DISEÑO — Corte de caja (confirmadas en esta ronda)
 - Los **RETIROS/GASTOS no llevan contraseña** (decisión del usuario).
@@ -112,7 +117,7 @@ El usuario pidió dejar esto fraccionado en etapas y que se le indique cómo ir 
 ### Palabra clave para retomar
 **"RETOMAMOS CORTE DE CAJA"**
 
-> Al retomar mañana: leer primero la sección **"🗂️ PROGRESO POR ETAPAS"** (continuar exactamente la etapa en curso, regla de NO desvío) y luego "ESTADO ACTUAL — RESUMEN CLARO". Las 3 etapas: 1) comprobante retiro + comprobante apertura + formato moneda + total en caja — **implementada y validada**; 2) catálogo de conceptos de retiro con tabla Supabase — **implementada y SQL ejecutado, falta validación final en runtime**; 3) futura, contraseña para cancelar ventas/mesas. Al validar la Etapa 2 y confirmar, evaluar la idea (ya comentada con el usuario) de un proyecto nuevo clon con solo: venta rápida, mesas, inventario, compras, informes, control de caja y configuración — mismo negocio de billar, sin login, con base Supabase nueva y los mismos scripts SQL.
+> Al retomar mañana: leer primero la sección **"🗂️ PROGRESO POR ETAPAS"** (continuar exactamente la etapa en curso, regla de NO desvío) y luego "ESTADO ACTUAL — RESUMEN CLARO". Las 3 etapas: 1) comprobante retiro + comprobante apertura + formato moneda + total en caja — **implementada y validada**; 2) catálogo de conceptos de retiro con tabla Supabase — **implementada, SQL ejecutado y validada**; 3) contraseña para anular ventas con devolución de stock — **alcance decidido, implementar ahora** (ver detalle en PROGRESO POR ETAPAS). Después de la Etapa 3, evaluar la idea (ya comentada con el usuario) de un proyecto nuevo clon con solo: venta rápida, mesas, inventario, compras, informes, control de caja y configuración — mismo negocio de billar, sin login, con base Supabase nueva y los mismos scripts SQL.
 
 ---
 
