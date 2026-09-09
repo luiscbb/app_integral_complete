@@ -520,6 +520,50 @@ class ProductRepository implements IProductRepository {
     }
   }
 
+  /// Inverso de [decreaseStock]: devuelve stock al inventario (usado al anular
+  /// una venta). Replica la misma lógica de hijos/promos y sincroniza a nube.
+  Future<void> increaseStock(ProductEntity product, double quantity) async {
+    final db = await _db.database;
+    if (product.parentId != null) {
+      // Es un producto hijo (caja/paquete): devolver piezas equivalentes al padre.
+      final pieces = quantity * product.piecesPerUnit;
+      await db.rawUpdate('UPDATE products SET stock = stock + ? WHERE id = ?', [
+        pieces,
+        product.parentId,
+      ]);
+      final updated = await db.query('products', where: 'id = ?', whereArgs: [product.parentId]);
+      if (updated.isNotEmpty) {
+        await _syncToCloud(ProductEntity.fromMap(updated.first), product.parentId!, null);
+      }
+    } else if (product.isPromo == 1) {
+      final components = await db.query(
+        'promo_items',
+        where: 'parent_id = ?',
+        whereArgs: [product.id],
+      );
+      for (final c in components) {
+        await db.rawUpdate('UPDATE products SET stock = stock + (? * ?) WHERE id = ?', [
+          quantity,
+          c['quantity'],
+          c['child_id'],
+        ]);
+        final updated = await db.query('products', where: 'id = ?', whereArgs: [c['child_id']]);
+        if (updated.isNotEmpty) {
+          await _syncToCloud(ProductEntity.fromMap(updated.first), c['child_id'] as int, null);
+        }
+      }
+    } else {
+      await db.rawUpdate('UPDATE products SET stock = stock + ? WHERE id = ?', [
+        quantity,
+        product.id,
+      ]);
+      final updated = await db.query('products', where: 'id = ?', whereArgs: [product.id]);
+      if (updated.isNotEmpty) {
+        await _syncToCloud(ProductEntity.fromMap(updated.first), product.id!, null);
+      }
+    }
+  }
+
   @override
   Future<void> syncProductById(int id) async {
     try {

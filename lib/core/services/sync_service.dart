@@ -63,6 +63,7 @@ class SyncService {
     required String paymentMethod,
     required List<Map<String, dynamic>> items,
     String? existingCloudId,
+    bool cancelled = false,
   }) async {
     try {
       debugPrint('[SyncService] pushSaleToCloud localId=$localSaleId');
@@ -84,6 +85,8 @@ class SyncService {
         'date': date,
         'type': type,
         'payment_method': paymentMethod,
+        // Anulación lógica (Etapa 3): la venta anulada se propaga a la nube.
+        'cancelled': cancelled,
       };
 
       if (cloudId != null) {
@@ -413,6 +416,10 @@ class SyncService {
       );
       debugPrint('[SyncService] Ventas pendientes: ${pendingSales.length}');
 
+      // Descargar ventas nuevas de la nube (incluye anulaciones hechas en
+      // otro dispositivo) dentro del ciclo de auto-sync.
+      await pullSalesFromCloud();
+
       for (final sale in pendingSales) {
         final localId = sale['id'] as int;
         final details = await db.query(
@@ -431,6 +438,7 @@ class SyncService {
           paymentMethod: sale['payment_method'] as String,
           items: details,
           existingCloudId: sale['cloud_id'] as String?,
+          cancelled: (sale['cancelled'] as int? ?? 0) == 1,
         );
 
         if (cloudId == null) {
@@ -521,25 +529,37 @@ class SyncService {
           .whereType<String>()
           .toSet();
 
-      // Última fecha sync
-      final lastRow = await db.rawQuery(
-        "SELECT MAX(date) as last FROM sales_history WHERE synced = 1"
-      );
-      final lastDate = lastRow.first['last'] as String?;
-
-      var query = _sup
+      // Sin filtro de fecha: el reloj de otro dispositivo puede ir atrás del
+      // nuestro y el filtro .gte() se saltaba esas ventas. La deduplicación
+      // por cloud_id ya evita re-insertar, así que bajar las últimas 200 es seguro.
+      final response = await _sup
           .from('sales_history')
           .select('*, sale_details(*)')
           .eq('billar_id', billarId)
-          .gte('date', lastDate ?? '1970-01-01T00:00:00Z')
           .order('date', ascending: false)
           .limit(200);
 
-      final response = await query;
-
       for (final sale in response) {
         final cid = sale['id']?.toString();
-        if (cid == null || localCloudIds.contains(cid)) continue;
+        if (cid == null) continue;
+
+        // Si ya existe localmente, solo propagar el estado cancelled
+        // (anulación hecha en otro dispositivo) y saltar la inserción.
+        if (localCloudIds.contains(cid)) {
+          final cloudCancelled = (sale['cancelled'] ?? false) == true || sale['cancelled'] == 1;
+          if (cloudCancelled) {
+            final local = await db.query('sales_history',
+                columns: ['id', 'cancelled'], where: 'cloud_id = ?', whereArgs: [cid]);
+            if (local.isNotEmpty && (local.first['cancelled'] as int? ?? 0) == 0) {
+              await db.update('sales_history', {'cancelled': 1},
+                  where: 'cloud_id = ?', whereArgs: [cid]);
+              await db.update('sale_details', {'cancelled': 1},
+                  where: 'sale_id = ?', whereArgs: [local.first['id']]);
+              debugPrint('[SyncService] Venta $cid marcada anulada desde la nube');
+            }
+          }
+          continue;
+        }
 
         final localId = await db.insert('sales_history', {
           'billar_id': billarId,
@@ -548,6 +568,7 @@ class SyncService {
           'date': sale['date'],
           'type': sale['type'],
           'payment_method': sale['payment_method'] ?? 'Efectivo',
+          'cancelled': (sale['cancelled'] ?? false) == true || sale['cancelled'] == 1 ? 1 : 0,
           'synced': 1,
           'cloud_id': cid,
         });
@@ -560,6 +581,7 @@ class SyncService {
             'product_name': d['product_name'],
             'quantity': (d['quantity'] as num).toDouble(),
             'price_at_sale': (d['price_at_sale'] as num).toDouble(),
+            'cancelled': (d['cancelled'] ?? false) == true || d['cancelled'] == 1 ? 1 : 0,
           });
         }
       }
@@ -586,24 +608,36 @@ class SyncService {
           .whereType<String>()
           .toSet();
 
-      final lastRow = await db.rawQuery(
-        "SELECT MAX(date) as last FROM purchases WHERE synced = 1"
-      );
-      final lastDate = lastRow.first['last'] as String?;
-
-      var query = _sup
+      // Sin filtro de fecha: el reloj de otro dispositivo puede ir atrás y el
+      // filtro .gte() se saltaba esas compras. Deduplicación por cloud_id.
+      final response = await _sup
           .from('purchases')
           .select('*, purchase_details(*)')
           .eq('billar_id', billarId)
-          .gte('date', lastDate ?? '1970-01-01T00:00:00Z')
           .order('date', ascending: false)
           .limit(200);
 
-      final response = await query;
-
       for (final purchase in response) {
         final cid = purchase['id']?.toString();
-        if (cid == null || localCloudIds.contains(cid)) continue;
+        if (cid == null) continue;
+
+        // Si ya existe localmente, solo propagar el estado cancelled
+        // (anulación hecha en otro dispositivo) y saltar la inserción.
+        if (localCloudIds.contains(cid)) {
+          final cloudCancelled = (purchase['cancelled'] ?? false) == true;
+          if (cloudCancelled) {
+            final local = await db.query('purchases',
+                columns: ['id', 'cancelled'], where: 'cloud_id = ?', whereArgs: [cid]);
+            if (local.isNotEmpty && (local.first['cancelled'] as int? ?? 0) == 0) {
+              await db.update('purchases', {'cancelled': 1},
+                  where: 'cloud_id = ?', whereArgs: [cid]);
+              await db.update('purchase_details', {'cancelled': 1},
+                  where: 'purchase_id = ?', whereArgs: [local.first['id']]);
+              debugPrint('[SyncService] Compra $cid marcada anulada desde la nube');
+            }
+          }
+          continue;
+        }
 
         final localId = await db.insert('purchases', {
           'provider_id': purchase['provider_id'],
@@ -612,6 +646,7 @@ class SyncService {
           'reference': purchase['reference'] ?? '',
           'created_by': purchase['created_by'] ?? '',
           'cash_source': purchase['cash_source'] ?? 'caja',
+          'cancelled': (purchase['cancelled'] ?? false) == true ? 1 : 0,
           'synced': 1,
           'cloud_id': cid,
         });
@@ -624,6 +659,7 @@ class SyncService {
             'quantity': (d['quantity'] as num).toDouble(),
             'cost_per_unit': (d['cost_per_unit'] as num).toDouble(),
             'created_by': d['created_by'] ?? '',
+            'cancelled': (d['cancelled'] ?? false) == true ? 1 : 0,
           });
         }
       }

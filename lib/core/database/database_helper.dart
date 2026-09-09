@@ -31,9 +31,23 @@ class DatabaseHelper {
       final dbPath = await getDatabasesPath();
       path = join(dbPath, filePath);
     }
-    return await openDatabase(path, version: 16, onCreate: _createDB, onUpgrade: _upgradeDB);
+    return await openDatabase(path, version: 18, onCreate: _createDB, onUpgrade: _upgradeDB);
   }
   Future<void> _upgradeDB(Database db, int oldV, int newV) async {
+    if (oldV < 18) {
+      // Anulación lógica de compras: marca la compra como anulada sin borrarla
+      // (para que el pull de la nube no la re-inserte) y descuenta el stock
+      // que la compra había sumado. 1 = anulada (excluida de informes/caja).
+      await db.execute("ALTER TABLE purchases ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0");
+      await db.execute("ALTER TABLE purchase_details ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0");
+    }
+    if (oldV < 17) {
+      // Anulación lógica de ventas: permite marcar una venta como anulada
+      // (con contraseña) sin borrarla, para que el pull de la nube no la
+      // re-inserte. 1 = anulada (excluida de informes/caja/historial).
+      await db.execute("ALTER TABLE sales_history ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0");
+      await db.execute("ALTER TABLE sale_details ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0");
+    }
     if (oldV < 16) {
       // Catálogo de conceptos de retiro/gasto de caja (patrón de categorías).
       await db.execute('''
@@ -297,6 +311,7 @@ class DatabaseHelper {
         date           TEXT    NOT NULL,
         type           TEXT    NOT NULL,
         payment_method TEXT    NOT NULL DEFAULT 'Efectivo',
+        cancelled      INTEGER NOT NULL DEFAULT 0,
         synced         INTEGER NOT NULL DEFAULT 0,
         cloud_id       TEXT
       )
@@ -310,6 +325,7 @@ class DatabaseHelper {
         product_name  TEXT    NOT NULL,
         quantity      REAL    NOT NULL,
         price_at_sale REAL    NOT NULL,
+        cancelled     INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (sale_id) REFERENCES sales_history (id) ON DELETE CASCADE
       )
     ''');
@@ -348,6 +364,7 @@ class DatabaseHelper {
         reference   TEXT DEFAULT '',
         created_by  TEXT DEFAULT '',
         cash_source TEXT DEFAULT 'caja',
+        cancelled   INTEGER NOT NULL DEFAULT 0,
         synced      INTEGER NOT NULL DEFAULT 0,
         cloud_id    TEXT
       )
@@ -361,6 +378,7 @@ class DatabaseHelper {
         quantity      REAL    NOT NULL,
         cost_per_unit REAL    NOT NULL,
         created_by    TEXT    DEFAULT '',
+        cancelled     INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (purchase_id) REFERENCES purchases (id) ON DELETE CASCADE
       )
     ''');

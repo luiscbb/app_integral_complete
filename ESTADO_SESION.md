@@ -1,6 +1,6 @@
 # Estado de la sesión (para retomar)
 
-> **01/09/26 — última actualización**
+> **06/09/26 — última actualización (Etapa 3 anulaciones: implementación avanzada, pendientes puntuales)**
 
 > Generado automáticamente para poder revisar avances mientras se recargan créditos.
 > Todo lo listado abajo ya está en el código (working tree), sin commitear salvo que se indique lo contrario.
@@ -9,14 +9,70 @@
 
 ## 🚀 CÓMO RETOMAR LA SESIÓN (leer esto primero al volver)
 
-1. Al volver, di la **palabra clave**: `"RETOMAMOS VALIDACION COMPRAS"`.
-2. El asistente debe leer **primero** la sección **"🗂️ PROGRESO POR ETAPAS"** (qué etapa está en curso, con qué checklist y su estado). Continuar EXACTAMENTE donde quedó la etapa "en curso", sin desviarse a otras etapas hasta que el usuario lo confirme (regla de no desvío).
+1. Al volver, di la **palabra clave**: `"RETOMAMOS ANULACIONES"`.
+2. El asistente debe leer **primero** la sección **"🔴 ETAPA 3 — PENDIENTES (continuar aquí)"** (abajo) y continuar EXACTAMENTE donde quedó, sin desviarse hasta que el usuario lo confirme (regla de no desvío).
 3. Después leer **"ESTADO ACTUAL — RESUMEN CLARO"** solo para confirmar lo ya validado.
 4. **NO** re-revisar ni re-hacer nada de lo que ya dice "COMMITEADO", "hecho" o "VALIDADO".
 
 ---
 
-## 🔝 ESTADO ACTUAL — RESUMEN CLARO (LEER PRIMERO)
+## 🟡 ETAPA 3 — ANULACIONES CON PIN (06/09/26) — ESTADO Y PENDIENTES
+
+### ✅ Implementado y VALIDADO en runtime (no re-hacer)
+1. **PIN de autorización en Configuración** (4 dígitos + RESET). Guardado verificado por log (`[ConfigPage] PIN guardado en prefs: (configurado)`). Reglas de autorización validadas por el usuario: Administrador anula sin PIN; otro usuario CON PIN debe ingresarlo; SIN PIN se permite con aviso.
+2. **Fix botón GUARDAR de Configuración:** el botón grande fijo de abajo llamaba `_save` vía GlobalKey y fallaba en silencio → se eliminó; queda el botón de disquete de la sección Negocio.
+3. **Anular VENTA + ticket en Historial** (`sales_history_page.dart`): botón rojo + ticket "VENTA ANULADA" (formato caja, vista previa, imprimir/compartir). Detalle cambiado a diálogo centrado (el bottom sheet se cortaba con la ventana del EXE fuera de pantalla).
+4. **Anular VENTA + ticket en Informes→Ventas** (`reports_page.dart`: `_cancelSaleFromReports` + `_showCancelSalePdf`).
+5. **Anular COMPRA en Historial de compras** (`purchases_page.dart` `_cancelPurchase`): descuenta stock que la compra sumó (inversa de cajas/paquetes, sin stock negativo), kardex 'cancel', anulación lógica (`cancelled=1` en compras y detalles, DB v18), push a Supabase por cloud_id. **Validado por el usuario en ambos dispositivos.**
+6. **Ticket COMPRA ANULADA en EXE:** validado. Ticket "VENTA ANULADA" en EXE: validado.
+7. **Compras anuladas excluidas** de Informes/Caja (`getHistory`, `getPurchasesByDateRange`, `getPurchasesByDateRangeCashOnly` filtran `cancelled = 0`).
+8. **Pull de nube arreglado:** se quitó el filtro por fecha (se saltaba ventas de otro dispositivo con reloj atrás); dedupe por cloud_id; el pull de compras ya propaga anulaciones del otro dispositivo. Pull conectado a auto-sync y a la apertura de historial/informes.
+9. `supabase/add_sale_cancelled.sql` **ejecutado** por el usuario. `dart analyze lib` → 0 errores.
+
+### 🔴 PENDIENTES (continuar aquí mañana, en orden)
+1. ✅ **FIX aplicado (07/09):** `pullSalesFromCloud` ahora propaga `cancelled` de la nube a ventas ya existentes localmente (patrón del pull de compras). Era la causa de "ventas anuladas visibles en el celular".
+2. ✅ **FIX aplicado (07/09):** ticket de compra en el celular — causa: `onPurchaseCancelled` (setState del padre) corría ANTES del PDF y desmontaba el context. Ahora el ticket va primero, después la recarga (`purchases_page.dart`).
+3. ✅ **IMPLEMENTADO (07/09):** anular COMPRA desde Informes→Compras (`reports_page.dart`: `_cancelPurchaseFromReports` + `_showCancelPurchasePdf`) — botón rojo en el detalle + ticket, misma autorización por PIN.
+4. ✅ **SQL ejecutados por el usuario (07/09):** `add_sale_cancelled.sql` y `add_purchase_cancelled.sql`.
+5. ✅ **RESET DE DATOS hecho (07/09):** TRUNCATE de ventas/compras en Supabase (hecho por el usuario) + BD local del EXE eliminada (`Documents\BaumarSolutions\database\integral_pos_v1.db`) + `pm clear` en el celular. Se conservaron: usuario, config del negocio, productos, proveedores, conceptos. PIN local se perdió con el reset → reconfigurar en Fase 1.
+6. ⬜ **FASE 1 — VALIDACIÓN PASO A PASO (con datos limpios):**
+   1. Configurar PIN en Configuración (se borró con el reset local).
+   2. Venta rápida en EXE → stock baja.
+   3. Anular esa venta (Administrador) → ticket VENTA ANULADA + stock regresa + desaparece de Informes/Caja.
+   4. En el celular → la venta anulada NO debe aparecer (sync).
+   5. Cambiar nombre de usuario → anular otra venta → debe pedir PIN.
+   6. Compra en EXE → stock sube → anular desde Historial → stock baja + ticket COMPRA ANULADA.
+   7. Anular otra compra desde Informes→Compras (botón nuevo).
+   8. Cross-device: anular venta desde el celular → desaparece en EXE.
+7. ⬜ **FASE 2 — CIERRE:** commit de toda la Etapa 3 + borrar logs temporales (`run_app_log*.txt`) + marcar Etapa 3 como cerrada en este .md.
+
+### ▶️ CÓMO VALIDAR LA FASE 1 (checklist para el usuario, con EXE levantado por el asistente)
+> EXE levantado y con BD limpia. El celular se conecta con `flutter run -d 0118caba0507` cuando el usuario lo enchufe (pedirá login porque se le borraron los datos con `pm clear`).
+
+1. **PIN** → Configuración → Negocio → PIN de 4 dígitos → GUARDAR (botón disquete) → snackbar verde + regresa al Home. Verificar que al volver sigue.
+2. **Venta + stock** → Venta Rápida: vende un producto con stock → verificar en Inventario que el stock bajó.
+3. **Anular venta (Administrador)** → Informes → pestaña Ventas (o Historial, icono de historial arriba) → toca la venta → ANULAR VENTA → confirmar → **ticket "VENTA ANULADA"** con imprimir/compartir → verificar: stock devuelto en Inventario + venta fuera de Informes/Caja.
+4. **Sync al celular** → conectar celular + `flutter run -d 0118caba0507` → login → la venta anulada NO debe aparecer en Informes/Historial del celular.
+5. **PIN para no-admin** → Configuración → cambiar "Nombre del cajero" a otro nombre (≠ administrador) → GUARDAR → anular otra venta → debe PEDIR el PIN → ingresarlo → anula.
+6. **Compra + stock** → Compras → registrar compra de un producto → stock sube.
+7. **Anular compra (Historial)** → Compras → Historial → toca la compra → ANULAR COMPRA → confirmar → ticket "COMPRA ANULADA" + stock descontado + desaparece de Informes/Caja.
+8. **Anular compra (Informes)** → Informes → pestaña Compras → toca una compra → botón rojo ANULAR COMPRA (nuevo) → ticket + stock descontado.
+9. **Cross-device** → anular una venta desde el CELULAR → verificar que en el EXE desaparece al entrar/salir de Informes (y viceversa).
+
+> Si TODOS pasan → avisar al asistente para Fase 2 (commit + limpieza de logs + cierre de Etapa 3). Si alguno falla → anotar cuál y qué se vio en pantalla.
+
+### 📌 Nota Kardex (pendiente futuro, preguntado por el usuario)
+El usuario quiere el **Kardex sincronizado a Supabase** (revisar movimientos remoto). Hoy es solo local. No es bloqueante de la Etapa 3; se puede hacer: tabla `inventory_movements` en Supabase + push en `recordInventoryMovement` + pull en la consulta. Es trabajo moderado, decidir cuándo agendarlo (no depende de roles de usuario para funcionar; los roles solo controlarían quién puede verlo).
+
+### Estado Git
+- Último commit: `44a3f28` — docs. **TODO el código de la Etapa 3 está SIN commitear.**
+
+### Palabra clave para retomar
+**"RETOMAMOS ANULACIONES"**
+
+---
+
+## 🗂️ HISTORIAL — SESIONES ANTERIORES (etapas de corte de caja, ya cerradas)
 
 ### ✅ VALIDADO EN RUNTIME (celular + exe) — no tocar, no re-hacer
 1. **Mesas de billar — cronómetro/tiempo:** banner + diálogo de iniciar tiempo funcionan correctamente. Sincronización Realtime de mesas confirmada (ocupar/editar/liberar se refleja al instante entre celular y exe).
@@ -114,8 +170,8 @@ El usuario pidió dejar esto fraccionado en etapas y que se le indique cómo ir 
 - ❌ NO usar hot reload para probar cambios de repositorios/base de datos/sync — siempre reiniciar completo (F5 / hot restart) en ambos dispositivos.
 - ❌ NO implementar contraseña en retiros/gastos (decisión tomada: solo para cancelar ventas/mesas, Etapa 3).
 
-### Palabra clave para retomar
-**"RETOMAMOS CORTE DE CAJA"**
+### Palabra clave anterior (ya cerrada)
+~~"RETOMAMOS CORTE DE CAJA"~~ → etapas 1 y 2 del corte de caja validadas y cerradas; Etapa 3 en curso (ver arriba).
 
 > Al retomar mañana: leer primero la sección **"🗂️ PROGRESO POR ETAPAS"** (continuar exactamente la etapa en curso, regla de NO desvío) y luego "ESTADO ACTUAL — RESUMEN CLARO". Las 3 etapas: 1) comprobante retiro + comprobante apertura + formato moneda + total en caja — **implementada y validada**; 2) catálogo de conceptos de retiro con tabla Supabase — **implementada, SQL ejecutado y validada**; 3) contraseña para anular ventas con devolución de stock — **alcance decidido, implementar ahora** (ver detalle en PROGRESO POR ETAPAS). Después de la Etapa 3, evaluar la idea (ya comentada con el usuario) de un proyecto nuevo clon con solo: venta rápida, mesas, inventario, compras, informes, control de caja y configuración — mismo negocio de billar, sin login, con base Supabase nueva y los mismos scripts SQL.
 

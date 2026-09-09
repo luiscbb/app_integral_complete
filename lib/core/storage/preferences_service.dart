@@ -90,6 +90,11 @@ class PreferencesService {
   int get ticketCounter => _prefs?.getInt('ticket_counter') ?? 0;
   set ticketCounter(int v) => _prefs?.setInt('ticket_counter', v);
 
+  /// PIN de autorización para operaciones críticas (anular venta).
+  /// Vacío = sin PIN configurado (la anulación queda deshabilitada).
+  String get adminPin => _prefs?.getString('admin_pin') ?? '';
+  set adminPin(String v) => _prefs?.setString('admin_pin', v);
+
   Map<String, String> get socialNetworks {
     final raw = _prefs?.getString('business_socials') ?? '{}';
     try {
@@ -104,6 +109,7 @@ class PreferencesService {
 
   Future<void> setBusinessName(String v) async => _prefs?.setString('business_name', v);
   Future<void> setUserName(String v) async => _prefs?.setString('user_name', v);
+  Future<void> setAdminPin(String v) async => _prefs?.setString('admin_pin', v);
   Future<void> setBillarId(String v) async => _prefs?.setString('billar_id', v);
   Future<void> setLogoPath(String v) async => _prefs?.setString('logo_path', v);
   Future<void> setLogoUrl(String v) async => _prefs?.setString('logo_url', v);

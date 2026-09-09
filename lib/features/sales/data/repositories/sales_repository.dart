@@ -1,10 +1,12 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import '../../../../core/database/database_helper.dart';
 import '../../../../core/services/sync_service.dart';
 import '../../../../core/storage/preferences_service.dart';
+import '../../../inventory/data/repositories/product_repository.dart';
+import '../../../inventory/domain/entities/product_entity.dart';
 import '../../../reports/data/repositories/reports_repository.dart';
 import '../../domain/entities/sale_item_entity.dart';
 import 'stock_reservation_service.dart';
@@ -15,6 +17,7 @@ class SalesRepository {
   final _sync = SyncService();
   final _reservations = StockReservationService();
   final _reports = ReportsRepository();
+  final _productRepo = ProductRepository();
 
   Future<int> saveSale({
     required List<SaleItemEntity> items,
@@ -75,12 +78,86 @@ class SalesRepository {
     return saleId;
   }
 
+  /// Anula una venta ya registrada (Etapa 3, requiere PIN en la UI).
+  /// Anulación LÓGICA (no borra filas) para que el pull de la nube no la
+  /// re-inserte en otro dispositivo. Además:
+  ///  - Devuelve el stock de los productos vendidos (promos/cajas incluidos).
+  ///  - Registra el movimiento inverso en el kardex.
+  ///  - La venta queda excluida de informes/caja (cancelled = 1).
+  Future<bool> cancelSale(int saleId, {String notes = ''}) async {
+    final db = await _db.database;
+    final sales = await db.query('sales_history', where: 'id = ?', whereArgs: [saleId]);
+    if (sales.isEmpty) return false;
+    final sale = sales.first;
+    if ((sale['cancelled'] as int? ?? 0) == 1) return true; // ya anulada
+
+    final details = await db.query('sale_details', where: 'sale_id = ?', whereArgs: [saleId]);
+    final saleType = sale['type']?.toString() ?? '';
+
+    // Devolver stock de cada producto vendido (el tiempo de mesa no tiene stock).
+    for (final d in details) {
+      final productId = d['product_id'] as int?;
+      final name = d['product_name']?.toString() ?? '';
+      final qty = (d['quantity'] as num?)?.toDouble() ?? 0;
+      if (productId == null || qty <= 0 || name.startsWith('Tiempo de juego')) continue;
+
+      final prodRows = await db.query('products', where: 'id = ?', whereArgs: [productId]);
+      if (prodRows.isEmpty) continue;
+      final product = ProductEntity.fromMap(prodRows.first);
+      await _productRepo.increaseStock(product, qty);
+
+      await _reports.recordInventoryMovement(
+        productId: productId,
+        movementType: 'cancel',
+        quantity: qty,
+        unitPrice: (d['price_at_sale'] as num?)?.toDouble() ?? 0,
+        referenceId: saleId,
+        referenceType: 'sales_history',
+        notes: notes.isEmpty ? 'Anulación de venta $saleType' : notes,
+      );
+    }
+
+    // Marcar venta y detalles como anulados (local).
+    await db.update('sales_history', {'cancelled': 1, 'synced': 0}, where: 'id = ?', whereArgs: [saleId]);
+    await db.update('sale_details', {'cancelled': 1}, where: 'sale_id = ?', whereArgs: [saleId]);
+
+    // Propagar anulación a la nube (update por cloud_id; si falla, el sync
+    // pendiente la subirá más tarde porque synced quedó en 0).
+    final cloudId = sale['cloud_id']?.toString();
+    if (cloudId != null) {
+      try {
+        await _sync.pushSaleToCloud(
+          localSaleId: saleId,
+          billarId: _prefs.billarId,
+          total: (sale['total'] as num).toDouble(),
+          paid: (sale['paid'] as num?)?.toDouble() ?? 0,
+          date: sale['date'].toString(),
+          type: saleType,
+          paymentMethod: sale['payment_method']?.toString() ?? 'Efectivo',
+          items: details,
+          existingCloudId: cloudId,
+          cancelled: true,
+        );
+      } catch (e) {
+        debugPrint('[SalesRepository] cancelSale push ERROR: $e');
+      }
+    } else {
+      _sync.schedulePendingSync();
+    }
+
+    return true;
+  }
+
   Future<List<Map<String, dynamic>>> getSalesByDate(DateTime date) async {
     final db = await _db.database;
+    // Descargar ventas de la nube en background (mismo patrón que el
+    // historial de compras). Sin esto, un dispositivo nuevo/vacío no ve
+    // las ventas hechas desde el otro dispositivo.
+    unawaited(_sync.pullSalesFromCloud());
     final start = DateTime(date.year, date.month, date.day).toIso8601String();
     final end = DateTime(date.year, date.month, date.day, 23, 59, 59).toIso8601String();
     return db.query('sales_history',
-        where: 'date >= ? AND date <= ?',
+        where: 'date >= ? AND date <= ? AND cancelled = 0',
         whereArgs: [start, end],
         orderBy: 'date DESC');
   }
@@ -91,7 +168,7 @@ class SalesRepository {
     final start = DateTime(today.year, today.month, today.day).toIso8601String();
     final end = DateTime(today.year, today.month, today.day, 23, 59, 59).toIso8601String();
     return db.query('sales_history',
-        where: 'date >= ? AND date <= ?',
+        where: 'date >= ? AND date <= ? AND cancelled = 0',
         whereArgs: [start, end],
         orderBy: 'date DESC');
   }
@@ -103,10 +180,11 @@ class SalesRepository {
 
   Future<List<Map<String, dynamic>>> getSalesByDateRange(DateTime start, DateTime end) async {
     final db = await _db.database;
+    unawaited(_sync.pullSalesFromCloud());
     final s = DateTime(start.year, start.month, start.day).toIso8601String();
     final e = DateTime(end.year, end.month, end.day, 23, 59, 59).toIso8601String();
     return db.query('sales_history',
-        where: 'date >= ? AND date <= ?',
+        where: 'date >= ? AND date <= ? AND cancelled = 0',
         whereArgs: [s, e],
         orderBy: 'date DESC');
   }
@@ -116,7 +194,7 @@ class SalesRepository {
     final start = DateTime(year, month, 1).toIso8601String();
     final end = DateTime(year, month + 1, 0, 23, 59, 59).toIso8601String();
     return db.query('sales_history',
-        where: 'date >= ? AND date <= ?',
+        where: 'date >= ? AND date <= ? AND cancelled = 0',
         whereArgs: [start, end],
         orderBy: 'date DESC');
   }

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../../core/database/database_helper.dart';
 import '../../../../core/services/sync_service.dart';
@@ -14,6 +15,7 @@ class PurchasesRepository {
   final _db = DatabaseHelper.instance;
   final _sync = SyncService();
   final _reports = ReportsRepository();
+  SupabaseClient get _sup => Supabase.instance.client;
 
   Future<List<ProviderEntity>> getProviders() async {
     final db = await _db.database;
@@ -144,6 +146,76 @@ class PurchasesRepository {
     return purchaseId;
   }
 
+  /// Anula una compra: descuenta el stock que la compra había sumado,
+  /// marca la compra y sus detalles como anulados (lógico, no físico) y
+  /// sincroniza la anulación a Supabase. No borra registros.
+  Future<bool> cancelPurchase(int purchaseId, {String notes = ''}) async {
+    final db = await _db.database;
+    final purchases = await db.query('purchases', where: 'id = ?', whereArgs: [purchaseId]);
+    if (purchases.isEmpty) return false;
+    final purchase = purchases.first;
+    if ((purchase['cancelled'] as int? ?? 0) == 1) return true; // ya anulada
+
+    final details = await db.query('purchase_details', where: 'purchase_id = ?', whereArgs: [purchaseId]);
+    final reference = purchase['reference']?.toString() ?? '';
+
+    // Descontar el stock que cada producto recibió con esta compra,
+    // replicando la lógica de cajas/paquetes de savePurchase (inversa).
+    for (final d in details) {
+      final productId = d['product_id'] as int?;
+      final qty = (d['quantity'] as num?)?.toDouble() ?? 0;
+      final costPerUnit = (d['cost_per_unit'] as num?)?.toDouble() ?? 0;
+      if (productId == null || qty <= 0) continue;
+
+      final prodRows = await db.query('products', where: 'id = ?', whereArgs: [productId]);
+      if (prodRows.isEmpty) continue;
+      final prod = prodRows.first;
+      final parentId = prod['parent_id'] as int?;
+      final piecesPerUnit = (prod['pieces_per_unit'] as int?) ?? 1;
+      final targetId = parentId ?? productId;
+      final pieces = parentId != null ? qty * piecesPerUnit : qty;
+
+      // Solo descontar si hay stock suficiente (evita stocks negativos si
+      // ya se vendió lo comprado; en ese caso el stock puede quedar en 0).
+      final targetRows = await db.query('products', columns: ['stock'], where: 'id = ?', whereArgs: [targetId]);
+      final currentStock = (targetRows.first['stock'] as num?)?.toDouble() ?? 0;
+      final discount = pieces > currentStock ? currentStock : pieces;
+
+      if (discount > 0) {
+        await db.rawUpdate('UPDATE products SET stock = stock - ? WHERE id = ?', [discount, targetId]);
+        await _reports.recordInventoryMovement(
+          productId: targetId,
+          movementType: 'cancel',
+          quantity: discount,
+          unitCost: parentId != null ? costPerUnit / piecesPerUnit : costPerUnit,
+          referenceId: purchaseId,
+          referenceType: 'purchases',
+          notes: notes.isEmpty ? 'Anulación de compra $reference' : notes,
+        );
+      }
+      await _syncProductStockToCloud(productId);
+    }
+
+    // Marcar compra y detalles como anulados (local).
+    await db.update('purchases', {'cancelled': 1, 'synced': 0}, where: 'id = ?', whereArgs: [purchaseId]);
+    await db.update('purchase_details', {'cancelled': 1}, where: 'purchase_id = ?', whereArgs: [purchaseId]);
+
+    // Propagar anulación a la nube (update por cloud_id).
+    final cloudId = purchase['cloud_id']?.toString();
+    try {
+      if (cloudId != null) {
+        await _sup.from('purchases').update({'cancelled': true}).eq('id', cloudId);
+      } else {
+        _sync.schedulePendingSync();
+      }
+    } catch (e) {
+      debugPrint('[PurchasesRepository] cancelPurchase push ERROR: $e');
+      _sync.schedulePendingSync();
+    }
+
+    return true;
+  }
+
   Future<void> _syncProductStockToCloud(int productId) async {
     try {
       final db = await _db.database;
@@ -167,6 +239,7 @@ class PurchasesRepository {
       SELECT p.*, pr.name as provider_name
       FROM purchases p
       LEFT JOIN providers pr ON p.provider_id = pr.id
+      WHERE p.cancelled = 0
       ORDER BY p.date DESC
       LIMIT 100
     ''');

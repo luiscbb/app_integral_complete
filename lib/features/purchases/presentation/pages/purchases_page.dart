@@ -16,6 +16,7 @@ import '../../domain/entities/provider_entity.dart';
 import '../../domain/entities/purchase_entity.dart';
 import '../../../../core/widgets/app_text_field.dart';
 import '../../../../core/widgets/empty_state.dart';
+import '../../../../core/widgets/admin_pin_dialog.dart';
 
 class PurchasesPage extends StatefulWidget {
   const PurchasesPage({super.key});
@@ -137,7 +138,7 @@ class _PurchasesPageState extends State<PurchasesPage> with SingleTickerProvider
                 children: [
                   _NewPurchaseTab(providers: _providers, products: _products, onSaved: _load),
                   _ProvidersTab(providers: _providers, products: _products, repo: _repo, onChanged: _load),
-                  _HistoryTab(history: _history),
+                  _HistoryTab(history: _history, onPurchaseCancelled: _load),
                 ],
               ),
     );
@@ -1420,9 +1421,56 @@ Future<void> _showPurchasePdf({
   );
 
 
-  await Printing.layoutPdf(
-    onLayout: (PdfPageFormat format) async => pdf.save(),
-    name: 'compra_$purchaseId.pdf',
+  final bytes = await pdf.save();
+  if (!context.mounted) return;
+
+  final fileName = 'compra_$purchaseId.pdf';
+  showDialog(
+    context: context,
+    barrierColor: Colors.black54,
+    builder: (ctx) => Dialog(
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      child: SizedBox(
+        width: 420,
+        height: 560,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(
+                children: [
+                  const Text('COMPRA', style: TextStyle(color: Color(0xFFFB8C00), fontWeight: FontWeight.bold, fontSize: 14)),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.share, color: Colors.blue),
+                    onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.print, color: Color(0xFFFB8C00)),
+                    onPressed: () => Printing.layoutPdf(onLayout: (_) async => bytes, name: fileName),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white54),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: PdfPreview(
+                padding: const EdgeInsets.all(12),
+                build: (_) => Future.value(bytes),
+                allowSharing: false,
+                allowPrinting: false,
+                initialPageFormat: const PdfPageFormat(80 * PdfPageFormat.mm, 200 * PdfPageFormat.mm),
+                pageFormats: const {},
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
   );
 }
 
@@ -1453,7 +1501,8 @@ Future<Uint8List?> _loadLogoBytes() async {
 
 class _HistoryTab extends StatelessWidget {
   final List<Map<String, dynamic>> history;
-  const _HistoryTab({required this.history});
+  final Future<void> Function()? onPurchaseCancelled;
+  const _HistoryTab({required this.history, this.onPurchaseCancelled});
 
   Future<void> _showDetail(BuildContext context, Map<String, dynamic> h) async {
     final repo = PurchasesRepository();
@@ -1585,6 +1634,15 @@ class _HistoryTab extends StatelessWidget {
                 icon: const Icon(Icons.print, size: 18),
                 label: const Text('REIMPRIMIR PDF'),
               ),
+              TextButton.icon(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _cancelPurchase(context, h);
+                },
+                style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                icon: const Icon(Icons.cancel_outlined, size: 18),
+                label: const Text('ANULAR COMPRA'),
+              ),
               TextButton(
                 onPressed: () => Navigator.pop(ctx),
                 child: const Text('CERRAR', style: TextStyle(color: Colors.white38)),
@@ -1592,6 +1650,197 @@ class _HistoryTab extends StatelessWidget {
             ],
           ),
     );
+  }
+
+  /// Anulación de compra: misma autorización que ventas (Administrador sin
+  /// PIN; otro usuario con PIN debe ingresarlo; sin PIN se permite con aviso).
+  /// Descuenta el stock que la compra sumó y genera ticket de anulación.
+  Future<void> _cancelPurchase(BuildContext context, Map<String, dynamic> purchase) async {
+    final prefs = PreferencesService();
+    final isAdmin = prefs.userName.trim().toLowerCase() == 'administrador';
+
+    if (!isAdmin) {
+      if (prefs.adminPin.isNotEmpty) {
+        final authorized = await AdminPinDialog.authorize(context, accion: 'ANULAR COMPRA');
+        if (!authorized || !context.mounted) return;
+      } else if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Anulando sin PIN. Configura un PIN en Configuración para proteger esta acción.'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+
+    if (!context.mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('ANULAR COMPRA', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 15)),
+        content: Text(
+          'Se anulará la compra de \$${(purchase['total'] as num).toStringAsFixed(2)}.\n\n'
+          'El stock que la compra sumó será descontado del inventario y la compra dejará de contar en informes y caja.\n\n¿Continuar?',
+          style: const TextStyle(color: Colors.white70, fontSize: 13),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('ANULAR', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+
+    final ok = await PurchasesRepository().cancelPurchase(purchase['id'] as int);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(ok ? 'Compra anulada. Stock descontado del inventario.' : 'No se pudo anular la compra.'),
+        backgroundColor: ok ? Colors.green : Colors.red,
+      ),
+    );
+    if (ok) {
+      // El ticket ANTES de la recarga: onPurchaseCancelled hace setState en el
+      // padre y reconstruye la pestaña; si se recargara primero, este context
+      // queda desmontado y el ticket nunca se muestra (falla sobre todo en el
+      // celular, donde el rebuild es más agresivo).
+      if (context.mounted) await _showCancelPurchasePdf(context, purchase);
+      await onPurchaseCancelled?.call();
+    }
+  }
+
+  /// Ticket de anulación de compra (mismo formato de tickets de caja).
+  Future<void> _showCancelPurchasePdf(BuildContext context, Map<String, dynamic> purchase) async {
+    final prefs = PreferencesService();
+    final businessName = prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
+    final primaryColor = PdfColor.fromInt(prefs.primaryColorValue);
+
+    pw.MemoryImage? logoImage;
+    final logoBytes = await _loadLogoBytes();
+    if (logoBytes != null) logoImage = pw.MemoryImage(logoBytes);
+
+    final pdf = pw.Document();
+    final now = DateTime.now();
+    final dateStr =
+        '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}  ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    final saleDate = DateTime.tryParse(purchase['date'] ?? '') ?? now;
+    final saleDateStr = '${saleDate.day}/${saleDate.month}/${saleDate.year}';
+    final total = (purchase['total'] as num?)?.toDouble() ?? 0;
+
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.roll80,
+        build: (pw.Context ctx) => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.center,
+          children: [
+            pw.SizedBox(height: 4),
+            if (logoImage != null) ...[
+              pw.Center(child: pw.Image(logoImage, width: 56, height: 56)),
+              pw.SizedBox(height: 4),
+            ],
+            pw.Center(child: pw.Text(businessName.toUpperCase(), style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12, letterSpacing: 1))),
+            pw.SizedBox(height: 2),
+            pw.Center(child: pw.Text('COMPRA ANULADA', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10))),
+            pw.SizedBox(height: 2),
+            pw.Center(child: pw.Text(dateStr, style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700))),
+            pw.SizedBox(height: 2),
+            pw.Divider(color: primaryColor, thickness: 0.8),
+            pw.Text('Proveedor: ${purchase['provider_name'] ?? 'Sin proveedor'}', style: const pw.TextStyle(fontSize: 9.5)),
+            pw.Text('Fecha original: $saleDateStr', style: const pw.TextStyle(fontSize: 9.5)),
+            pw.Text('Anuló: ${prefs.userName}', style: const pw.TextStyle(fontSize: 9.5)),
+            pw.Divider(color: primaryColor, thickness: 0.8),
+            pw.Text('Monto anulado: \$${total.toStringAsFixed(2)}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+            pw.SizedBox(height: 2),
+            pw.Text('El stock de los productos fue descontado del inventario.', style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700)),
+            pw.SizedBox(height: 10),
+            pw.Center(child: pw.Text('Documento interno / control de caja', style: const pw.TextStyle(fontSize: 7))),
+          ],
+        ),
+      ),
+    );
+
+    final bytes = await pdf.save();
+    if (!context.mounted) return;
+
+    final fileName = 'anulacion_compra_${now.millisecondsSinceEpoch}.pdf';
+    showDialog(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (ctx) => Dialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        child: SizedBox(
+          width: 420,
+          height: 560,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                child: Row(
+                  children: [
+                    const Text('COMPRA ANULADA', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.share, color: Colors.blue),
+                      onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.print, color: Color(0xFFFB8C00)),
+                      onPressed: () => Printing.layoutPdf(onLayout: (_) async => bytes, name: fileName),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white54),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: PdfPreview(
+                  padding: const EdgeInsets.all(12),
+                  build: (_) => Future.value(bytes),
+                  allowSharing: false,
+                  allowPrinting: false,
+                  initialPageFormat: const PdfPageFormat(80 * PdfPageFormat.mm, 200 * PdfPageFormat.mm),
+                  pageFormats: const {},
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<Uint8List?> _loadLogoBytes() async {
+    final prefs = PreferencesService();
+    if (prefs.logoPath.isNotEmpty) {
+      final file = File(prefs.logoPath);
+      if (await file.exists()) return file.readAsBytes();
+    }
+    if (prefs.logoUrl.isNotEmpty) {
+      try {
+        final client = HttpClient();
+        final req = await client.getUrl(Uri.parse(prefs.logoUrl));
+        final res = await req.close().timeout(const Duration(seconds: 8));
+        if (res.statusCode == 200) {
+          final bytes = <int>[];
+          await for (final chunk in res) {
+            bytes.addAll(chunk);
+          }
+          client.close();
+          return Uint8List.fromList(bytes);
+        }
+        client.close();
+      } catch (_) {}
+    }
+    return null;
   }
 
   @override

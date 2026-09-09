@@ -35,16 +35,6 @@ class _ConfigPageState extends State<ConfigPage> {
     (Icons.logout, 'Sesión'),
   ];
 
-  VoidCallback? get _currentSaveAction {
-    switch (_selectedSection) {
-      case 0:
-        return _negocioKey.currentState?._save;
-      case 1:
-        return _impresionKey.currentState?._save;
-    }
-    return null;
-  }
-
   @override
   Widget build(BuildContext context) {
     final primary = context.watch<ThemeProvider>().primaryColor;
@@ -137,14 +127,6 @@ class _ConfigPageState extends State<ConfigPage> {
                         ),
                       ),
                     ),
-                    if ((isWide && _selectedSection <= 1))
-                      Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: _SaveButton(
-                          onPressed: _currentSaveAction ?? () {},
-                          color: primary,
-                        ),
-                      ),
                   ],
                 );
               },
@@ -188,12 +170,14 @@ class _NegocioSectionState extends State<_NegocioSection> {
   String? _logoPath;
   String? _logoUrl;
   bool _uploadingLogo = false;
+  late final TextEditingController _adminPinCtrl;
 
   @override
   void initState() {
     super.initState();
     _businessCtrl = TextEditingController(text: _prefs.businessName);
     _userCtrl = TextEditingController(text: _prefs.userName);
+    _adminPinCtrl = TextEditingController(text: _prefs.adminPin);
     _billarIdCtrl = TextEditingController(text: _prefs.billarId);
     _streetCtrl = TextEditingController(text: _prefs.businessStreet);
     _extNumberCtrl = TextEditingController(text: _prefs.businessExtNumber);
@@ -220,6 +204,7 @@ class _NegocioSectionState extends State<_NegocioSection> {
   void dispose() {
     _businessCtrl.dispose();
     _userCtrl.dispose();
+    _adminPinCtrl.dispose();
     _billarIdCtrl.dispose();
     _streetCtrl.dispose();
     _extNumberCtrl.dispose();
@@ -328,9 +313,46 @@ class _NegocioSectionState extends State<_NegocioSection> {
     }
   }
 
+  /// Reinicia el PIN de autorización (lo deja vacío). Pensado para cuando
+  /// el Administrador lo olvida; con roles formales se limitará al admin.
+  Future<void> _confirmPinReset() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('RESET DE PIN', style: TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold, fontSize: 15)),
+        content: const Text(
+          'Se borrará el PIN de autorización configurado y la anulación de ventas quedará sin contraseña '
+          '(solo con aviso) hasta que configures uno nuevo.\n\n¿Continuar?',
+          style: TextStyle(color: Colors.white70, fontSize: 13),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orangeAccent),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('RESET', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      await _prefs.setAdminPin('');
+      setState(() => _adminPinCtrl.clear());
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('PIN reiniciado. Configura uno nuevo de 4 dígitos.'), backgroundColor: Colors.green),
+        );
+      }
+    }
+  }
+
   Future<void> _save() async {
+    debugPrint('[ConfigPage] _save INICIO (Negocio) pin=${_adminPinCtrl.text.trim().isEmpty ? "(vacio)" : "(4 digitos)"}');
     await _prefs.setBusinessName(_businessCtrl.text.trim());
     await _prefs.setUserName(_userCtrl.text.trim());
+    await _prefs.setAdminPin(_adminPinCtrl.text.trim());
+    debugPrint('[ConfigPage] PIN guardado en prefs: ${_prefs.adminPin.isEmpty ? "(vacio)" : "(configurado)"}');
     await _prefs.setBusinessStreet(_streetCtrl.text.trim());
     await _prefs.setBusinessExtNumber(_extNumberCtrl.text.trim());
     await _prefs.setBusinessIntNumber(_intNumberCtrl.text.trim());
@@ -455,6 +477,37 @@ class _NegocioSectionState extends State<_NegocioSection> {
           label: 'Nombre del cajero / atendedor',
           icon: Icons.person,
           textCapitalization: TextCapitalization.sentences,
+        ),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              child: _ConfigField(
+                controller: _adminPinCtrl,
+                label: 'PIN de autorización (4 dígitos)',
+                icon: Icons.password,
+                keyboardType: TextInputType.number,
+                obscureText: true,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(4)],
+              ),
+            ),
+            const SizedBox(width: 8),
+            // Reset del PIN. Por ahora visible siempre; cuando existan
+            // roles formales, ocultarlo salvo para el Administrador.
+            TextButton.icon(
+              onPressed: () => _confirmPinReset(),
+              icon: const Icon(Icons.lock_reset, color: Colors.orangeAccent, size: 20),
+              label: const Text('RESET', style: TextStyle(color: Colors.orangeAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+        const Padding(
+          padding: EdgeInsets.only(top: 4),
+          child: Text(
+            'Se pide al anular una venta cuando el usuario NO es el Administrador. '
+            'Si lo dejas vacío, la anulación no pedirá contraseña (solo se mostrará un aviso).',
+            style: TextStyle(color: Colors.white24, fontSize: 11),
+          ),
         ),
         // DIRECCION
         const SizedBox(height: 8),
@@ -1755,6 +1808,7 @@ class _ConfigField extends StatelessWidget {
   final List<TextInputFormatter>? inputFormatters;
   final TextCapitalization textCapitalization;
   final void Function(String)? onSubmitted;
+  final bool obscureText;
 
   const _ConfigField({
     required this.controller,
@@ -1764,6 +1818,7 @@ class _ConfigField extends StatelessWidget {
     this.inputFormatters,
     this.textCapitalization = TextCapitalization.sentences,
     this.onSubmitted,
+    this.obscureText = false,
   });
 
   @override
@@ -1775,6 +1830,7 @@ class _ConfigField extends StatelessWidget {
         keyboardType: keyboardType,
         inputFormatters: inputFormatters,
         textCapitalization: textCapitalization,
+        obscureText: obscureText,
         onTap: () {
           if (controller.text.isEmpty) return;
           controller.selection = TextSelection(baseOffset: 0, extentOffset: controller.text.length);

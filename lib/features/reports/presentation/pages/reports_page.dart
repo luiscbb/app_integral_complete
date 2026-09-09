@@ -15,6 +15,7 @@ import '../../data/repositories/reports_repository.dart';
 import '../../../../core/routes/app_routes.dart';
 import '../../../../core/theme/theme_provider.dart';
 import '../../../../core/storage/preferences_service.dart';
+import '../../../../core/widgets/admin_pin_dialog.dart';
 
 class ReportsPage extends StatefulWidget {
   const ReportsPage({super.key});
@@ -182,6 +183,187 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                   },
                 ),
               ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.redAccent,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  icon: const Icon(Icons.cancel_outlined, color: Colors.white),
+                  label: const Text('ANULAR VENTA', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _cancelSaleFromReports(sale);
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Anulación de venta desde la pestaña Ventas de Informes.
+  /// Reutiliza la misma autorización que el Historial: Administrador sin PIN,
+  /// otro usuario con PIN debe ingresarlo, sin PIN se permite con aviso.
+  Future<void> _cancelSaleFromReports(Map<String, dynamic> sale) async {
+    final prefs = PreferencesService();
+    final isAdmin = prefs.userName.trim().toLowerCase() == 'administrador';
+
+    if (!isAdmin) {
+      if (prefs.adminPin.isNotEmpty) {
+        final authorized = await AdminPinDialog.authorize(context, accion: 'ANULAR VENTA');
+        if (!authorized || !mounted) return;
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Anulando sin PIN. Configura un PIN en Configuración para proteger esta acción.'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('ANULAR VENTA', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 15)),
+        content: Text(
+          'Se anulará la venta de \$${(sale['total'] as num).toStringAsFixed(2)}.\n\n'
+          'El stock de los productos regresará al inventario y la venta dejará de contar en informes y caja.\n\n¿Continuar?',
+          style: const TextStyle(color: Colors.white70, fontSize: 13),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('ANULAR', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final ok = await _salesRepo.cancelSale(sale['id'] as int);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(ok ? 'Venta anulada. Stock devuelto al inventario.' : 'No se pudo anular la venta.'),
+        backgroundColor: ok ? Colors.green : Colors.red,
+      ),
+    );
+    if (ok) {
+      await _showCancelSalePdf(sale);
+      await _load();
+    }
+  }
+
+  /// Ticket de anulación de venta (mismo formato de tickets de caja) desde
+  /// la pestaña Ventas de Informes.
+  Future<void> _showCancelSalePdf(Map<String, dynamic> sale) async {
+    final prefs = PreferencesService();
+    final businessName = prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
+    final primaryColor = PdfColor.fromInt(prefs.primaryColorValue);
+
+    pw.MemoryImage? logoImage;
+    final logoBytes = await _loadLogoBytes();
+    if (logoBytes != null) logoImage = pw.MemoryImage(logoBytes);
+
+    final pdf = pw.Document();
+    final now = DateTime.now();
+    final dateStr =
+        '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}  ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    final saleDate = DateTime.tryParse(sale['date'] ?? '') ?? now;
+    final saleDateStr =
+        '${saleDate.day}/${saleDate.month}/${saleDate.year}  ${saleDate.hour.toString().padLeft(2, '0')}:${saleDate.minute.toString().padLeft(2, '0')}';
+    final total = (sale['total'] as num?)?.toDouble() ?? 0;
+    final type = sale['type']?.toString() ?? 'Venta';
+
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.roll80,
+        build: (pw.Context ctx) => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.center,
+          children: [
+            pw.SizedBox(height: 4),
+            if (logoImage != null) ...[
+              pw.Center(child: pw.Image(logoImage, width: 56, height: 56)),
+              pw.SizedBox(height: 4),
+            ],
+            pw.Center(child: pw.Text(businessName.toUpperCase(), style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12, letterSpacing: 1))),
+            pw.SizedBox(height: 2),
+            pw.Center(child: pw.Text('VENTA ANULADA', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10))),
+            pw.SizedBox(height: 2),
+            pw.Center(child: pw.Text(dateStr, style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700))),
+            pw.SizedBox(height: 2),
+            pw.Divider(color: primaryColor, thickness: 0.8),
+            pw.Text('Venta: $type', style: const pw.TextStyle(fontSize: 9.5)),
+            pw.Text('Fecha original: $saleDateStr', style: const pw.TextStyle(fontSize: 9.5)),
+            pw.Text('Anuló: ${prefs.userName}', style: const pw.TextStyle(fontSize: 9.5)),
+            pw.Divider(color: primaryColor, thickness: 0.8),
+            pw.Text('Monto anulado: \$${total.toStringAsFixed(2)}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+            pw.SizedBox(height: 2),
+            pw.Text('El stock de los productos fue devuelto al inventario.', style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700)),
+            pw.SizedBox(height: 10),
+            pw.Center(child: pw.Text('Documento interno / control de caja', style: const pw.TextStyle(fontSize: 7))),
+          ],
+        ),
+      ),
+    );
+
+    final bytes = await pdf.save();
+    if (!mounted) return;
+
+    final fileName = 'anulacion_venta_${now.millisecondsSinceEpoch}.pdf';
+    showDialog(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (ctx) => Dialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        child: SizedBox(
+          width: 420,
+          height: 560,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                child: Row(
+                  children: [
+                    const Text('VENTA ANULADA', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.share, color: Colors.blue),
+                      onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
+                      onPressed: () => Printing.layoutPdf(onLayout: (_) async => bytes, name: fileName),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white54),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: PdfPreview(
+                  padding: const EdgeInsets.all(12),
+                  build: (_) => Future.value(bytes),
+                  allowSharing: false,
+                  allowPrinting: false,
+                  initialPageFormat: const PdfPageFormat(80 * PdfPageFormat.mm, 200 * PdfPageFormat.mm),
+                  pageFormats: const {},
+                ),
+              ),
             ],
           ),
         ),
@@ -232,6 +414,185 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                   ],
                 ),
               )),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.redAccent,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  icon: const Icon(Icons.cancel_outlined, color: Colors.white),
+                  label: const Text('ANULAR COMPRA', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _cancelPurchaseFromReports(purchase);
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Anulación de compra desde la pestaña Compras de Informes.
+  /// Misma autorización que en el Historial de compras (PIN / Administrador).
+  Future<void> _cancelPurchaseFromReports(Map<String, dynamic> purchase) async {
+    final prefs = PreferencesService();
+    final isAdmin = prefs.userName.trim().toLowerCase() == 'administrador';
+
+    if (!isAdmin) {
+      if (prefs.adminPin.isNotEmpty) {
+        final authorized = await AdminPinDialog.authorize(context, accion: 'ANULAR COMPRA');
+        if (!authorized || !mounted) return;
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Anulando sin PIN. Configura un PIN en Configuración para proteger esta acción.'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    }
+
+    if (!mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        title: const Text('ANULAR COMPRA', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 15)),
+        content: Text(
+          'Se anulará la compra de \$${(purchase['total'] as num).toStringAsFixed(2)}.\n\n'
+          'El stock que la compra sumó será descontado del inventario y la compra dejará de contar en informes y caja.\n\n¿Continuar?',
+          style: const TextStyle(color: Colors.white70, fontSize: 13),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('ANULAR', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final ok = await _purchasesRepo.cancelPurchase(purchase['id'] as int);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(ok ? 'Compra anulada. Stock descontado del inventario.' : 'No se pudo anular la compra.'),
+        backgroundColor: ok ? Colors.green : Colors.red,
+      ),
+    );
+    if (ok) {
+      await _showCancelPurchasePdf(purchase);
+      await _load();
+    }
+  }
+
+  /// Ticket de anulación de compra (mismo formato de tickets de caja) desde
+  /// la pestaña Compras de Informes.
+  Future<void> _showCancelPurchasePdf(Map<String, dynamic> purchase) async {
+    final prefs = PreferencesService();
+    final businessName = prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
+    final primaryColor = PdfColor.fromInt(prefs.primaryColorValue);
+
+    pw.MemoryImage? logoImage;
+    final logoBytes = await _loadLogoBytes();
+    if (logoBytes != null) logoImage = pw.MemoryImage(logoBytes);
+
+    final pdf = pw.Document();
+    final now = DateTime.now();
+    final dateStr =
+        '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}  ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    final purchaseDate = DateTime.tryParse(purchase['date'] ?? '') ?? now;
+    final purchaseDateStr = '${purchaseDate.day}/${purchaseDate.month}/${purchaseDate.year}';
+    final total = (purchase['total'] as num?)?.toDouble() ?? 0;
+
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.roll80,
+        build: (pw.Context ctx) => pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.center,
+          children: [
+            pw.SizedBox(height: 4),
+            if (logoImage != null) ...[
+              pw.Center(child: pw.Image(logoImage, width: 56, height: 56)),
+              pw.SizedBox(height: 4),
+            ],
+            pw.Center(child: pw.Text(businessName.toUpperCase(), style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12, letterSpacing: 1))),
+            pw.SizedBox(height: 2),
+            pw.Center(child: pw.Text('COMPRA ANULADA', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10))),
+            pw.SizedBox(height: 2),
+            pw.Center(child: pw.Text(dateStr, style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700))),
+            pw.SizedBox(height: 2),
+            pw.Divider(color: primaryColor, thickness: 0.8),
+            pw.Text('Proveedor: ${purchase['provider_name'] ?? 'Sin proveedor'}', style: const pw.TextStyle(fontSize: 9.5)),
+            pw.Text('Fecha original: $purchaseDateStr', style: const pw.TextStyle(fontSize: 9.5)),
+            pw.Text('Anuló: ${prefs.userName}', style: const pw.TextStyle(fontSize: 9.5)),
+            pw.Divider(color: primaryColor, thickness: 0.8),
+            pw.Text('Monto anulado: \$${total.toStringAsFixed(2)}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
+            pw.SizedBox(height: 2),
+            pw.Text('El stock de los productos fue descontado del inventario.', style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700)),
+            pw.SizedBox(height: 10),
+            pw.Center(child: pw.Text('Documento interno / control de caja', style: const pw.TextStyle(fontSize: 7))),
+          ],
+        ),
+      ),
+    );
+
+    final bytes = await pdf.save();
+    if (!mounted) return;
+
+    final fileName = 'anulacion_compra_${now.millisecondsSinceEpoch}.pdf';
+    showDialog(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (ctx) => Dialog(
+        backgroundColor: const Color(0xFF1A1A1A),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        child: SizedBox(
+          width: 420,
+          height: 560,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                child: Row(
+                  children: [
+                    const Text('COMPRA ANULADA', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.share, color: Colors.blue),
+                      onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
+                      onPressed: () => Printing.layoutPdf(onLayout: (_) async => bytes, name: fileName),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white54),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: PdfPreview(
+                  padding: const EdgeInsets.all(12),
+                  build: (_) => Future.value(bytes),
+                  allowSharing: false,
+                  allowPrinting: false,
+                  initialPageFormat: const PdfPageFormat(80 * PdfPageFormat.mm, 200 * PdfPageFormat.mm),
+                  pageFormats: const {},
+                ),
+              ),
             ],
           ),
         ),

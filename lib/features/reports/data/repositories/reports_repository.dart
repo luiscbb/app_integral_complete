@@ -1,4 +1,4 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -27,7 +27,7 @@ class ReportsRepository {
     final e = DateTime(end.year, end.month, end.day, 23, 59, 59).toIso8601String();
     return db.query(
       'sales_history',
-      where: 'date >= ? AND date <= ?',
+      where: 'date >= ? AND date <= ? AND cancelled = 0',
       whereArgs: [s, e],
       orderBy: 'date DESC',
     );
@@ -57,7 +57,7 @@ class ReportsRepository {
     final e = DateTime(end.year, end.month, end.day, 23, 59, 59).toIso8601String();
     return db.query(
       'purchases',
-      where: 'date >= ? AND date <= ?',
+      where: 'date >= ? AND date <= ? AND cancelled = 0',
       whereArgs: [s, e],
       orderBy: 'date DESC',
     );
@@ -89,7 +89,7 @@ class ReportsRepository {
     final e = DateTime(end.year, end.month, end.day, 23, 59, 59).toIso8601String();
     return db.query(
       'purchases',
-      where: "date >= ? AND date <= ? AND cash_source = 'caja'",
+      where: "date >= ? AND date <= ? AND cash_source = 'caja' AND cancelled = 0",
       whereArgs: [s, e],
       orderBy: 'date DESC',
     );
