@@ -47,6 +47,12 @@
 7. ✅ **FASE 2 — CIERRE COMPLETADO (07/09):** Fase 1 validada por el usuario (pasos 1-5 ✅; nota: stock/anulaciones se ven en el otro dispositivo tras refrescar manual — comportamiento conocido y aceptado). Commit `cf3fff2` de toda la Etapa 3. Logs temporales eliminados. **Etapa 3 CERRADA.**
    - Mejora pendiente menor: unificar vista previa de compra en el celular (hecho: PDF de compras ahora usa vista previa en app en ambas plataformas, incluido en el commit).
 
+### 📌 ACLARACIÓN — Tiempo real de STOCK entre módulos y dispositivos (revisado 07/09, cierre Etapa 3)
+- **Lo que YA existe y fue validado antes:** el stock es **unificado** entre Venta Rápida ↔ Mesas ↔ Inventario (mismo inventario, sin doble descuento). Y el stock se **sincroniza entre dispositivos** (fix del `product_repository`: al descargar productos de la nube sí se actualiza stock, validado en su momento). El usuario lo confirmó en la Fase 1: vender en EXE baja stock y el celular lo refleja (al refrescar).
+- **Lo que NO existe:** Realtime de la tabla `products` para stock. Hoy solo hay Realtime en: `billar_settings` (imagen/negocio tipo WhatsApp — ese sí es instantáneo), `billiard_tables` (mesas) y `providers`/`purchases` (compras). Por eso el stock en el otro dispositivo se ve **al refrescar la pantalla**, no al instante.
+- **⚠️ AGENDADO (nueva tarea, no bloquea Etapa 4):** Realtime de `products` (o pull periódico de stock) para que el stock cambie en vivo entre módulos y dispositivos, al estilo del cambio de imagen del negocio. Requiere: canal `public:products` filtrado por `billar_id` + recarga de la lista en Inventario/Venta Rápida/Mesas al recibir evento. Esfuerzo: moderado-bajo (el patrón ya existe en home_page/billiard_tables_page).
+- **Nota de la validación Fase 1:** el usuario observó "stock no actualiza en celular en tiempo real" y anulaciones visibles solo tras refresh manual → exactamente esta limitación, no un bug de la Etapa 3.
+
 ### ▶️ SIGUIENTE ETAPA PROPUESTA — Etapa 4: Informe de UTILIDAD (opción A elegida, pendiente de arrancar)
 - Nueva pestaña "Utilidad" en Informes con rango de fechas: Ventas − Costo de lo vendido − Retiros/Gastos = UTILIDAD NETA, con desglose de gastos por concepto.
 - Requiere migración (DB v19): guardar el costo del producto al momento de vender en `sale_details` (columna `cost_at_sale`) para costo histórico real.
