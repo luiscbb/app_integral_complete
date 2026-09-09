@@ -44,7 +44,14 @@
    6. Compra en EXE → stock sube → anular desde Historial → stock baja + ticket COMPRA ANULADA.
    7. Anular otra compra desde Informes→Compras (botón nuevo).
    8. Cross-device: anular venta desde el celular → desaparece en EXE.
-7. ⬜ **FASE 2 — CIERRE:** commit de toda la Etapa 3 + borrar logs temporales (`run_app_log*.txt`) + marcar Etapa 3 como cerrada en este .md.
+7. ✅ **FASE 2 — CIERRE COMPLETADO (07/09):** Fase 1 validada por el usuario (pasos 1-5 ✅; nota: stock/anulaciones se ven en el otro dispositivo tras refrescar manual — comportamiento conocido y aceptado). Commit `cf3fff2` de toda la Etapa 3. Logs temporales eliminados. **Etapa 3 CERRADA.**
+   - Mejora pendiente menor: unificar vista previa de compra en el celular (hecho: PDF de compras ahora usa vista previa en app en ambas plataformas, incluido en el commit).
+
+### ▶️ SIGUIENTE ETAPA PROPUESTA — Etapa 4: Informe de UTILIDAD (opción A elegida, pendiente de arrancar)
+- Nueva pestaña "Utilidad" en Informes con rango de fechas: Ventas − Costo de lo vendido − Retiros/Gastos = UTILIDAD NETA, con desglose de gastos por concepto.
+- Requiere migración (DB v19): guardar el costo del producto al momento de vender en `sale_details` (columna `cost_at_sale`) para costo histórico real.
+- Las compras NO se restan directo (son inventario/activo); solo el costo de lo vendido y los gastos de caja impactan utilidad.
+- Opcional después: exportar PDF del mes (opción C).
 
 ### ▶️ CÓMO VALIDAR LA FASE 1 (checklist para el usuario, con EXE levantado por el asistente)
 > EXE levantado y con BD limpia. El celular se conecta con `flutter run -d 0118caba0507` cuando el usuario lo enchufe (pedirá login porque se le borraron los datos con `pm clear`).
@@ -65,7 +72,7 @@
 El usuario quiere el **Kardex sincronizado a Supabase** (revisar movimientos remoto). Hoy es solo local. No es bloqueante de la Etapa 3; se puede hacer: tabla `inventory_movements` en Supabase + push en `recordInventoryMovement` + pull en la consulta. Es trabajo moderado, decidir cuándo agendarlo (no depende de roles de usuario para funcionar; los roles solo controlarían quién puede verlo).
 
 ### Estado Git
-- Último commit: `44a3f28` — docs. **TODO el código de la Etapa 3 está SIN commitear.**
+- Último commit: `cf3fff2` — feat: Etapa 3 completa (anulaciones con PIN, tickets, sync). Etapa 3 **CERRADA y commiteada**.
 
 ### Palabra clave para retomar
 **"RETOMAMOS ANULACIONES"**
