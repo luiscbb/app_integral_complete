@@ -31,22 +31,186 @@ class DatabaseHelper {
       final dbPath = await getDatabasesPath();
       path = join(dbPath, filePath);
     }
-    return await openDatabase(path, version: 18, onCreate: _createDB, onUpgrade: _upgradeDB);
+    return await openDatabase(
+      path,
+      version: 33,
+      onCreate: _createDB,
+      onUpgrade: _upgradeDB,
+    );
   }
+
   Future<void> _upgradeDB(Database db, int oldV, int newV) async {
+    if (oldV < 26) {
+      final columns = <String, String>{
+        'email': "TEXT NOT NULL DEFAULT ''",
+        'player_code': "TEXT NOT NULL DEFAULT ''",
+        'handicap': 'INTEGER NOT NULL DEFAULT 1',
+        'billar_id': "TEXT NOT NULL DEFAULT 'BILLAR_001'",
+        'is_active': 'INTEGER NOT NULL DEFAULT 1',
+        'registered_at': 'TEXT',
+        'expires_at': 'TEXT',
+        'archived_at': 'TEXT',
+        'auth_user_id': 'TEXT',
+        'must_change_password': 'INTEGER NOT NULL DEFAULT 0',
+        'client_id': 'TEXT',
+      };
+      for (final entry in columns.entries) {
+        if (!await _hasColumn(db, 'players', entry.key)) {
+          await db.execute(
+            'ALTER TABLE players ADD COLUMN ${entry.key} ${entry.value}',
+          );
+        }
+      }
+      await db.execute('''
+        UPDATE players
+        SET client_id = lower(hex(randomblob(16)))
+        WHERE client_id IS NULL OR client_id = ''
+      ''');
+      await db.execute('''
+        UPDATE players
+        SET player_code = 'JUG-LEGACY-' || id
+        WHERE player_code IS NULL OR player_code = ''
+      ''');
+      await db.execute('''
+        UPDATE players
+        SET registered_at = COALESCE(registered_at, datetime('now')),
+            expires_at = COALESCE(expires_at, datetime('now', '+1 year'))
+      ''');
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_players_client_id ON players(client_id)',
+      );
+    }
+    if (oldV < 27 && !await _hasColumn(db, 'players', 'phone')) {
+      await db.execute(
+        "ALTER TABLE players ADD COLUMN phone TEXT NOT NULL DEFAULT ''",
+      );
+    }
+    if (oldV < 28) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS tournaments (
+          id TEXT PRIMARY KEY,
+          billar_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          tournament_format TEXT NOT NULL,
+          capacity INTEGER,
+          entries_json TEXT NOT NULL DEFAULT '[]',
+          race_to INTEGER NOT NULL DEFAULT 3,
+          sets_to_play INTEGER NOT NULL DEFAULT 1,
+          guaranteed_pool REAL NOT NULL DEFAULT 0,
+          entry_fee REAL NOT NULL DEFAULT 0,
+          time_fee REAL NOT NULL DEFAULT 0,
+          prizes_json TEXT NOT NULL DEFAULT '[]',
+          game_type TEXT NOT NULL DEFAULT 'Bola 9',
+          playoff_qualifiers INTEGER NOT NULL DEFAULT 0,
+          matches_json TEXT NOT NULL DEFAULT '[]',
+          is_active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      ''');
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_tournaments_billar ON tournaments(billar_id, is_active)',
+      );
+    }
+    if (oldV < 29) {
+      if (!await _hasColumn(db, 'tournaments', 'race_to')) {
+        await db.execute(
+          'ALTER TABLE tournaments ADD COLUMN race_to INTEGER NOT NULL DEFAULT 3',
+        );
+      }
+      if (!await _hasColumn(db, 'tournaments', 'matches_json')) {
+        await db.execute(
+          "ALTER TABLE tournaments ADD COLUMN matches_json TEXT NOT NULL DEFAULT '[]'",
+        );
+      }
+    }
+    if (oldV < 30 && !await _hasColumn(db, 'tournaments', 'sets_to_play')) {
+      await db.execute(
+        'ALTER TABLE tournaments ADD COLUMN sets_to_play INTEGER NOT NULL DEFAULT 1',
+      );
+    }
+    if (oldV < 31) {
+      final columns = <String, String>{
+        'guaranteed_pool': 'REAL NOT NULL DEFAULT 0',
+        'entry_fee': 'REAL NOT NULL DEFAULT 0',
+        'time_fee': 'REAL NOT NULL DEFAULT 0',
+        'prizes_json': "TEXT NOT NULL DEFAULT '[]'",
+      };
+      for (final entry in columns.entries) {
+        if (!await _hasColumn(db, 'tournaments', entry.key)) {
+          await db.execute(
+            'ALTER TABLE tournaments ADD COLUMN ${entry.key} ${entry.value}',
+          );
+        }
+      }
+    }
+    if (oldV < 33) {
+      final columns = <String, String>{
+        'game_type': "TEXT NOT NULL DEFAULT 'Bola 9'",
+        'playoff_qualifiers': 'INTEGER NOT NULL DEFAULT 0',
+      };
+      for (final entry in columns.entries) {
+        if (!await _hasColumn(db, 'tournaments', entry.key)) {
+          await db.execute(
+            'ALTER TABLE tournaments ADD COLUMN ${entry.key} ${entry.value}',
+          );
+        }
+      }
+    }
+    if (oldV < 25 && !await _hasColumn(db, 'billiard_tables', 'is_deleted')) {
+      await db.execute(
+        'ALTER TABLE billiard_tables ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    if (oldV < 22) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS pending_product_deletions (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          billar_id  TEXT NOT NULL,
+          product_id INTEGER NOT NULL,
+          image_path TEXT,
+          synced     INTEGER NOT NULL DEFAULT 0,
+          UNIQUE (billar_id, product_id)
+        )
+      ''');
+    }
+    if (oldV < 21 && !await _hasColumn(db, 'billiard_tables', 'synced')) {
+      await db.execute(
+        'ALTER TABLE billiard_tables ADD COLUMN synced INTEGER NOT NULL DEFAULT 1',
+      );
+    }
+    if (oldV < 20) {
+      await db.execute('ALTER TABLE pending_sales ADD COLUMN client_id TEXT');
+    }
+    if (oldV < 19) {
+      // Informe de UTILIDAD (Etapa 4): costo unitario del producto al momento
+      // de vender. Permite calcular "costo de lo vendido" histórico real
+      // (aunque el costo del producto cambie después).
+      await db.execute(
+        "ALTER TABLE sale_details ADD COLUMN cost_at_sale REAL NOT NULL DEFAULT 0",
+      );
+    }
     if (oldV < 18) {
       // Anulación lógica de compras: marca la compra como anulada sin borrarla
       // (para que el pull de la nube no la re-inserte) y descuenta el stock
       // que la compra había sumado. 1 = anulada (excluida de informes/caja).
-      await db.execute("ALTER TABLE purchases ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0");
-      await db.execute("ALTER TABLE purchase_details ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0");
+      await db.execute(
+        "ALTER TABLE purchases ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0",
+      );
+      await db.execute(
+        "ALTER TABLE purchase_details ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0",
+      );
     }
     if (oldV < 17) {
       // Anulación lógica de ventas: permite marcar una venta como anulada
       // (con contraseña) sin borrarla, para que el pull de la nube no la
       // re-inserte. 1 = anulada (excluida de informes/caja/historial).
-      await db.execute("ALTER TABLE sales_history ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0");
-      await db.execute("ALTER TABLE sale_details ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0");
+      await db.execute(
+        "ALTER TABLE sales_history ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0",
+      );
+      await db.execute(
+        "ALTER TABLE sale_details ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0",
+      );
     }
     if (oldV < 16) {
       // Catálogo de conceptos de retiro/gasto de caja (patrón de categorías).
@@ -61,15 +225,23 @@ class DatabaseHelper {
     if (oldV < 15) {
       // Origen del dinero de la compra (Caja/Cajero/Transferencia/Tarjeta),
       // para el corte de efectivo por turno/cajero.
-      await db.execute("ALTER TABLE purchases ADD COLUMN cash_source TEXT DEFAULT 'caja'");
+      await db.execute(
+        "ALTER TABLE purchases ADD COLUMN cash_source TEXT DEFAULT 'caja'",
+      );
     }
     if (oldV < 14) {
       // Usuario logueado que realizó la compra (para detalle/PDF y cortes por turno)
-      await db.execute("ALTER TABLE purchases ADD COLUMN created_by TEXT DEFAULT ''");
-      await db.execute("ALTER TABLE purchase_details ADD COLUMN created_by TEXT DEFAULT ''");
+      await db.execute(
+        "ALTER TABLE purchases ADD COLUMN created_by TEXT DEFAULT ''",
+      );
+      await db.execute(
+        "ALTER TABLE purchase_details ADD COLUMN created_by TEXT DEFAULT ''",
+      );
     }
     if (oldV < 12) {
-      await db.execute("ALTER TABLE products ADD COLUMN presentation TEXT DEFAULT ''");
+      await db.execute(
+        "ALTER TABLE products ADD COLUMN presentation TEXT DEFAULT ''",
+      );
     }
     if (oldV < 11) {
       // Migrar tabla providers a nueva estructura con más campos
@@ -108,15 +280,23 @@ class DatabaseHelper {
       ''');
     }
     if (oldV < 10) {
-      await db.execute("ALTER TABLE billiard_tables ADD COLUMN table_type TEXT NOT NULL DEFAULT 'Pool'");
+      await db.execute(
+        "ALTER TABLE billiard_tables ADD COLUMN table_type TEXT NOT NULL DEFAULT 'Pool'",
+      );
     }
     if (oldV < 2) {
-      await db.execute('ALTER TABLE sales_history ADD COLUMN paid REAL NOT NULL DEFAULT 0');
+      await db.execute(
+        'ALTER TABLE sales_history ADD COLUMN paid REAL NOT NULL DEFAULT 0',
+      );
     }
     if (oldV < 3) {
-      await db.execute('ALTER TABLE sales_history ADD COLUMN synced INTEGER NOT NULL DEFAULT 0');
+      await db.execute(
+        'ALTER TABLE sales_history ADD COLUMN synced INTEGER NOT NULL DEFAULT 0',
+      );
       await db.execute('ALTER TABLE sales_history ADD COLUMN cloud_id TEXT');
-      await db.execute('ALTER TABLE purchases ADD COLUMN synced INTEGER NOT NULL DEFAULT 0');
+      await db.execute(
+        'ALTER TABLE purchases ADD COLUMN synced INTEGER NOT NULL DEFAULT 0',
+      );
       await db.execute('ALTER TABLE purchases ADD COLUMN cloud_id TEXT');
     }
     if (oldV < 4) {
@@ -126,6 +306,17 @@ class DatabaseHelper {
           name           TEXT    NOT NULL,
           nickname       TEXT    DEFAULT '',
           avatar         TEXT    DEFAULT '',
+          email          TEXT    NOT NULL DEFAULT '',
+          player_code    TEXT    NOT NULL DEFAULT '',
+          handicap       INTEGER NOT NULL DEFAULT 1,
+          billar_id      TEXT    NOT NULL DEFAULT 'BILLAR_001',
+          is_active      INTEGER NOT NULL DEFAULT 1,
+          registered_at  TEXT,
+          expires_at     TEXT,
+          archived_at    TEXT,
+          auth_user_id   TEXT,
+          must_change_password INTEGER NOT NULL DEFAULT 0,
+          client_id      TEXT,
           wins           INTEGER NOT NULL DEFAULT 0,
           losses         INTEGER NOT NULL DEFAULT 0,
           draws          INTEGER NOT NULL DEFAULT 0,
@@ -161,11 +352,15 @@ class DatabaseHelper {
       ''');
     }
     if (oldV < 6) {
-      await db.execute('ALTER TABLE players ADD COLUMN synced INTEGER NOT NULL DEFAULT 0');
+      await db.execute(
+        'ALTER TABLE players ADD COLUMN synced INTEGER NOT NULL DEFAULT 0',
+      );
       await db.execute('ALTER TABLE players ADD COLUMN cloud_id TEXT');
     }
     if (oldV < 7) {
-      await db.execute("ALTER TABLE products ADD COLUMN category TEXT DEFAULT ''");
+      await db.execute(
+        "ALTER TABLE products ADD COLUMN category TEXT DEFAULT ''",
+      );
       await db.execute('''
         CREATE TABLE IF NOT EXISTS categories (
           id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -175,14 +370,24 @@ class DatabaseHelper {
       ''');
     }
     if (oldV < 9) {
-      await db.execute('ALTER TABLE products ADD COLUMN synced INTEGER NOT NULL DEFAULT 0');
+      await db.execute(
+        'ALTER TABLE products ADD COLUMN synced INTEGER NOT NULL DEFAULT 0',
+      );
       await db.execute('ALTER TABLE products ADD COLUMN cloud_id TEXT');
     }
     if (oldV < 8) {
-      await db.execute('ALTER TABLE match_results ADD COLUMN player_score INTEGER NOT NULL DEFAULT 0');
-      await db.execute('ALTER TABLE match_results ADD COLUMN opponent_score INTEGER NOT NULL DEFAULT 0');
-      await db.execute('ALTER TABLE match_results ADD COLUMN accuracy REAL NOT NULL DEFAULT 0');
-      await db.execute('ALTER TABLE match_results ADD COLUMN efficiency REAL NOT NULL DEFAULT 0');
+      await db.execute(
+        'ALTER TABLE match_results ADD COLUMN player_score INTEGER NOT NULL DEFAULT 0',
+      );
+      await db.execute(
+        'ALTER TABLE match_results ADD COLUMN opponent_score INTEGER NOT NULL DEFAULT 0',
+      );
+      await db.execute(
+        'ALTER TABLE match_results ADD COLUMN accuracy REAL NOT NULL DEFAULT 0',
+      );
+      await db.execute(
+        'ALTER TABLE match_results ADD COLUMN efficiency REAL NOT NULL DEFAULT 0',
+      );
     }
     if (oldV < 13) {
       await db.execute('''
@@ -209,7 +414,8 @@ class DatabaseHelper {
           notes          TEXT    DEFAULT '',
           created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
           synced         INTEGER NOT NULL DEFAULT 0,
-          cloud_id       TEXT
+          cloud_id       TEXT,
+          client_id      TEXT UNIQUE
         )
       ''');
       await db.execute('''
@@ -246,6 +452,32 @@ class DatabaseHelper {
         )
       ''');
     }
+    if (oldV < 23) {
+      await db.execute(
+        'ALTER TABLE inventory_movements ADD COLUMN client_id TEXT',
+      );
+      await db.execute(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_movements_client_id '
+        'ON inventory_movements (client_id)',
+      );
+      await db.execute(
+        'UPDATE inventory_movements SET synced = 0 WHERE cloud_id IS NULL',
+      );
+    }
+    if (oldV < 24) {
+      await db.execute(
+        'ALTER TABLE products ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1',
+      );
+    }
+  }
+
+  Future<bool> _hasColumn(
+    Database db,
+    String tableName,
+    String columnName,
+  ) async {
+    final columns = await db.rawQuery('PRAGMA table_info($tableName)');
+    return columns.any((column) => column['name'] == columnName);
   }
 
   Future<void> _createDB(Database db, int version) async {
@@ -267,8 +499,46 @@ class DatabaseHelper {
         pieces_per_unit INTEGER NOT NULL DEFAULT 1,
         category        TEXT    DEFAULT '',
         presentation    TEXT    DEFAULT '',
+        is_active       INTEGER NOT NULL DEFAULT 1,
         synced          INTEGER NOT NULL DEFAULT 0,
         cloud_id        TEXT
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE tournaments (
+        id TEXT PRIMARY KEY,
+        billar_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        tournament_format TEXT NOT NULL,
+        capacity INTEGER,
+        entries_json TEXT NOT NULL DEFAULT '[]',
+        race_to INTEGER NOT NULL DEFAULT 3,
+        sets_to_play INTEGER NOT NULL DEFAULT 1,
+        guaranteed_pool REAL NOT NULL DEFAULT 0,
+        entry_fee REAL NOT NULL DEFAULT 0,
+        time_fee REAL NOT NULL DEFAULT 0,
+        prizes_json TEXT NOT NULL DEFAULT '[]',
+        game_type TEXT NOT NULL DEFAULT 'Bola 9',
+        playoff_qualifiers INTEGER NOT NULL DEFAULT 0,
+        matches_json TEXT NOT NULL DEFAULT '[]',
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    ''');
+    await db.execute(
+      'CREATE INDEX idx_tournaments_billar ON tournaments(billar_id, is_active)',
+    );
+
+    await db.execute('''
+      CREATE TABLE pending_product_deletions (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        billar_id  TEXT NOT NULL,
+        product_id INTEGER NOT NULL,
+        image_path TEXT,
+        synced     INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (billar_id, product_id)
       )
     ''');
 
@@ -298,7 +568,9 @@ class DatabaseHelper {
         table_type  TEXT    NOT NULL DEFAULT 'Pool',
         is_occupied INTEGER NOT NULL DEFAULT 0,
         start_time  TEXT,
-        orders      TEXT    DEFAULT '[]'
+        orders      TEXT    DEFAULT '[]',
+        synced      INTEGER NOT NULL DEFAULT 1,
+        is_deleted  INTEGER NOT NULL DEFAULT 0
       )
     ''');
 
@@ -326,6 +598,7 @@ class DatabaseHelper {
         quantity      REAL    NOT NULL,
         price_at_sale REAL    NOT NULL,
         cancelled     INTEGER NOT NULL DEFAULT 0,
+        cost_at_sale  REAL    NOT NULL DEFAULT 0,
         FOREIGN KEY (sale_id) REFERENCES sales_history (id) ON DELETE CASCADE
       )
     ''');
@@ -390,7 +663,8 @@ class DatabaseHelper {
         quantity   INTEGER NOT NULL,
         price      REAL    NOT NULL,
         created_at TEXT    NOT NULL,
-        synced     INTEGER NOT NULL DEFAULT 0
+        synced     INTEGER NOT NULL DEFAULT 0,
+        client_id  TEXT
       )
     ''');
 
@@ -402,6 +676,18 @@ class DatabaseHelper {
         name           TEXT    NOT NULL,
         nickname       TEXT    DEFAULT '',
         avatar         TEXT    DEFAULT '',
+        email          TEXT    NOT NULL DEFAULT '',
+        player_code    TEXT    NOT NULL DEFAULT '',
+        phone          TEXT    NOT NULL DEFAULT '',
+        handicap       INTEGER NOT NULL DEFAULT 1,
+        billar_id      TEXT    NOT NULL DEFAULT 'BILLAR_001',
+        is_active      INTEGER NOT NULL DEFAULT 1,
+        registered_at  TEXT,
+        expires_at     TEXT,
+        archived_at    TEXT,
+        auth_user_id   TEXT,
+        must_change_password INTEGER NOT NULL DEFAULT 0,
+        client_id      TEXT,
         wins           INTEGER NOT NULL DEFAULT 0,
         losses         INTEGER NOT NULL DEFAULT 0,
         draws          INTEGER NOT NULL DEFAULT 0,
@@ -463,7 +749,8 @@ class DatabaseHelper {
         notes          TEXT    DEFAULT '',
         created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
         synced         INTEGER NOT NULL DEFAULT 0,
-        cloud_id       TEXT
+        cloud_id       TEXT,
+        client_id      TEXT UNIQUE
       )
     ''');
 
@@ -509,6 +796,5 @@ class DatabaseHelper {
         cloud_id       TEXT
       )
     ''');
-
   }
 }
