@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../../core/database/database_helper.dart';
 import '../../../../core/services/sync_service.dart';
@@ -15,7 +14,6 @@ class PurchasesRepository {
   final _db = DatabaseHelper.instance;
   final _sync = SyncService();
   final _reports = ReportsRepository();
-  SupabaseClient get _sup => Supabase.instance.client;
 
   Future<List<ProviderEntity>> getProviders() async {
     final db = await _db.database;
@@ -135,9 +133,11 @@ class PurchasesRepository {
       );
     }
 
-    // Sincronizar stock de productos a Supabase
+    // Sincronizar stock de productos a Supabase (fire-and-forget: sin
+    // conexión no debe demorar/trabar el guardado de la compra, que ya
+    // quedó registrada localmente arriba).
     for (final item in purchase.items) {
-      await _syncProductStockToCloud(item.productId);
+      unawaited(_syncProductStockToCloud(item.productId));
     }
 
     // Disparar sync de la compra completa
@@ -193,25 +193,15 @@ class PurchasesRepository {
           notes: notes.isEmpty ? 'Anulación de compra $reference' : notes,
         );
       }
-      await _syncProductStockToCloud(productId);
+      unawaited(_syncProductStockToCloud(productId));
     }
 
     // Marcar compra y detalles como anulados (local).
     await db.update('purchases', {'cancelled': 1, 'synced': 0}, where: 'id = ?', whereArgs: [purchaseId]);
     await db.update('purchase_details', {'cancelled': 1}, where: 'purchase_id = ?', whereArgs: [purchaseId]);
 
-    // Propagar anulación a la nube (update por cloud_id).
-    final cloudId = purchase['cloud_id']?.toString();
-    try {
-      if (cloudId != null) {
-        await _sup.from('purchases').update({'cancelled': true}).eq('id', cloudId);
-      } else {
-        _sync.schedulePendingSync();
-      }
-    } catch (e) {
-      debugPrint('[PurchasesRepository] cancelPurchase push ERROR: $e');
-      _sync.schedulePendingSync();
-    }
+    // La cola sube también el flag cancelled y reintenta si falla la red.
+    _sync.schedulePendingSync();
 
     return true;
   }

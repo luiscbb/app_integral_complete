@@ -13,6 +13,7 @@ import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
 import '../../../../core/services/sync_service.dart';
 import '../../../../features/sales/data/repositories/sales_repository.dart';
+import '../../data/auth_access_repository.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -40,6 +41,39 @@ class _LoginPageState extends State<LoginPage> {
         await _prefs.setUserName(res.user!.userMetadata?['full_name'] ?? 'Administrador');
         await _prefs.setBusinessName(res.user!.userMetadata?['business_name'] ?? 'Baumar Billar');
         await _prefs.setBillarId(res.user!.userMetadata?['billar_id'] ?? 'BILLAR_001');
+
+        final account = await AuthAccessRepository().resolveCurrentAccount();
+        if (account.kind == AccountKind.player ||
+            account.kind == AccountKind.manager) {
+          if (account.billarId.isNotEmpty) {
+            await _prefs.setBillarId(account.billarId);
+          }
+          final route = account.mustChangePassword
+              ? AppRoutes.changeTemporaryPassword
+              : account.kind == AccountKind.player
+              ? AppRoutes.playerPortal
+              : AppRoutes.managerPortal;
+          if (mounted) {
+            Navigator.pushNamedAndRemoveUntil(
+              context,
+              route,
+              (_) => false,
+              arguments: account.player,
+            );
+          }
+          return;
+        }
+        if (account.kind == AccountKind.unavailable &&
+            (res.user!.appMetadata['account_type'] == 'player' ||
+                res.user!.appMetadata['account_type'] == 'manager')) {
+          await Supabase.instance.client.auth.signOut();
+          throw const AuthException(
+            'La cuenta está inactiva o no está vinculada al billar.',
+          );
+        }
+        if (account.billarId.isNotEmpty) {
+          await _prefs.setBillarId(account.billarId);
+        }
 
         // Descargar configuracion remota si existe
         final remote = ConfigRemoteRepository();
@@ -123,6 +157,7 @@ class _LoginPageState extends State<LoginPage> {
           await SyncService().pullTablesFromCloud();
 
           await _prefs.setIsFirstRun(false);
+          SyncService().schedulePendingSync();
           if (mounted) {
             Navigator.pushReplacementNamed(context, AppRoutes.home);
           }

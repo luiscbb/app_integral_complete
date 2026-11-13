@@ -1,4 +1,4 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
@@ -40,12 +40,28 @@ class SalesRepository {
         'synced': 0,
       });
       for (final item in items) {
+        // Informe de UTILIDAD (Etapa 4): guardar el costo del producto al
+        // momento de vender (costo histórico real). El tiempo de mesa no es
+        // producto, no tiene costo.
+        double costAtSale = 0;
+        if (item.productId != null && !item.productName.startsWith('Tiempo de juego')) {
+          final prodRows = await txn.query(
+            'products',
+            columns: ['cost'],
+            where: 'id = ?',
+            whereArgs: [item.productId],
+          );
+          if (prodRows.isNotEmpty) {
+            costAtSale = (prodRows.first['cost'] as num?)?.toDouble() ?? 0;
+          }
+        }
         await txn.insert('sale_details', {
           'sale_id': id,
           'product_id': item.productId,
           'product_name': item.productName,
           'quantity': item.quantity,
           'price_at_sale': item.price,
+          'cost_at_sale': costAtSale,
         });
       }
       return id;
@@ -99,7 +115,9 @@ class SalesRepository {
       final productId = d['product_id'] as int?;
       final name = d['product_name']?.toString() ?? '';
       final qty = (d['quantity'] as num?)?.toDouble() ?? 0;
-      if (productId == null || qty <= 0 || name.startsWith('Tiempo de juego')) continue;
+      if (productId == null || qty <= 0 || name.startsWith('Tiempo de juego')) {
+        continue;
+      }
 
       final prodRows = await db.query('products', where: 'id = ?', whereArgs: [productId]);
       if (prodRows.isEmpty) continue;
@@ -118,32 +136,17 @@ class SalesRepository {
     }
 
     // Marcar venta y detalles como anulados (local).
-    await db.update('sales_history', {'cancelled': 1, 'synced': 0}, where: 'id = ?', whereArgs: [saleId]);
+    await db.update(
+      'sales_history',
+      {'cancelled': 1, 'synced': 0},
+      where: 'id = ?',
+      whereArgs: [saleId],
+    );
     await db.update('sale_details', {'cancelled': 1}, where: 'sale_id = ?', whereArgs: [saleId]);
 
-    // Propagar anulación a la nube (update por cloud_id; si falla, el sync
-    // pendiente la subirá más tarde porque synced quedó en 0).
-    final cloudId = sale['cloud_id']?.toString();
-    if (cloudId != null) {
-      try {
-        await _sync.pushSaleToCloud(
-          localSaleId: saleId,
-          billarId: _prefs.billarId,
-          total: (sale['total'] as num).toDouble(),
-          paid: (sale['paid'] as num?)?.toDouble() ?? 0,
-          date: sale['date'].toString(),
-          type: saleType,
-          paymentMethod: sale['payment_method']?.toString() ?? 'Efectivo',
-          items: details,
-          existingCloudId: cloudId,
-          cancelled: true,
-        );
-      } catch (e) {
-        debugPrint('[SalesRepository] cancelSale push ERROR: $e');
-      }
-    } else {
-      _sync.schedulePendingSync();
-    }
+    // La cola procesa tanto anulaciones nuevas como pendientes y reintenta si
+    // falla la red, incluso cuando la venta ya tiene cloud_id.
+    _sync.schedulePendingSync();
 
     return true;
   }
@@ -156,10 +159,12 @@ class SalesRepository {
     unawaited(_sync.pullSalesFromCloud());
     final start = DateTime(date.year, date.month, date.day).toIso8601String();
     final end = DateTime(date.year, date.month, date.day, 23, 59, 59).toIso8601String();
-    return db.query('sales_history',
-        where: 'date >= ? AND date <= ? AND cancelled = 0',
-        whereArgs: [start, end],
-        orderBy: 'date DESC');
+    return db.query(
+      'sales_history',
+      where: 'date >= ? AND date <= ? AND cancelled = 0',
+      whereArgs: [start, end],
+      orderBy: 'date DESC',
+    );
   }
 
   Future<List<Map<String, dynamic>>> getTodaySales() async {
@@ -167,10 +172,12 @@ class SalesRepository {
     final today = DateTime.now();
     final start = DateTime(today.year, today.month, today.day).toIso8601String();
     final end = DateTime(today.year, today.month, today.day, 23, 59, 59).toIso8601String();
-    return db.query('sales_history',
-        where: 'date >= ? AND date <= ? AND cancelled = 0',
-        whereArgs: [start, end],
-        orderBy: 'date DESC');
+    return db.query(
+      'sales_history',
+      where: 'date >= ? AND date <= ? AND cancelled = 0',
+      whereArgs: [start, end],
+      orderBy: 'date DESC',
+    );
   }
 
   Future<List<Map<String, dynamic>>> getSalesDetails(int saleId) async {
@@ -183,20 +190,24 @@ class SalesRepository {
     unawaited(_sync.pullSalesFromCloud());
     final s = DateTime(start.year, start.month, start.day).toIso8601String();
     final e = DateTime(end.year, end.month, end.day, 23, 59, 59).toIso8601String();
-    return db.query('sales_history',
-        where: 'date >= ? AND date <= ? AND cancelled = 0',
-        whereArgs: [s, e],
-        orderBy: 'date DESC');
+    return db.query(
+      'sales_history',
+      where: 'date >= ? AND date <= ? AND cancelled = 0',
+      whereArgs: [s, e],
+      orderBy: 'date DESC',
+    );
   }
 
   Future<List<Map<String, dynamic>>> getSalesByMonth(int year, int month) async {
     final db = await _db.database;
     final start = DateTime(year, month, 1).toIso8601String();
     final end = DateTime(year, month + 1, 0, 23, 59, 59).toIso8601String();
-    return db.query('sales_history',
-        where: 'date >= ? AND date <= ? AND cancelled = 0',
-        whereArgs: [start, end],
-        orderBy: 'date DESC');
+    return db.query(
+      'sales_history',
+      where: 'date >= ? AND date <= ? AND cancelled = 0',
+      whereArgs: [start, end],
+      orderBy: 'date DESC',
+    );
   }
 
   Future<Map<String, double>> getTodayStats() async {
@@ -205,10 +216,7 @@ class SalesRepository {
     for (final s in sales) {
       totalVentas += (s['total'] as num).toDouble();
     }
-    return {
-      'total': totalVentas,
-      'count': sales.length.toDouble(),
-    };
+    return {'total': totalVentas, 'count': sales.length.toDouble()};
   }
 
   Future<void> saveTableOrder({
@@ -217,15 +225,29 @@ class SalesRepository {
     required String tableName,
   }) async {
     final db = await _db.database;
-    final ordersJson = jsonEncode(items.map((e) => {
-      'productId': e.productId,
-      'productName': e.productName,
-      'price': e.price,
-      'quantity': e.quantity,
-    }).toList());
-    await db.update('billiard_tables',
-        {'orders': ordersJson, 'is_occupied': items.isEmpty ? 0 : 1},
-        where: 'id = ?', whereArgs: [tableId]);
+    final ordersJson = jsonEncode(
+      items
+          .map(
+            (e) => {
+              'productId': e.productId,
+              'productName': e.productName,
+              'price': e.price,
+              'quantity': e.quantity,
+            },
+          )
+          .toList(),
+    );
+    await db.update(
+      'billiard_tables',
+      {
+        'orders': ordersJson,
+        'is_occupied': items.isEmpty ? 0 : 1,
+        if (items.isEmpty) 'start_time': null,
+        'synced': 0,
+      },
+      where: 'id = ?',
+      whereArgs: [tableId],
+    );
     // Ya no usamos temp_reservations para mesas; billiard_tables.orders es la fuente de verdad.
     await _pushTableToCloud(tableId);
   }
@@ -243,7 +265,7 @@ class SalesRepository {
   }) async {
     final db = await _db.database;
     final billarId = _prefs.billarId;
-    String where = 'billar_id = ? AND is_occupied = 1';
+    String where = 'billar_id = ? AND is_occupied = 1 AND is_deleted = 0';
     final args = <dynamic>[billarId];
     if (excludeTableId != null) {
       where += ' AND id != ?';
@@ -284,17 +306,23 @@ class SalesRepository {
     final db = await _db.database;
     // Guardar en UTC para que Supabase (columna timestamptz) lo interprete
     // correctamente y el calculo de tiempo coincida entre dispositivos.
-    await db.update('billiard_tables',
-        {'is_occupied': 1, 'start_time': DateTime.now().toUtc().toIso8601String()},
-        where: 'id = ?', whereArgs: [tableId]);
+    await db.update(
+      'billiard_tables',
+      {'is_occupied': 1, 'start_time': DateTime.now().toUtc().toIso8601String(), 'synced': 0},
+      where: 'id = ?',
+      whereArgs: [tableId],
+    );
     await _pushTableToCloud(tableId);
   }
 
   Future<void> freeTable(int tableId) async {
     final db = await _db.database;
-    await db.update('billiard_tables',
-        {'is_occupied': 0, 'start_time': null, 'orders': '[]'},
-        where: 'id = ?', whereArgs: [tableId]);
+    await db.update(
+      'billiard_tables',
+      {'is_occupied': 0, 'start_time': null, 'orders': '[]', 'synced': 0},
+      where: 'id = ?',
+      whereArgs: [tableId],
+    );
     await _reservations.clearTableReservation(tableId);
     await _pushTableToCloud(tableId);
   }
@@ -315,26 +343,18 @@ class SalesRepository {
       if (rows.isEmpty) return;
       await _sync.pushTableToCloud(rows.first);
     } catch (e) {
-      if (kDebugMode) debugPrint('[SalesRepository] _pushTableToCloud error: $e');
+      if (kDebugMode) {
+        debugPrint('[SalesRepository] _pushTableToCloud error: $e');
+      }
     }
   }
 
-  Future<List<Map<String, dynamic>>> getTables() async {
+  Future<List<Map<String, dynamic>>> getTables({String tableType = 'Billar'}) async {
     final db = await _db.database;
     final billarId = _prefs.billarId;
-
-    // Siempre intentar pull en primer plano con la nube como fuente de verdad.
-    // El listado de mesas es solo vista (no edita), asi que refleja el estado
-    // real aunque la copia local tenga mesas "ocupadas" de una sesion anterior.
-    try {
-      await _sync.pullTablesFromCloud(forceApply: true);
-    } catch (e) {
-      if (kDebugMode) debugPrint('[SalesRepository] pullTablesFromCloud error: $e');
-    }
-
-    var localRows = await db.query(
+    final localRows = await db.query(
       'billiard_tables',
-      where: 'billar_id = ?',
+      where: 'billar_id = ? AND is_deleted = 0',
       whereArgs: [billarId],
       orderBy: 'id ASC',
     );
@@ -346,20 +366,29 @@ class SalesRepository {
       }
     }
 
-    return localRows.where((r) => _isBillarType(r['table_type'] as String?)).toList();
+    return localRows.where((row) {
+      final type = row['table_type'] as String?;
+      return tableType == 'Comanda' ? type?.trim() == 'Comanda' : _isBillarType(type);
+    }).toList();
   }
+
+  Future<void> refreshTablesFromCloud() => _sync.pullTablesFromCloud(forceApply: true);
 
   bool _isBillarType(String? type) {
     return const ['Billar', 'Pool', 'Carambola', 'Snooker'].contains(type?.trim() ?? 'Billar');
   }
 
   Future<void> ensureTablesExist(int count) async {
+    await _sync.pullTablesFromCloud();
     final db = await _db.database;
-    final existing = await db.query('billiard_tables');
-    final existingIds = existing.map((e) => e['id'] as int).toSet();
-
-    for (int i = 1; i <= count; i++) {
-      if (!existingIds.contains(i)) {
+    final existing = await db.query(
+      'billiard_tables',
+      where: 'billar_id = ?',
+      whereArgs: [_prefs.billarId],
+      limit: 1,
+    );
+    if (existing.isEmpty) {
+      for (int i = 1; i <= count; i++) {
         await db.insert('billiard_tables', {
           'id': i,
           'billar_id': _prefs.billarId,
@@ -367,17 +396,9 @@ class SalesRepository {
           'table_type': 'Billar',
           'is_occupied': 0,
           'orders': '[]',
+          'synced': 0,
+          'is_deleted': 0,
         });
-      }
-    }
-
-    for (final row in existing) {
-      final id = row['id'] as int;
-      if (id > count && row['is_occupied'] == 0) {
-        final orders = row['orders']?.toString() ?? '[]';
-        if (orders == '[]' || orders.isEmpty) {
-          await db.delete('billiard_tables', where: 'id = ?', whereArgs: [id]);
-        }
       }
     }
   }

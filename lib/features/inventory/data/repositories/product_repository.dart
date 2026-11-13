@@ -1,8 +1,10 @@
 import 'dart:io';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../../core/database/database_helper.dart';
+import '../../../../core/services/sync_service.dart';
 import '../../../../core/storage/preferences_service.dart';
 import '../../domain/entities/product_entity.dart';
 import '../../domain/repositories/i_product_repository.dart';
@@ -10,16 +12,31 @@ import '../../domain/repositories/i_product_repository.dart';
 class ProductRepository implements IProductRepository {
   final _db = DatabaseHelper.instance;
   final _prefs = PreferencesService();
+  static final Random _idRandom = Random.secure();
   SupabaseClient get _supabase => Supabase.instance.client;
 
+  // SQLite IDs are also sent to Supabase, so independent devices need disjoint IDs.
+  int _newProductId() =>
+      DateTime.now().millisecondsSinceEpoch * 1000000 + _idRandom.nextInt(1000000);
+
   @override
-  Future<List<ProductEntity>> getAll() async {
+  Future<List<ProductEntity>> getAll({
+    bool syncRemote = true,
+    bool includeArchived = false,
+  }) async {
     final db = await _db.database;
-    final maps = await db.query('products', orderBy: 'name ASC');
+    final maps = await db.query(
+      'products',
+      where: includeArchived ? null : 'is_active = ?',
+      whereArgs: includeArchived ? null : [1],
+      orderBy: 'name ASC',
+    );
     final base = maps.map((m) => ProductEntity.fromMap(m)).toList();
 
     // Sync en background sin bloquear la UI
-    _syncFromCloud().catchError((e) => debugPrint('[Sync] Background sync error: $e'));
+    if (syncRemote) {
+      _syncFromCloud().catchError((e) => debugPrint('[Sync] Background sync error: $e'));
+    }
 
     final result = <ProductEntity>[];
     for (final p in base) {
@@ -55,6 +72,11 @@ class ProductRepository implements IProductRepository {
     return result;
   }
 
+  Future<List<ProductEntity>> refreshFromCloud() async {
+    await _syncFromCloud();
+    return getAll(syncRemote: false);
+  }
+
   Future<void> _syncFromCloud() async {
     try {
       final billarId = _prefs.billarId;
@@ -72,10 +94,19 @@ class ProductRepository implements IProductRepository {
 
       // Obtener IDs de productos en Supabase
       final cloudIds = (response as List).map((e) => e['id'] as int).toSet();
+      final pendingDeletions = await db.query(
+        'pending_product_deletions',
+        columns: ['product_id'],
+        where: 'billar_id = ?',
+        whereArgs: [billarId],
+      );
+      final pendingDeletionIds = pendingDeletions.map((row) => row['product_id'] as int).toSet();
 
       await db.transaction((txn) async {
         for (final item in response) {
           final map = Map<String, dynamic>.from(item);
+          final remoteId = map['id'] as int?;
+          if (remoteId != null && pendingDeletionIds.contains(remoteId)) continue;
           final cleanMap = {
             'id': map['id'],
             'billar_id': map['billar_id'],
@@ -91,6 +122,7 @@ class ProductRepository implements IProductRepository {
             'pieces_per_unit': map['pieces_per_unit'],
             'category': map['category'] ?? '',
             'presentation': map['presentation'] ?? '',
+            'is_active': map['is_active'] == false || map['is_active'] == 0 ? 0 : 1,
           };
 
           if (cleanMap['id'] != null) {
@@ -101,9 +133,14 @@ class ProductRepository implements IProductRepository {
             // Solo se excluyen los productos con cambios locales aún sin subir
             // (synced = 0), para no pisar una venta/compra que no ha llegado a
             // la nube todavía.
-            final existing = await txn.query('products', where: 'id = ?', whereArgs: [cleanMap['id']]);
+            final existing = await txn.query(
+              'products',
+              where: 'id = ?',
+              whereArgs: [cleanMap['id']],
+            );
             if (existing.isNotEmpty) {
               final localSynced = (existing.first['synced'] as int?) ?? 1;
+              if (localSynced == 0) continue;
               final updateMap = {
                 'name': cleanMap['name'],
                 'description': cleanMap['description'],
@@ -115,19 +152,12 @@ class ProductRepository implements IProductRepository {
                 'pieces_per_unit': cleanMap['pieces_per_unit'],
                 'category': cleanMap['category'],
                 'presentation': cleanMap['presentation'],
+                'is_active': cleanMap['is_active'],
                 'billar_id': cleanMap['billar_id'],
                 'synced': 1,
               };
-              if (localSynced != 0) {
-                // Sin cambios locales pendientes: es seguro tomar el stock de la nube.
-                updateMap['stock'] = cleanMap['stock'];
-              }
-              await txn.update(
-                'products',
-                updateMap,
-                where: 'id = ?',
-                whereArgs: [cleanMap['id']],
-              );
+              updateMap['stock'] = cleanMap['stock'];
+              await txn.update('products', updateMap, where: 'id = ?', whereArgs: [cleanMap['id']]);
             } else {
               // Producto NUEVO: insertar todo incluyendo stock
               await txn.insert('products', {...cleanMap, 'synced': 1});
@@ -136,7 +166,11 @@ class ProductRepository implements IProductRepository {
         }
 
         // Eliminar productos locales que ya no existen en la nube.
-        final localProducts = await txn.query('products', where: 'billar_id = ?', whereArgs: [billarId]);
+        final localProducts = await txn.query(
+          'products',
+          where: 'billar_id = ?',
+          whereArgs: [billarId],
+        );
         final hasUnsynced = localProducts.any((r) => (r['synced'] as int? ?? 0) == 0);
         // Si la nube está vacía y hay productos locales no sincronizados,
         // NO borrar: probablemente acaban de crearse y aún no suben.
@@ -149,7 +183,9 @@ class ProductRepository implements IProductRepository {
             }
           }
         } else {
-          debugPrint('[Sync] Nube vacía y hay productos locales no sincronizados; no se eliminan locales');
+          debugPrint(
+            '[Sync] Nube vacía y hay productos locales no sincronizados; no se eliminan locales',
+          );
         }
       });
       debugPrint('[Sync] Descarga completada exitosamente');
@@ -183,11 +219,7 @@ class ProductRepository implements IProductRepository {
       if (p.id != null) {
         // Al editar un producto padre, sincronizamos también su presentación
         // y datos administrativos en la caja hija sin tocar el stock.
-        final childRows = await txn.query(
-          'products',
-          where: 'parent_id = ?',
-          whereArgs: [p.id],
-        );
+        final childRows = await txn.query('products', where: 'parent_id = ?', whereArgs: [p.id]);
         if (childRows.isNotEmpty) {
           final childId = childRows.first['id'] as int;
           await txn.update(
@@ -210,14 +242,17 @@ class ProductRepository implements IProductRepository {
           cajaMap = Map<String, dynamic>.from(childRows.first);
           cajaMap!['id'] = childId;
         }
+        map['synced'] = 0;
         await txn.update('products', map, where: 'id = ?', whereArgs: [p.id]);
         id = p.id!;
       } else {
+        map['id'] = _newProductId();
         id = await txn.insert('products', map);
       }
 
       if (p.id == null && p.piecesPerUnit > 1 && p.isPromo == 0) {
         cajaMap = {
+          'id': _newProductId(),
           'name': '${p.name.toUpperCase()} (CAJA)',
           'description': 'PAQUETE DE ${p.piecesPerUnit} PZ',
           'barcode': p.barcode != null ? '${p.barcode}-C' : null,
@@ -244,18 +279,23 @@ class ProductRepository implements IProductRepository {
 
   Future<void> _syncToCloud(ProductEntity p, int localId, Map<String, dynamic>? cajaData) async {
     try {
+      final db = await _db.database;
+      await db.update('products', {'synced': 0}, where: 'id = ?', whereArgs: [localId]);
       String? finalUrl = p.imagePath;
       if (p.imagePath != null && !p.imagePath!.startsWith('http')) {
         finalUrl = await _uploadImage(p.imagePath!);
-        if (finalUrl != null) {
-          final db = await _db.database;
-          await db.update(
-            'products',
-            {'image_path': finalUrl},
-            where: 'id = ?',
-            whereArgs: [localId],
+        if (finalUrl == null) {
+          debugPrint(
+            '[Sync] Imagen local del producto $localId pendiente de subir; se reintentará.',
           );
+          return;
         }
+        await db.update(
+          'products',
+          {'image_path': finalUrl},
+          where: 'id = ?',
+          whereArgs: [localId],
+        );
       }
       final billarId = _prefs.billarId;
       final map =
@@ -263,21 +303,27 @@ class ProductRepository implements IProductRepository {
             ..['id'] = localId
             ..['image_path'] = finalUrl
             ..['name'] = p.name.toUpperCase()
-            ..['billar_id'] = billarId;
+            ..['billar_id'] = billarId
+            ..['is_active'] = p.isActive;
 
-      debugPrint('[Sync] Subiendo producto: ${p.name} con precio: ${p.price}, billar_id: $billarId');
+      debugPrint(
+        '[Sync] Subiendo producto: ${p.name} con precio: ${p.price}, billar_id: $billarId',
+      );
       debugPrint('[Sync] Map completo antes de upsert: $map');
       await _supabase.from('products').upsert(map);
       debugPrint('[Supabase] Producto sincronizado: ${p.name} con precio ${map['price']}');
-      final db = await _db.database;
       await db.update('products', {'synced': 1}, where: 'id = ?', whereArgs: [localId]);
 
       if (cajaData != null) {
+        final cajaId = cajaData['id'] as int?;
+        if (cajaId != null) {
+          await db.update('products', {'synced': 0}, where: 'id = ?', whereArgs: [cajaId]);
+        }
         cajaData['image_path'] = finalUrl;
         cajaData['billar_id'] = billarId;
+        cajaData['is_active'] = cajaData['is_active'] == 0 ? false : true;
         await _supabase.from('products').upsert(cajaData);
         debugPrint('[Supabase] Caja sincronizada: ${cajaData['name']}');
-        final cajaId = cajaData['id'] as int?;
         if (cajaId != null) {
           await db.update('products', {'synced': 1}, where: 'id = ?', whereArgs: [cajaId]);
         }
@@ -327,40 +373,69 @@ class ProductRepository implements IProductRepository {
         }
       }
     }
-    final map = p.toMap()..['name'] = p.name.toUpperCase();
+    final map =
+        p.toMap()
+          ..['name'] = p.name.toUpperCase()
+          ..['synced'] = 0;
     final result = await db.update('products', map, where: 'id = ?', whereArgs: [p.id]);
     _syncToCloud(p, p.id!, null);
     return result;
   }
 
   @override
-  Future<int> delete(int id) async {
+  Future<int> archive(int id) async {
     final db = await _db.database;
-    // Recuperar imágenes del producto y de sus hijos (promo) para limpiar el bucket.
-    final rows = await db.query(
+    final products = await db.query(
       'products',
-      columns: ['image_path'],
+      columns: ['id'],
       where: 'id = ? OR parent_id = ?',
       whereArgs: [id, id],
     );
-    for (final row in rows) {
-      await _deleteImageIfCloud(row['image_path'] as String?);
+    if (products.isEmpty) return 0;
+    final productIds = products.map((row) => row['id'] as int).toList();
+    final placeholders = List.filled(productIds.length, '?').join(', ');
+    final count = await db.update(
+      'products',
+      {'is_active': 0, 'synced': 0},
+      where: 'id IN ($placeholders)',
+      whereArgs: productIds,
+    );
+    SyncService().schedulePendingSync();
+    return count;
+  }
+
+  @override
+  Future<int> delete(int id) => archive(id);
+
+  Future<void> syncPendingProductDeletions() async {
+    final db = await _db.database;
+    final pending = await db.query(
+      'pending_product_deletions',
+      where: 'synced = ?',
+      whereArgs: [0],
+      orderBy: 'id ASC',
+    );
+
+    for (final deletion in pending) {
+      final deletionId = deletion['id'] as int;
+      final productId = deletion['product_id'] as int;
+      final billarId = deletion['billar_id'] as String;
+      try {
+        await _supabase
+            .from('products')
+            .update({'is_active': false})
+            .eq('billar_id', billarId)
+            .eq('id', productId);
+        await db.delete(
+          'pending_product_deletions',
+          where: 'id = ?',
+          whereArgs: [deletionId],
+        );
+        debugPrint('[Supabase archive] Producto $productId sincronizado');
+      } catch (e) {
+        debugPrint('[Supabase archive] Producto $productId queda pendiente: $e');
+      }
     }
-    // Limpiar relaciones de promo (si las hubiera) en la nube y local.
-    try {
-      await _supabase.from('promo_items').delete().eq('parent_id', id);
-    } catch (_) {}
-    try {
-      await _supabase.from('products').delete().eq('parent_id', id);
-    } catch (_) {}
-    try {
-      await _supabase.from('products').delete().eq('id', id);
-    } catch (e) {
-      debugPrint('[Supabase delete] aviso: $e');
-    }
-    await db.delete('promo_items', where: 'parent_id = ?', whereArgs: [id]);
-    await db.delete('products', where: 'parent_id = ?', whereArgs: [id]);
-    return db.delete('products', where: 'id = ?', whereArgs: [id]);
   }
 
   /// Elimina un archivo de Supabase Storage a partir de su URL pública,
@@ -385,6 +460,7 @@ class ProductRepository implements IProductRepository {
     final promoId = await db.transaction((txn) async {
       final promoMap =
           promo.toMap()
+            ..['id'] = _newProductId()
             ..['name'] = promo.name.toUpperCase()
             ..['is_promo'] = 1
             ..['stock'] = 0.0
@@ -578,10 +654,27 @@ class ProductRepository implements IProductRepository {
     }
   }
 
+  Future<void> syncPendingProducts() async {
+    await syncPendingProductDeletions();
+    final db = await _db.database;
+    final pending = await db.query(
+      'products',
+      where: 'synced = ?',
+      whereArgs: [0],
+      orderBy: 'id ASC',
+    );
+    debugPrint('[Sync] Productos pendientes: ${pending.length}');
+    for (final row in pending) {
+      await _syncToCloud(ProductEntity.fromMap(row), row['id'] as int, null);
+    }
+  }
+
   @override
   Future<List<String>> getCategories() async {
     final db = await _db.database;
-    _syncCategoriesFromCloud().catchError((e) => debugPrint('[Categories] Background sync error: $e'));
+    _syncCategoriesFromCloud().catchError(
+      (e) => debugPrint('[Categories] Background sync error: $e'),
+    );
     final rows = await db.query('categories', orderBy: 'name ASC');
     return rows.map((m) => m['name'].toString()).toList();
   }
@@ -599,10 +692,10 @@ class ProductRepository implements IProductRepository {
       debugPrint('[Categories] addCategory aviso: $e');
     }
     try {
-      await _supabase.from('categories').upsert(
-        {'name': clean, 'billar_id': billarId},
-        onConflict: 'billar_id,name',
-      );
+      await _supabase.from('categories').upsert({
+        'name': clean,
+        'billar_id': billarId,
+      }, onConflict: 'billar_id,name');
       debugPrint('[Supabase] Categoría sincronizada: $clean');
     } catch (e) {
       debugPrint('[Supabase] addCategory ERROR: $e');

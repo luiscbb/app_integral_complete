@@ -16,10 +16,13 @@ import '../../../inventory/presentation/widgets/product_sale_card.dart';
 import '../services/ticket_service.dart';
 import '../../../../core/widgets/empty_state.dart';
 import '../../../../core/storage/preferences_service.dart';
+import '../../../../core/services/product_realtime_service.dart';
 import '../../../../core/theme/theme_provider.dart';
 
 class BilliardTablesPage extends StatefulWidget {
-  const BilliardTablesPage({super.key});
+  final String tableType;
+
+  const BilliardTablesPage({super.key, this.tableType = 'Billar'});
 
   @override
   State<BilliardTablesPage> createState() => _BilliardTablesPageState();
@@ -31,6 +34,8 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
   final _prefs = PreferencesService();
   List<Map<String, dynamic>> _tables = [];
   bool _isLoading = true;
+  bool _isRefreshingCloud = false;
+  String? _loadError;
   Timer? _ticker;
   RealtimeChannel? _tablesChannel;
 
@@ -39,15 +44,9 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
     super.initState();
     _load();
     _ticker = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (mounted) _load();
+      if (mounted) _load(refreshCloud: true);
     });
     _subscribeToTableChanges();
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _load();
   }
 
   @override
@@ -57,25 +56,52 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
     super.dispose();
   }
 
-  Future<void> _load() async {
-    final t = await _repo.getTables();
-    if (mounted) {
+  Future<void> _load({bool refreshCloud = true}) async {
+    try {
+      final tables = await _repo.getTables(tableType: widget.tableType);
+      if (!mounted) return;
       setState(() {
-        _tables = t;
+        _tables = tables;
         _isLoading = false;
+        _loadError = null;
       });
+    } catch (e, st) {
+      debugPrint('[BilliardTablesPage] Error cargando mesas locales: $e\n$st');
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _loadError = 'No se pudieron cargar las comandas. Intenta actualizar.';
+        });
+      }
+      return;
+    }
+
+    if (refreshCloud) {
+      await _reloadFromCloud();
     }
   }
 
-  /// Recarga el listado al llegar un cambio Realtime desde otro dispositivo.
-  /// `getTables()` ya usa la nube como fuente de verdad.
   Future<void> _reloadFromCloud() async {
-    final t = await _repo.getTables();
-    if (mounted) {
-      setState(() {
-        _tables = t;
-        _isLoading = false;
-      });
+    if (_isRefreshingCloud) return;
+    _isRefreshingCloud = true;
+    try {
+      await _repo.refreshTablesFromCloud().timeout(const Duration(seconds: 8));
+      final tables = await _repo.getTables(tableType: widget.tableType);
+      if (mounted) {
+        setState(() {
+          _tables = tables;
+          _loadError = null;
+        });
+      }
+    } catch (e, st) {
+      debugPrint('[BilliardTablesPage] Error sincronizando mesas: $e\n$st');
+      if (mounted) {
+        setState(() {
+          _loadError = 'No se pudo actualizar desde la nube. Mostrando datos guardados.';
+        });
+      }
+    } finally {
+      _isRefreshingCloud = false;
     }
   }
 
@@ -93,15 +119,16 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
           schema: 'public',
           table: 'billiard_tables',
           callback: (payload) async {
-            final newRecord = payload.newRecord;
-            if (newRecord.isEmpty) return;
+            final changedRecord =
+                payload.newRecord.isNotEmpty ? payload.newRecord : payload.oldRecord;
+            if (changedRecord.isEmpty) return;
             // Filtrar manualmente por billar_id (Realtime no permite filtros simples aquí).
-            final recordBillarId = newRecord['billar_id']?.toString();
+            final recordBillarId = changedRecord['billar_id']?.toString();
             if (recordBillarId != billarId) {
               debugPrint('[BilliardTablesPage] Cambio descartado (otro billar)');
               return;
             }
-            debugPrint('[BilliardTablesPage] Realtime cambio en billiard_tables: $newRecord');
+            debugPrint('[BilliardTablesPage] Realtime cambio en billiard_tables: $changedRecord');
             await _reloadFromCloud();
           },
         )
@@ -113,51 +140,82 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
   @override
   Widget build(BuildContext context) {
     final primary = context.watch<ThemeProvider>().primaryColor;
+    final isComanda = widget.tableType == 'Comanda';
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          'MESAS DE BILLAR',
-          style: TextStyle(color: const Color(0xFF1E88E5), fontWeight: FontWeight.bold),
+          isComanda ? 'COMANDAS' : 'MESAS DE BILLAR',
+          style: TextStyle(
+            color: isComanda ? const Color(0xFFE91E63) : const Color(0xFF1E88E5),
+            fontWeight: FontWeight.bold,
+          ),
         ),
-        actions: [IconButton(icon: const Icon(Icons.refresh), onPressed: _load)],
+        actions: [
+          IconButton(icon: const Icon(Icons.refresh), onPressed: () => _load(refreshCloud: true)),
+        ],
       ),
       body:
           _isLoading
               ? Center(child: CircularProgressIndicator(color: primary))
-              : _tables.isEmpty
-              ? const EmptyState(
-                message: 'No hay mesas configuradas.\nConfigúralas en Ajustes > Billar',
-                icon: Icons.table_bar,
-              )
-              : GridView.builder(
-                padding: const EdgeInsets.all(16),
-                gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                  maxCrossAxisExtent: 200,
-                  mainAxisSpacing: 16,
-                  crossAxisSpacing: 16,
-                  childAspectRatio: 0.88,
-                ),
-                itemCount: _tables.length,
-                itemBuilder: (_, i) {
-                  final t = _tables[i];
-                  final isOccupied = (t['is_occupied'] as int) == 1;
-                  final orders = jsonDecode(t['orders'] ?? '[]') as List;
-                  final consumo = orders.fold<double>(
-                    0,
-                    (acc, e) => acc + ((e['price'] as num) * (e['quantity'] as num)),
-                  );
-                  final startTime =
-                      t['start_time'] != null ? DateTime.tryParse(t['start_time']) : null;
-                  return _TableCard(
-                    name: t['name'] ?? 'Mesa',
-                    isOccupied: isOccupied,
-                    consumo: consumo,
-                    startTime: startTime,
-                    primaryColor: primary,
-                    style: context.read<ThemeProvider>().cardStyle,
-                    onTap: () => _openTable(t),
-                  );
-                },
+              : Column(
+                children: [
+                  if (_loadError != null)
+                    MaterialBanner(
+                      content: Text(_loadError!),
+                      leading: const Icon(Icons.cloud_off, color: Colors.orange),
+                      actions: [
+                        TextButton(
+                          onPressed: () => _load(refreshCloud: true),
+                          child: const Text('REINTENTAR'),
+                        ),
+                      ],
+                    ),
+                  Expanded(
+                    child:
+                        _tables.isEmpty
+                            ? EmptyState(
+                              message:
+                                  isComanda
+                                      ? 'No hay comandas configuradas.\nAgrégalas en Ajustes > Billar/Comanda'
+                                      : 'No hay mesas configuradas.\nConfigúralas en Ajustes > Billar',
+                              icon: isComanda ? Icons.restaurant_menu : Icons.table_bar,
+                            )
+                            : GridView.builder(
+                              padding: const EdgeInsets.all(16),
+                              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                                maxCrossAxisExtent: 200,
+                                mainAxisSpacing: 16,
+                                crossAxisSpacing: 16,
+                                childAspectRatio: 0.88,
+                              ),
+                              itemCount: _tables.length,
+                              itemBuilder: (_, i) {
+                                final t = _tables[i];
+                                final isOccupied = (t['is_occupied'] as num?)?.toInt() == 1;
+                                final rawOrders = t['orders']?.toString() ?? '[]';
+                                final orders = jsonDecode(rawOrders) as List;
+                                final consumo = orders.fold<double>(
+                                  0,
+                                  (acc, e) => acc + ((e['price'] as num) * (e['quantity'] as num)),
+                                );
+                                final startTime =
+                                    t['start_time'] != null
+                                        ? DateTime.tryParse(t['start_time'].toString())
+                                        : null;
+                                return _TableCard(
+                                  name: t['name']?.toString() ?? 'Mesa',
+                                  isOccupied: isOccupied,
+                                  consumo: consumo,
+                                  startTime: startTime,
+                                  primaryColor: primary,
+                                  style: context.read<ThemeProvider>().cardStyle,
+                                  hasTimer: !isComanda,
+                                  onTap: () => _openTable(t),
+                                );
+                              },
+                            ),
+                  ),
+                ],
               ),
     );
   }
@@ -196,6 +254,7 @@ class _TableCard extends StatefulWidget {
   final DateTime? startTime;
   final Color primaryColor;
   final CardStyle style;
+  final bool hasTimer;
   final VoidCallback onTap;
 
   const _TableCard({
@@ -205,6 +264,7 @@ class _TableCard extends StatefulWidget {
     required this.startTime,
     required this.primaryColor,
     this.style = CardStyle.gradient,
+    required this.hasTimer,
     required this.onTap,
   });
 
@@ -222,7 +282,7 @@ class _TableCardState extends State<_TableCard> {
   void initState() {
     super.initState();
     _startTime = widget.startTime;
-    if (widget.isOccupied && _startTime != null) {
+    if (widget.hasTimer && widget.isOccupied && _startTime != null) {
       _elapsed = DateTime.now().difference(_startTime!);
       _timer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted && _startTime != null) {
@@ -235,6 +295,12 @@ class _TableCardState extends State<_TableCard> {
   @override
   void didUpdateWidget(_TableCard oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!widget.hasTimer) {
+      _timer?.cancel();
+      _timer = null;
+      _elapsed = Duration.zero;
+      return;
+    }
     if (oldWidget.startTime != widget.startTime) {
       _startTime = widget.startTime;
       if (_startTime == null) {
@@ -275,7 +341,8 @@ class _TableCardState extends State<_TableCard> {
   @override
   Widget build(BuildContext context) {
     final color = widget.primaryColor;
-    final totalCost = widget.consumo + _timeCost;
+    final timeCost = widget.hasTimer ? _timeCost : 0.0;
+    final totalCost = widget.consumo + timeCost;
 
     final solidWhite = widget.style == CardStyle.solidWhite;
     final outlined = widget.style == CardStyle.outlined;
@@ -284,57 +351,57 @@ class _TableCardState extends State<_TableCard> {
     return GestureDetector(
       onTap: widget.onTap,
       child: Container(
-        decoration: solidWhite
-            ? BoxDecoration(
-                borderRadius: BorderRadius.circular(20),
-                color: color,
-                border: Border.all(color: Colors.white.withValues(alpha: 0.28), width: 1.5),
-              )
-            : outlined
+        decoration:
+            solidWhite
                 ? BoxDecoration(
-                    borderRadius: BorderRadius.circular(20),
-                    color: const Color(0xFF1A1A1A),
-                    border: Border.all(color: color, width: 2),
-                  )
+                  borderRadius: BorderRadius.circular(20),
+                  color: color,
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.28), width: 1.5),
+                )
+                : outlined
+                ? BoxDecoration(
+                  borderRadius: BorderRadius.circular(20),
+                  color: const Color(0xFF1A1A1A),
+                  border: Border.all(color: color, width: 2),
+                )
                 : BoxDecoration(
-                    borderRadius: BorderRadius.circular(20),
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [color.withValues(alpha: 0.22), const Color(0xFF1A1A1A)],
-                    ),
-                    border: Border.all(color: color.withValues(alpha: 0.5), width: 2),
+                  borderRadius: BorderRadius.circular(20),
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [color.withValues(alpha: 0.22), const Color(0xFF1A1A1A)],
                   ),
+                  border: Border.all(color: color.withValues(alpha: 0.5), width: 2),
+                ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.table_bar_rounded, size: 38, color: contentColor),
+            Icon(
+              widget.hasTimer ? Icons.table_bar_rounded : Icons.restaurant_menu,
+              size: 38,
+              color: contentColor,
+            ),
             const SizedBox(height: 6),
             Text(
               widget.name,
-              style: TextStyle(
-                color: contentColor,
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
-              ),
+              style: TextStyle(color: contentColor, fontWeight: FontWeight.bold, fontSize: 14),
             ),
             const SizedBox(height: 4),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
               decoration: BoxDecoration(
-                color: solidWhite ? Colors.white.withValues(alpha: 0.22) : color.withValues(alpha: 0.15),
+                color:
+                    solidWhite
+                        ? Colors.white.withValues(alpha: 0.22)
+                        : color.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: Text(
                 widget.isOccupied ? 'OCUPADA' : 'LIBRE',
-                style: TextStyle(
-                  color: contentColor,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 11,
-                ),
+                style: TextStyle(color: contentColor, fontWeight: FontWeight.bold, fontSize: 11),
               ),
             ),
-            if (widget.isOccupied) ...[
+            if (widget.isOccupied && widget.hasTimer) ...[
               const SizedBox(height: 6),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -352,20 +419,22 @@ class _TableCardState extends State<_TableCard> {
                   ),
                 ],
               ),
-              if (_timeCost > 0) ...[
+              if (timeCost > 0) ...[
                 const SizedBox(height: 2),
                 Text(
-                  'Tiempo: \$${_timeCost.toStringAsFixed(2)}',
+                  'Tiempo: \$${timeCost.toStringAsFixed(2)}',
                   style: const TextStyle(color: Colors.orangeAccent, fontSize: 11),
                 ),
               ],
-              if (widget.consumo > 0) ...[
-                const SizedBox(height: 2),
-                Text(
-                  'Consumo: \$${widget.consumo.toStringAsFixed(2)}',
-                  style: const TextStyle(color: Colors.white54, fontSize: 11),
-                ),
-              ],
+            ],
+            if (widget.isOccupied && widget.consumo > 0) ...[
+              const SizedBox(height: 2),
+              Text(
+                'Consumo: \$${widget.consumo.toStringAsFixed(2)}',
+                style: const TextStyle(color: Colors.white54, fontSize: 11),
+              ),
+            ],
+            if (widget.isOccupied) ...[
               const SizedBox(height: 2),
               Text(
                 'Total: \$${totalCost.toStringAsFixed(2)}',
@@ -406,8 +475,19 @@ class _TableDetailPageState extends State<_TableDetailPage> {
   bool _isOpeningTicket = false; // Evita abrir dos tickets por taps rápidos.
   bool _initialized = false;
   Timer? _timer;
+  Timer? _productRefreshDebounce;
+  StreamSubscription<void>? _productChangesSubscription;
+  bool _refreshingProductsFromRealtime = false;
+  bool _productRefreshRequestedWhileRunning = false;
+  RealtimeChannel? _tablesChannel;
   Duration _elapsed = Duration.zero;
   DateTime? _startTime;
+
+  bool get _isComanda => widget.tableData['table_type'] == 'Comanda';
+  String get _tableSaleType =>
+      _isComanda
+          ? 'Comanda: ${widget.tableData['name'] ?? 'Mesa'}'
+          : widget.tableData['name'] ?? 'Mesa';
 
   /// Cantidad de un producto ya agregado en la orden actual. Devuelve 0 si no
   /// está, para evitar que el default `quantity=1` de [SaleItemEntity] cuente
@@ -425,6 +505,14 @@ class _TableDetailPageState extends State<_TableDetailPage> {
   void initState() {
     super.initState();
     _init();
+    _productChangesSubscription = ProductRealtimeService.instance.changes.listen((_) {
+      _productRefreshDebounce?.cancel();
+      _productRefreshDebounce = Timer(
+        const Duration(milliseconds: 250),
+        _refreshProductsFromRealtime,
+      );
+    });
+    _subscribeToReservationChanges();
   }
 
   @override
@@ -440,6 +528,9 @@ class _TableDetailPageState extends State<_TableDetailPage> {
   @override
   void dispose() {
     _timer?.cancel();
+    _productRefreshDebounce?.cancel();
+    _productChangesSubscription?.cancel();
+    _tablesChannel?.unsubscribe();
     super.dispose();
   }
 
@@ -457,7 +548,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
             )
             .toList();
 
-    if (widget.tableData['start_time'] != null) {
+    if (!_isComanda && widget.tableData['start_time'] != null) {
       _startTime = DateTime.tryParse(widget.tableData['start_time']);
       if (_startTime != null) {
         _elapsed = DateTime.now().difference(_startTime!);
@@ -481,68 +572,158 @@ class _TableDetailPageState extends State<_TableDetailPage> {
         _isLoading = false;
       });
       // Solo preguntar si hay tarifa, no hay timer, no hay ordenes, y no hemos preguntado antes
-      if (_startTime == null && _prefs.hourlyRate > 0 && _orders.isEmpty && !_askedTimer) {
+      if (!_isComanda &&
+          _startTime == null &&
+          _prefs.hourlyRate > 0 &&
+          _orders.isEmpty &&
+          !_askedTimer) {
         _askedTimer = true;
         _askStartTimer();
       }
     }
   }
 
+  void _subscribeToReservationChanges() {
+    final billarId = _prefs.billarId;
+    if (billarId.isEmpty) return;
+    final currentTableId = widget.tableData['id'];
+    _tablesChannel =
+        Supabase.instance.client
+            .channel('public:billiard_tables:reservations-$currentTableId')
+            .onPostgresChanges(
+              event: PostgresChangeEvent.all,
+              schema: 'public',
+              table: 'billiard_tables',
+              callback: (payload) async {
+                final record = payload.newRecord.isNotEmpty ? payload.newRecord : payload.oldRecord;
+                if (record['billar_id']?.toString() != billarId ||
+                    record['id']?.toString() == currentTableId.toString()) {
+                  return;
+                }
+                try {
+                  await _salesRepo.refreshTablesFromCloud();
+                  final reservedOthers = await _salesRepo.getReservedQuantities(
+                    excludeTableId: currentTableId,
+                  );
+                  if (mounted) setState(() => _reservedOthers = reservedOthers);
+                } catch (e) {
+                  debugPrint('[TableDetail] Error actualizando apartados: $e');
+                }
+              },
+            )
+            .subscribe();
+  }
+
+  Future<void> _refreshProductsFromRealtime() async {
+    if (_refreshingProductsFromRealtime) {
+      _productRefreshRequestedWhileRunning = true;
+      return;
+    }
+    _refreshingProductsFromRealtime = true;
+    try {
+      do {
+        _productRefreshRequestedWhileRunning = false;
+        final products = await _productRepo.refreshFromCloud();
+        final reservedOthers = await _salesRepo.getReservedQuantities(
+          excludeTableId: widget.tableData['id'],
+        );
+        if (!mounted) return;
+        setState(() {
+          _products = products;
+          _reservedOthers = reservedOthers;
+        });
+      } while (_productRefreshRequestedWhileRunning);
+    } catch (e) {
+      debugPrint('[TableDetail] Error actualizando productos por Realtime: $e');
+    } finally {
+      _refreshingProductsFromRealtime = false;
+    }
+  }
+
   Future<void> _askStartTimer() async {
+    if (_isComanda) return;
     await Future.delayed(const Duration(milliseconds: 300));
     if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder:
-          (ctx) => PopScope(
-            canPop: false,
-            child: AlertDialog(
-              backgroundColor: const Color(0xFF1A1A1A),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              title: Row(
-                children: [
-                  const Icon(Icons.timer, color: Colors.orangeAccent, size: 28),
-                  const SizedBox(width: 10),
-                  Text(
-                    widget.tableData['name'] ?? 'Mesa',
-                    style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Inicia el cronómetro para cobrar el tiempo de uso de la mesa.',
-                    style: TextStyle(color: Colors.white70, fontSize: 15),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      const Icon(Icons.attach_money, color: Colors.orangeAccent, size: 16),
-                      const SizedBox(width: 4),
-                      Text(
-                        'Tarifa: \$${_prefs.hourlyRate.toStringAsFixed(2)} / hora',
-                        style: const TextStyle(color: Colors.orangeAccent, fontSize: 13),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              actions: [
-                ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.orangeAccent),
-                  icon: const Icon(Icons.timer, color: Colors.black, size: 18),
-                  label: const Text(
-                    'INICIAR TIEMPO',
-                    style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
-                  ),
-                  onPressed: () => Navigator.pop(ctx, true),
+          (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: Row(
+              children: [
+                const Icon(Icons.timer, color: Colors.orangeAccent, size: 28),
+                const SizedBox(width: 10),
+                Text(
+                  widget.tableData['name'] ?? 'Mesa',
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                 ),
               ],
             ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Inicia el cronómetro para cobrar el tiempo de uso de la mesa.',
+                  style: TextStyle(color: Colors.white70, fontSize: 15),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const Icon(Icons.attach_money, color: Colors.orangeAccent, size: 16),
+                    const SizedBox(width: 4),
+                    Text(
+                      'Tarifa: \$${_prefs.hourlyRate.toStringAsFixed(2)} / hora',
+                      style: const TextStyle(color: Colors.orangeAccent, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            actions: [
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.redAccent,
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      child: const FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          'CANCELAR',
+                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      onPressed: () => Navigator.pop(ctx, false),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.orangeAccent,
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      icon: const Icon(Icons.timer, color: Colors.black, size: 18),
+                      label: const FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text(
+                          'INICIAR TIEMPO',
+                          style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      onPressed: () => Navigator.pop(ctx, true),
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
     );
     if (confirmed == true && mounted) {
@@ -552,14 +733,19 @@ class _TableDetailPageState extends State<_TableDetailPage> {
         _elapsed = Duration.zero;
       });
       _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() => _elapsed = DateTime.now().difference(_startTime!));
+        if (mounted) {
+          setState(() => _elapsed = DateTime.now().difference(_startTime!));
+        }
       });
+    } else if (mounted) {
+      Navigator.of(context).pop();
     }
   }
 
   double get _consumoTotal => _orders.fold(0, (acc, e) => acc + e.subtotal);
 
   double get _timeCost {
+    if (_isComanda) return 0;
     final rate = _prefs.hourlyRate;
     if (rate <= 0 || _startTime == null) return 0;
     final raw = (_elapsed.inSeconds / 3600) * rate;
@@ -611,12 +797,16 @@ class _TableDetailPageState extends State<_TableDetailPage> {
         radius: radius,
         backgroundColor: const Color(0xFF1A1A1A),
         backgroundImage: image,
-        onBackgroundImageError: image != null
-            ? (exception, stackTrace) {
-                log('[TableHeader] Error cargando logo: $exception');
-              }
-            : null,
-        child: hasLogo ? null : Icon(Icons.sports_bar_outlined, color: primaryColor, size: radius * 0.9),
+        onBackgroundImageError:
+            image != null
+                ? (exception, stackTrace) {
+                  log('[TableHeader] Error cargando logo: $exception');
+                }
+                : null,
+        child:
+            hasLogo
+                ? null
+                : Icon(Icons.sports_bar_outlined, color: primaryColor, size: radius * 0.9),
       ),
     );
   }
@@ -638,18 +828,11 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                   children: [
                     const Text(
                       'CONSUMO',
-                      style: TextStyle(
-                        color: Colors.white54,
-                        letterSpacing: 2,
-                        fontSize: 11,
-                      ),
+                      style: TextStyle(color: Colors.white54, letterSpacing: 2, fontSize: 11),
                     ),
                     Text(
                       '\$${_consumoTotal.toStringAsFixed(2)}',
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontWeight: FontWeight.bold,
-                      ),
+                      style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
                     ),
                   ],
                 ),
@@ -660,11 +843,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                     children: [
                       const Text(
                         'TIEMPO',
-                        style: TextStyle(
-                          color: Colors.white54,
-                          letterSpacing: 2,
-                          fontSize: 11,
-                        ),
+                        style: TextStyle(color: Colors.white54, letterSpacing: 2, fontSize: 11),
                       ),
                       Text(
                         '\$${_timeCost.toStringAsFixed(2)}',
@@ -682,11 +861,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                   children: [
                     const Text(
                       'TOTAL',
-                      style: TextStyle(
-                        color: Colors.white54,
-                        letterSpacing: 2,
-                        fontSize: 11,
-                      ),
+                      style: TextStyle(color: Colors.white54, letterSpacing: 2, fontSize: 11),
                     ),
                     Text(
                       '\$${_grandTotal.toStringAsFixed(2)}',
@@ -704,10 +879,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
           Flexible(
             child:
                 _orders.isEmpty
-                    ? const EmptyState(
-                      message: 'Sin productos',
-                      icon: Icons.receipt_long_outlined,
-                    )
+                    ? const EmptyState(message: 'Sin productos', icon: Icons.receipt_long_outlined)
                     : ListView.builder(
                       padding: const EdgeInsets.all(8),
                       itemCount: _orders.length,
@@ -716,26 +888,18 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                             dense: true,
                             title: Text(
                               _orders[i].productName,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 13,
-                              ),
+                              style: const TextStyle(color: Colors.white, fontSize: 13),
                             ),
                             subtitle: Text(
                               '${_orders[i].qtyLabel} x \$${_orders[i].price.toStringAsFixed(2)}',
-                              style: const TextStyle(
-                                color: Colors.white38,
-                                fontSize: 11,
-                              ),
+                              style: const TextStyle(color: Colors.white38, fontSize: 11),
                             ),
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 Text(
                                   '\$${_orders[i].subtotal.toStringAsFixed(2)}',
-                                  style: const TextStyle(
-                                    color: Colors.greenAccent,
-                                  ),
+                                  style: const TextStyle(color: Colors.greenAccent),
                                 ),
                                 IconButton(
                                   icon: const Icon(
@@ -930,7 +1094,9 @@ class _TableDetailPageState extends State<_TableDetailPage> {
     if (result == null) return;
     final (finalPaid, finalMethod) = result;
 
-    if (_isCheckingOut) return; // Doble verificación antes de persistir la venta.
+    if (_isCheckingOut) {
+      return; // Doble verificación antes de persistir la venta.
+    }
     _isCheckingOut = true;
 
     final allItems = List<SaleItemEntity>.from(_orders);
@@ -945,7 +1111,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
       total: finalTotal,
       paid: finalPaid,
       paymentMethod: finalMethod,
-      saleType: widget.tableData['name'] ?? 'Mesa',
+      saleType: _tableSaleType,
     );
     if (!mounted) return;
     for (final item in _orders) {
@@ -967,7 +1133,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
       'total': finalTotal,
       'paid': finalPaid,
       'method': finalMethod,
-      'saleType': widget.tableData['name'] ?? 'Mesa',
+      'saleType': _tableSaleType,
     });
   }
 
@@ -997,74 +1163,88 @@ class _TableDetailPageState extends State<_TableDetailPage> {
               ? Center(child: CircularProgressIndicator(color: primary))
               : Column(
                 children: [
-                  // Barra superior: cronómetro corriendo + botón Ver ticket.
+                  // Comandas no tienen cronómetro; el ticket sigue disponible antes del cobro.
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    color: Colors.orangeAccent.withValues(alpha: 0.12),
+                    color: (_isComanda ? Colors.pinkAccent : Colors.orangeAccent).withValues(
+                      alpha: 0.12,
+                    ),
                     child: Row(
                       children: [
-                        const Icon(Icons.timer, color: Colors.orangeAccent, size: 20),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: _startTime != null
-                              ? Text(
-                                  _elapsedStr,
-                                  style: const TextStyle(
-                                    color: Colors.orangeAccent,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 26,
-                                    fontFeatures: [FontFeature.tabularFigures()],
-                                  ),
-                                )
-                              : const Text(
-                                  'Cronómetro no iniciado',
-                                  style: TextStyle(
-                                    color: Colors.orangeAccent,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
-                                  ),
-                                ),
+                        Icon(
+                          _isComanda ? Icons.restaurant_menu : Icons.timer,
+                          color: _isComanda ? Colors.pinkAccent : Colors.orangeAccent,
+                          size: 20,
                         ),
-                        if (_startTime == null && _prefs.hourlyRate > 0)
+                        const SizedBox(width: 8),
+                        if (_isComanda)
+                          const Expanded(
+                            child: Text(
+                              'COMANDA · PRODUCTOS APARTADOS',
+                              style: TextStyle(
+                                color: Colors.pinkAccent,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                              ),
+                            ),
+                          )
+                        else
+                          Expanded(
+                            child:
+                                _startTime != null
+                                    ? Text(
+                                      _elapsedStr,
+                                      style: const TextStyle(
+                                        color: Colors.orangeAccent,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 26,
+                                        fontFeatures: [FontFeature.tabularFigures()],
+                                      ),
+                                    )
+                                    : const Text(
+                                      'Cronómetro no iniciado',
+                                      style: TextStyle(
+                                        color: Colors.orangeAccent,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 16,
+                                      ),
+                                    ),
+                          ),
+                        if (!_isComanda && _startTime == null && _prefs.hourlyRate > 0)
                           TextButton.icon(
                             icon: const Icon(Icons.play_circle, color: Colors.orangeAccent),
-                            label: const Text('INICIAR', style: TextStyle(color: Colors.orangeAccent)),
-                            onPressed: () async {
-                              await _salesRepo.occupyTable(widget.tableData['id']);
-                              setState(() {
-                                _startTime = DateTime.now();
-                                _elapsed = Duration.zero;
-                              });
-                              _timer?.cancel();
-                              _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-                                if (mounted) {
-                                  setState(() =>
-                                      _elapsed = DateTime.now().difference(_startTime!));
-                                }
-                              });
-                            },
+                            label: const Text(
+                              'INICIAR',
+                              style: TextStyle(color: Colors.orangeAccent),
+                            ),
+                            onPressed: _askStartTimer,
                           ),
                         if (_orders.isNotEmpty)
                           TextButton.icon(
                             icon: const Icon(Icons.receipt_long, color: Colors.white),
                             label: const Text('VER TICKET', style: TextStyle(color: Colors.white)),
                             onPressed: () async {
-                              if (_isOpeningTicket) return; // Evita abrir dos tickets por taps rápidos.
+                              if (_isOpeningTicket) {
+                                return;
+                              }
+                              // Evita abrir dos tickets por taps rápidos.
                               _isOpeningTicket = true;
                               final items = List<SaleItemEntity>.from(_orders);
                               if (_timeCost > 0) {
                                 items.add(_buildTimeItem());
                               }
-                              final previewTotal =
-                                  items.fold<double>(0, (acc, e) => acc + e.price * e.quantity);
+                              final previewTotal = items.fold<double>(
+                                0,
+                                (acc, e) => acc + e.price * e.quantity,
+                              );
                               await _ticket.showPreviewSheet(
                                 context: context,
                                 items: items,
                                 total: previewTotal,
                                 paid: 0,
                                 paymentMethod: 'Efectivo',
-                                saleType: widget.tableData['name'],
+                                saleType: _tableSaleType,
                               );
                               _isOpeningTicket = false;
                             },
@@ -1090,7 +1270,8 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                                               final reservedElsewhere = _reservedOthers[p.id] ?? 0;
                                               final availableStock = p.stock - reservedElsewhere;
                                               final inThisOrder = _quantityInOrder(p.id);
-                                              return availableStock > inThisOrder || inThisOrder > 0;
+                                              return availableStock > inThisOrder ||
+                                                  inThisOrder > 0;
                                             }).toList();
                                         return GridView.builder(
                                           padding: const EdgeInsets.all(10),
@@ -1118,7 +1299,9 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                                                   final idx = _orders.indexWhere(
                                                     (e) => e.productId == p.id,
                                                   );
-                                                  if (idx >= 0) _removeItem(idx);
+                                                  if (idx >= 0) {
+                                                    _removeItem(idx);
+                                                  }
                                                 },
                                                 showButtons: true,
                                               ),
@@ -1132,11 +1315,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                               ),
                             ),
                             if (isWide) Container(width: 1, color: Colors.white10),
-                            if (isWide)
-                              SizedBox(
-                                width: 200,
-                                child: _buildSidePanel(),
-                              ),
+                            if (isWide) SizedBox(width: 200, child: _buildSidePanel()),
                           ],
                         );
                       },
@@ -1145,11 +1324,10 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                   // Panel de consumo/tiempo/total en la parte inferior en pantallas angostas.
                   LayoutBuilder(
                     builder: (context, constraints) {
-                      if (constraints.maxWidth > 700) return const SizedBox.shrink();
-                      return SizedBox(
-                        height: 220,
-                        child: _buildSidePanel(),
-                      );
+                      if (constraints.maxWidth > 700) {
+                        return const SizedBox.shrink();
+                      }
+                      return SizedBox(height: 220, child: _buildSidePanel());
                     },
                   ),
                 ],
@@ -1165,7 +1343,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
           ),
           onPressed: _checkout,
           child: Text(
-            'COBRAR  \$${_grandTotal.toStringAsFixed(2)}',
+            '${_isComanda ? 'COBRAR / CERRAR COMANDA' : 'COBRAR'}  \$${_grandTotal.toStringAsFixed(2)}',
             style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
           ),
         ),

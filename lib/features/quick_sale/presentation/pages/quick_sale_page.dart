@@ -1,5 +1,11 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
+import 'dart:developer';
 
+import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../../../../core/services/product_realtime_service.dart';
+import '../../../../core/storage/preferences_service.dart';
 import '../../../../core/widgets/empty_state.dart';
 import '../../../../core/utils/smart_image.dart';
 import '../../../../features/inventory/data/repositories/product_repository.dart';
@@ -22,6 +28,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
   final _salesRepo = SalesRepository();
   final _reservationService = StockReservationService();
   final _ticket = TicketService();
+  final _prefs = PreferencesService();
   final _searchCtrl = TextEditingController();
 
   List<ProductEntity> _all = [];
@@ -32,12 +39,26 @@ class _QuickSalePageState extends State<QuickSalePage> {
   Map<int, double> _tableReserved = {};
   bool _isLoading = true;
   bool _isGrid = true;
+  StreamSubscription<void>? _productChangesSubscription;
+  Timer? _productRefreshDebounce;
+  bool _refreshingFromRealtime = false;
+  bool _productRefreshRequestedWhileRunning = false;
+  RealtimeChannel? _tablesChannel;
 
   @override
   void initState() {
     super.initState();
     _load();
     _searchCtrl.addListener(_filter);
+    _productChangesSubscription = ProductRealtimeService.instance.changes
+        .listen((_) {
+          _productRefreshDebounce?.cancel();
+          _productRefreshDebounce = Timer(
+            const Duration(milliseconds: 250),
+            _refreshProductsFromRealtime,
+          );
+        });
+    _subscribeToTableChanges();
     // Recargar stock cada vez que se vuelve a esta pantalla
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _load();
@@ -47,7 +68,42 @@ class _QuickSalePageState extends State<QuickSalePage> {
   @override
   void dispose() {
     _searchCtrl.dispose();
+    _productRefreshDebounce?.cancel();
+    _productChangesSubscription?.cancel();
+    _tablesChannel?.unsubscribe();
     super.dispose();
+  }
+
+  void _subscribeToTableChanges() {
+    final billarId = _prefs.billarId;
+    if (billarId.isEmpty) return;
+    _tablesChannel =
+        Supabase.instance.client
+            .channel('public:billiard_tables:quick-sale-$billarId')
+            .onPostgresChanges(
+              event: PostgresChangeEvent.all,
+              schema: 'public',
+              table: 'billiard_tables',
+              callback: (payload) async {
+                final record =
+                    payload.newRecord.isNotEmpty
+                        ? payload.newRecord
+                        : payload.oldRecord;
+                if (record['billar_id']?.toString() != billarId) return;
+                try {
+                  await _salesRepo.refreshTablesFromCloud();
+                  final reserved = await _salesRepo.getReservedQuantities(
+                    excludeSource: 'quick_sale',
+                  );
+                  if (mounted) setState(() => _tableReserved = reserved);
+                } catch (e) {
+                  log(
+                    '[QuickSalePage] Error actualizando apartados de mesas/comandas: $e',
+                  );
+                }
+              },
+            )
+            .subscribe();
   }
 
   Future<void> _load() async {
@@ -59,6 +115,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
         compMap[p.id!] = await _productRepo.getPromoComponents(p.id!);
       }
     }
+    await _salesRepo.refreshTablesFromCloud();
     final reserved = await _salesRepo.getReservedQuantities(
       excludeSource: 'quick_sale',
     );
@@ -91,6 +148,53 @@ class _QuickSalePageState extends State<QuickSalePage> {
     }
   }
 
+  Future<void> _refreshProductsFromRealtime() async {
+    if (_refreshingFromRealtime) {
+      _productRefreshRequestedWhileRunning = true;
+      return;
+    }
+    _refreshingFromRealtime = true;
+    try {
+      do {
+        _productRefreshRequestedWhileRunning = false;
+        final data = await _productRepo.refreshFromCloud();
+        final compMap = <int, Map<int, int>>{};
+        for (final product in data) {
+          if (product.isPromo == 1 && product.id != null) {
+            compMap[product.id!] = await _productRepo.getPromoComponents(
+              product.id!,
+            );
+          }
+        }
+        final reserved = await _salesRepo.getReservedQuantities(
+          excludeSource: 'quick_sale',
+        );
+        var cartChanged = false;
+        if (mounted) {
+          setState(() {
+            _all = data;
+            _promoComponents
+              ..clear()
+              ..addAll(compMap);
+            _tableReserved = reserved;
+            final existingIds = data.map((product) => product.id).toSet();
+            final oldLength = _cart.length;
+            _cart.removeWhere(
+              (productId, _) => !existingIds.contains(productId),
+            );
+            cartChanged = _cart.length != oldLength;
+          });
+          _filter();
+        }
+        if (cartChanged) await _persistReservation();
+      } while (_productRefreshRequestedWhileRunning);
+    } catch (e) {
+      log('[QuickSalePage] Error actualizando productos por Realtime: $e');
+    } finally {
+      _refreshingFromRealtime = false;
+    }
+  }
+
   /// Unidades reservadas en el carrito para un producto, incluyendo las que
   /// aportan las promos seleccionadas (cada promo consume sus componentes).
   int _reservedFor(int? productId) {
@@ -116,11 +220,12 @@ class _QuickSalePageState extends State<QuickSalePage> {
   void _filter() {
     final q = _searchCtrl.text.toLowerCase();
     setState(() {
-      _filtered = _all.where((p) {
-        final matchesSearch = q.isEmpty || p.name.toLowerCase().contains(q);
-        final hasStock = _availableStock(p) > 0;
-        return matchesSearch && hasStock;
-      }).toList();
+      _filtered =
+          _all.where((p) {
+            final matchesSearch = q.isEmpty || p.name.toLowerCase().contains(q);
+            final hasStock = _availableStock(p) > 0;
+            return matchesSearch && hasStock;
+          }).toList();
       // Ordenar: promos primero, luego el resto
       _filtered.sort((a, b) {
         if (a.isPromo == b.isPromo) return a.name.compareTo(b.name);
@@ -152,7 +257,10 @@ class _QuickSalePageState extends State<QuickSalePage> {
   void _add(ProductEntity p) {
     if (_availableStock(p) <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Stock insuficiente: ${p.name}'), backgroundColor: Colors.orange),
+        SnackBar(
+          content: Text('Stock insuficiente: ${p.name}'),
+          backgroundColor: Colors.orange,
+        ),
       );
       return;
     }
@@ -190,13 +298,10 @@ class _QuickSalePageState extends State<QuickSalePage> {
         return StatefulBuilder(
           builder: (ctx2, ss) {
             final cartEntries = _cart.entries.toList();
-            final currentTotal = cartEntries.fold<double>(
-              0.0,
-              (acc, e) {
-                final p = _all.firstWhere((x) => x.id == e.key);
-                return acc + p.price * e.value;
-              },
-            );
+            final currentTotal = cartEntries.fold<double>(0.0, (acc, e) {
+              final p = _all.firstWhere((x) => x.id == e.key);
+              return acc + p.price * e.value;
+            });
 
             return Padding(
               padding: EdgeInsets.only(
@@ -245,13 +350,20 @@ class _QuickSalePageState extends State<QuickSalePage> {
                           ),
                           subtitle: Text(
                             '\$${p.price.toStringAsFixed(2)} c/u',
-                            style: const TextStyle(color: Colors.white54, fontSize: 12),
+                            style: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 12,
+                            ),
                           ),
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               IconButton(
-                                icon: const Icon(Icons.remove_circle, color: Colors.white38, size: 20),
+                                icon: const Icon(
+                                  Icons.remove_circle,
+                                  color: Colors.white38,
+                                  size: 20,
+                                ),
                                 onPressed: () {
                                   ss(() {
                                     if (qty <= 1) {
@@ -272,17 +384,26 @@ class _QuickSalePageState extends State<QuickSalePage> {
                                 ),
                               ),
                               IconButton(
-                                icon: Icon(Icons.add_circle, color: Colors.greenAccent, size: 20),
-                                onPressed: p.stock <= qty
-                                    ? null
-                                    : () {
-                                        ss(() => _cart[p.id!] = qty + 1);
-                                        if (mounted) setState(() {});
-                                        _persistReservation();
-                                      },
+                                icon: Icon(
+                                  Icons.add_circle,
+                                  color: Colors.greenAccent,
+                                  size: 20,
+                                ),
+                                onPressed:
+                                    p.stock <= qty
+                                        ? null
+                                        : () {
+                                          ss(() => _cart[p.id!] = qty + 1);
+                                          if (mounted) setState(() {});
+                                          _persistReservation();
+                                        },
                               ),
                               IconButton(
-                                icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
+                                icon: const Icon(
+                                  Icons.delete_outline,
+                                  color: Colors.redAccent,
+                                  size: 20,
+                                ),
                                 onPressed: () {
                                   ss(() => _cart.remove(p.id));
                                   if (mounted) setState(() {});
@@ -322,10 +443,13 @@ class _QuickSalePageState extends State<QuickSalePage> {
                     width: double.infinity,
                     child: ElevatedButton(
                       style: ElevatedButton.styleFrom(
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                         padding: const EdgeInsets.symmetric(vertical: 14),
                       ),
-                      onPressed: _cart.isEmpty ? null : () => Navigator.pop(ctx, true),
+                      onPressed:
+                          _cart.isEmpty ? null : () => Navigator.pop(ctx, true),
                       child: const Text(
                         'PROCEDER AL PAGO',
                         style: TextStyle(
@@ -406,7 +530,10 @@ class _QuickSalePageState extends State<QuickSalePage> {
                   backgroundColor: const Color(0xFF1A1A1A),
                   title: Text(
                     'COBRAR',
-                    style: TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                      color: Colors.greenAccent,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                   content: Column(
                     mainAxisSize: MainAxisSize.min,
@@ -426,24 +553,31 @@ class _QuickSalePageState extends State<QuickSalePage> {
                         style: const TextStyle(color: Colors.white),
                         onChanged: (v) => ss(() => method = v!),
                         items:
-                            [
-                              'Efectivo',
-                              'Tarjeta',
-                              'Transferencia',
-                            ].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
+                            ['Efectivo', 'Tarjeta', 'Transferencia']
+                                .map(
+                                  (e) => DropdownMenuItem(
+                                    value: e,
+                                    child: Text(e),
+                                  ),
+                                )
+                                .toList(),
                       ),
                       if (method == 'Efectivo') ...[
                         const SizedBox(height: 8),
                         TextField(
                           controller: ctrl,
-                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
                           style: const TextStyle(color: Colors.white),
                           decoration: const InputDecoration(
                             labelText: 'Monto recibido',
                             labelStyle: TextStyle(color: Colors.white38),
                           ),
                           onTap: () => ctrl.clear(),
-                          onChanged: (v) => ss(() => paid = double.tryParse(v) ?? _total),
+                          onChanged:
+                              (v) =>
+                                  ss(() => paid = double.tryParse(v) ?? _total),
                         ),
                         const SizedBox(height: 8),
                         Builder(
@@ -455,7 +589,10 @@ class _QuickSalePageState extends State<QuickSalePage> {
                                   ? 'Falta: \$${diff.abs().toStringAsFixed(2)}'
                                   : 'Cambio: \$${diff.toStringAsFixed(2)}',
                               style: TextStyle(
-                                color: isShort ? Colors.redAccent : Colors.greenAccent,
+                                color:
+                                    isShort
+                                        ? Colors.redAccent
+                                        : Colors.greenAccent,
                                 fontWeight: FontWeight.bold,
                               ),
                             );
@@ -467,11 +604,17 @@ class _QuickSalePageState extends State<QuickSalePage> {
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.pop(ctx),
-                      child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
+                      child: const Text(
+                        'Cancelar',
+                        style: TextStyle(color: Colors.white38),
+                      ),
                     ),
                     ElevatedButton(
                       onPressed: () => Navigator.pop(ctx, (paid, method)),
-                      child: const Text('CONFIRMAR', style: TextStyle(color: Colors.white)),
+                      child: const Text(
+                        'CONFIRMAR',
+                        style: TextStyle(color: Colors.white),
+                      ),
                     ),
                   ],
                 ),
@@ -486,7 +629,10 @@ class _QuickSalePageState extends State<QuickSalePage> {
       appBar: AppBar(
         title: const Text(
           'VENTA RÁPIDA',
-          style: TextStyle(color: Color(0xFFE53935), fontWeight: FontWeight.bold),
+          style: TextStyle(
+            color: Color(0xFFE53935),
+            fontWeight: FontWeight.bold,
+          ),
         ),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(52),
@@ -512,7 +658,10 @@ class _QuickSalePageState extends State<QuickSalePage> {
         ),
         actions: [
           IconButton(
-            icon: Icon(_isGrid ? Icons.view_list : Icons.grid_view, color: Colors.white70),
+            icon: Icon(
+              _isGrid ? Icons.view_list : Icons.grid_view,
+              color: Colors.white70,
+            ),
             onPressed: () => setState(() => _isGrid = !_isGrid),
           ),
         ],
@@ -521,7 +670,10 @@ class _QuickSalePageState extends State<QuickSalePage> {
           _isLoading
               ? const Center(child: CircularProgressIndicator())
               : _filtered.isEmpty
-              ? EmptyState(message: 'No hay productos', icon: Icons.inventory_2_outlined)
+              ? EmptyState(
+                message: 'No hay productos',
+                icon: Icons.inventory_2_outlined,
+              )
               : _isGrid
               ? GridView.builder(
                 padding: const EdgeInsets.all(10),
@@ -581,23 +733,36 @@ class _QuickSalePageState extends State<QuickSalePage> {
                         ),
                         title: Text(
                           p.name,
-                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                         subtitle: Row(
                           children: [
                             Text(
                               '\$${p.price.toStringAsFixed(2)}  ',
-                              style: const TextStyle(color: Colors.white54, fontSize: 12),
+                              style: const TextStyle(
+                                color: Colors.white54,
+                                fontSize: 12,
+                              ),
                             ),
                             Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                                vertical: 1,
+                              ),
                               decoration: BoxDecoration(
                                 color: stockColor.withValues(alpha: 0.15),
                                 borderRadius: BorderRadius.circular(4),
-                                border: Border.all(color: stockColor.withValues(alpha: 0.5)),
+                                border: Border.all(
+                                  color: stockColor.withValues(alpha: 0.5),
+                                ),
                               ),
                               child: Text(
-                                p.stock <= 0 ? 'AGOTADO' : '${avail.toInt()} pz',
+                                p.stock <= 0
+                                    ? 'AGOTADO'
+                                    : '${avail.toInt()} pz',
                                 style: TextStyle(
                                   color: stockColor,
                                   fontSize: 11,
@@ -620,14 +785,23 @@ class _QuickSalePageState extends State<QuickSalePage> {
                                       ),
                                       onPressed: () => _remove(p.id!),
                                     ),
-                                    Text('$q', style: const TextStyle(color: Colors.white)),
+                                    Text(
+                                      '$q',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                      ),
+                                    ),
                                     IconButton(
                                       icon: Icon(
                                         Icons.add_circle,
-                                        color: isBlocked ? Colors.white12 : primary,
+                                        color:
+                                            isBlocked
+                                                ? Colors.white12
+                                                : primary,
                                         size: 20,
                                       ),
-                                      onPressed: isBlocked ? null : () => _add(p),
+                                      onPressed:
+                                          isBlocked ? null : () => _add(p),
                                     ),
                                   ],
                                 )
@@ -649,11 +823,16 @@ class _QuickSalePageState extends State<QuickSalePage> {
         child:
             _cartCount > 0
                 ? Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 10,
+                  ),
                   decoration: const BoxDecoration(color: Color(0xFF1A1A1A)),
                   child: ElevatedButton(
                     style: ElevatedButton.styleFrom(
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
                     ),
                     onPressed: _checkout,
                     child: Row(

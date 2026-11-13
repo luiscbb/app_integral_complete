@@ -68,13 +68,29 @@ class PlayerCard extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                       ),
                       const SizedBox(height: 2),
-                      Text(
-                        player.levelLabel,
-                        style: TextStyle(
-                          color: contentColor,
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                        ),
+                      Row(
+                        children: [
+                          Text(
+                            'HANDICAP ',
+                            style: TextStyle(
+                              color: contentColor,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          ...List.generate(
+                            6,
+                            (index) => Icon(
+                              index < player.level
+                                  ? Icons.star_rounded
+                                  : Icons.star_border_rounded,
+                              color: index < player.level
+                                  ? Colors.amber
+                                  : contentColor.withValues(alpha: 0.35),
+                              size: 14,
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),

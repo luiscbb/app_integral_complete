@@ -12,6 +12,7 @@ class ProductEntity {
   final int piecesPerUnit;
   final String category;
   final String presentation;
+  final bool isActive;
 
   const ProductEntity({
     this.id,
@@ -27,6 +28,7 @@ class ProductEntity {
     this.piecesPerUnit = 1,
     this.category = '',
     this.presentation = '',
+    this.isActive = true,
   });
 
   ProductEntity copyWith({
@@ -43,6 +45,7 @@ class ProductEntity {
     int? piecesPerUnit,
     String? category,
     String? presentation,
+    bool? isActive,
   }) {
     return ProductEntity(
       id: id ?? this.id,
@@ -58,6 +61,7 @@ class ProductEntity {
       piecesPerUnit: piecesPerUnit ?? this.piecesPerUnit,
       category: category ?? this.category,
       presentation: presentation ?? this.presentation,
+      isActive: isActive ?? this.isActive,
     );
   }
 
@@ -76,6 +80,7 @@ class ProductEntity {
       piecesPerUnit: (m['pieces_per_unit'] as int?) ?? 1,
       category: m['category']?.toString() ?? '',
       presentation: m['presentation']?.toString() ?? '',
+      isActive: m['is_active'] == null || m['is_active'] == true || m['is_active'] == 1,
     );
   }
 
@@ -94,6 +99,7 @@ class ProductEntity {
       'pieces_per_unit': piecesPerUnit,
       'category': category,
       'presentation': presentation,
+      'is_active': isActive ? 1 : 0,
     };
   }
 

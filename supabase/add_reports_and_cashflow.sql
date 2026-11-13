@@ -13,16 +13,30 @@ add column if not exists reference text default '';
 create table if not exists public.inventory_movements (
     id bigserial primary key,
     billar_id text not null default 'BILLAR_001',
-    product_id int not null references public.products(id) on delete restrict,
-    movement_type text not null check (movement_type in ('sale','purchase','adjustment','return','initial')),
+    product_id bigint not null references public.products(id) on delete restrict,
+    movement_type text not null check (movement_type in ('sale','purchase','adjustment','return','initial','cancel')),
     quantity double precision not null,
     unit_cost double precision not null default 0,
     unit_price double precision not null default 0,
     reference_id int,                 -- id de venta, compra o ajuste relacionado
     reference_type text,              -- 'sales_history', 'purchases', 'adjustment'
     notes text default '',
-    created_at timestamptz default now()
+    created_at timestamptz default now(),
+    client_id text unique
 );
+
+alter table public.inventory_movements
+add column if not exists client_id text;
+
+create unique index if not exists idx_inventory_movements_client_id
+on public.inventory_movements (client_id);
+
+alter table public.inventory_movements
+drop constraint if exists inventory_movements_movement_type_check;
+
+alter table public.inventory_movements
+add constraint inventory_movements_movement_type_check
+check (movement_type in ('sale','purchase','adjustment','return','initial','cancel'));
 
 alter table public.inventory_movements enable row level security;
 
@@ -52,7 +66,7 @@ create index if not exists idx_inventory_movements_billar on public.inventory_mo
 create table if not exists public.cash_outflows (
     id bigserial primary key,
     billar_id text not null default 'BILLAR_001',
-    outflow_type text not null check (outflow_type in ('withdrawal','expense','refund','other')),
+    outflow_type text not null,
     amount double precision not null check (amount > 0),
     description text not null default '',
     payment_method text default 'Efectivo',
@@ -61,6 +75,8 @@ create table if not exists public.cash_outflows (
 );
 
 alter table public.cash_outflows enable row level security;
+alter table public.cash_outflows
+    drop constraint if exists cash_outflows_outflow_type_check;
 
 drop policy if exists "cash_outflows_select" on public.cash_outflows;
 drop policy if exists "cash_outflows_insert" on public.cash_outflows;

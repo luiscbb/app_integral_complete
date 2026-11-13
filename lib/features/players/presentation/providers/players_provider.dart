@@ -7,19 +7,28 @@ class PlayersProvider extends ChangeNotifier {
   final _repo = PlayerRepository();
   List<PlayerEntity> _players = [];
   bool _loading = true;
+  bool _isAdmin = false;
 
   List<PlayerEntity> get players => List.unmodifiable(_players);
   bool get isLoading => _loading;
+  bool get isAdmin => _isAdmin;
 
   PlayersProvider() {
     _load();
   }
 
+  Future<void> refresh() => _load();
+
   Future<void> _load() async {
     _loading = true;
     notifyListeners();
     try {
-      _players = await _repo.getAll();
+      final results = await Future.wait([
+        _repo.getAll(),
+        _repo.isCurrentUserAdmin(),
+      ]);
+      _players = results[0] as List<PlayerEntity>;
+      _isAdmin = results[1] as bool;
       debugPrint('[PlayersProvider] Loaded ${_players.length} players');
     } catch (e, st) {
       debugPrint('[PlayersProvider] Error loading players: $e\n$st');
@@ -28,30 +37,75 @@ class PlayersProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> add(String name, {String nickname = '', String avatar = ''}) async {
+  Future<PlayerRegistrationResult> add({
+    required String name,
+    required String email,
+    required String phone,
+    required String nickname,
+    required int handicap,
+    String avatarPath = '',
+  }) async {
     try {
-      debugPrint('[PlayersProvider] Adding player: name=$name, nickname=$nickname, avatar=$avatar');
-      final player = PlayerEntity(name: name, nickname: nickname, avatar: avatar);
-      debugPrint('[PlayersProvider] Player entity created: $player');
-
-      final insertedId = await _repo.insert(player);
-      debugPrint('[PlayersProvider] Player inserted with ID: $insertedId');
-
+      final result = await _repo.createRegisteredPlayer(
+        name: name,
+        email: email,
+        phone: phone,
+        nickname: nickname,
+        handicap: handicap,
+        avatarPath: avatarPath,
+      );
       await _load();
-      debugPrint('[PlayersProvider] Player list reloaded');
+      return result;
     } catch (e, st) {
       debugPrint('[PlayersProvider] ERROR adding player: $e\n$st');
       rethrow;
     }
   }
 
-  Future<void> update(PlayerEntity player) async {
-    await _repo.update(player);
+  Future<String?> updateRegistration(
+    PlayerEntity player, {
+    String? newAvatarPath,
+  }) async {
+    final temporaryPassword = await _repo.updateRegistration(
+      player,
+      newAvatarPath: newAvatarPath,
+    );
+    await _load();
+    return temporaryPassword;
+  }
+
+  Future<void> archive(PlayerEntity player) async {
+    await _repo.archivePlayer(player);
     await _load();
   }
 
-  Future<void> delete(int id) async {
-    await _repo.delete(id);
+  Future<PlayerEntity> renew(PlayerEntity player) async {
+    final updated = await _repo.renewPlayer(player);
+    await _load();
+    return updated;
+  }
+
+  Future<String> resetPassword(PlayerEntity player) {
+    return _repo.resetPlayerPassword(player);
+  }
+
+  Future<List<Map<String, dynamic>>> getManagers() {
+    return _repo.getManagers();
+  }
+
+  Future<ManagerRegistrationResult> addManager({
+    required String name,
+    required String email,
+  }) {
+    return _repo.createManager(name: name, email: email);
+  }
+
+  Future<String> resetManagerPassword(String userId) {
+    return _repo.resetManagerPassword(userId);
+  }
+
+  Future<void> setManagerActive(String userId, bool isActive) async {
+    await _repo.setManagerActive(userId, isActive);
     await _load();
   }
 

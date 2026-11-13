@@ -25,7 +25,10 @@ class _GamesHub extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('PARTIDAS', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+        title: const Text(
+          'PARTIDAS',
+          style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2),
+        ),
       ),
       body: Padding(
         padding: const EdgeInsets.all(20),
@@ -36,43 +39,28 @@ class _GamesHub extends StatelessWidget {
             crossAxisSpacing: 16,
             childAspectRatio: 1,
           ),
-          itemCount: 2,
+          itemCount: 1,
           itemBuilder: (_, i) {
-            if (i == 0) {
-              return ModuleCard(
-                label: 'TRAINING',
-                subtitle: 'Práctica libre',
-                icon: Icons.sports_score,
-                color: primary,
-                onTap: () => _goToMatch(context, realMatch: false),
-              );
-            }
             return ModuleCard(
-              label: '1 VS 1',
-              subtitle: 'Jugadores reales',
-              icon: Icons.people,
+              label: 'RETAS / TRAINING',
+              subtitle: 'Elige cómo quieres jugar',
+              icon: Icons.sports_bar_rounded,
               color: primary,
-              onTap: () => _goToMatch(context, realMatch: true),
+              onTap: () {
+                final provider = context.read<GameProvider>();
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder:
+                        (_) => ChangeNotifierProvider<GameProvider>.value(
+                          value: provider,
+                          child: const GameSelectionScreen(),
+                        ),
+                  ),
+                );
+              },
             );
           },
-        ),
-      ),
-    );
-  }
-
-  void _goToMatch(BuildContext context, {required bool realMatch}) {
-    final provider = context.read<GameProvider>();
-    if (realMatch) {
-      provider.setPlayers(player1Name: 'LOCAL', player2Name: 'VISITA');
-    } else {
-      provider.setPlayers();
-    }
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ChangeNotifierProvider<GameProvider>.value(
-          value: provider,
-          child: const GameSelectionScreen(),
         ),
       ),
     );

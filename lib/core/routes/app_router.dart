@@ -14,6 +14,7 @@ import '../../features/players/presentation/pages/players_hub_page.dart';
 import '../../features/players/presentation/pages/players_list_page.dart';
 import '../../features/players/presentation/pages/player_detail_page.dart';
 import '../../features/players/presentation/pages/player_comparison_page.dart';
+import '../../features/players/presentation/pages/player_access_pages.dart';
 import '../../features/players/presentation/pages/record_match_page.dart';
 import '../../features/players/domain/entities/player_stats.dart';
 import '../../features/dine_in/presentation/pages/dine_in_page.dart';
@@ -79,6 +80,20 @@ class AppRouter {
         return MaterialPageRoute(builder: (_) => const TournamentsPage());
       case AppRoutes.personalStats:
         return MaterialPageRoute(builder: (_) => const PersonalStatsPage());
+      case AppRoutes.playerPortal:
+        final args = settings.arguments;
+        if (args is PlayerEntity) {
+          return MaterialPageRoute(
+            builder: (_) => PlayerPortalPage(player: args),
+          );
+        }
+        return MaterialPageRoute(builder: (_) => const SplashPage());
+      case AppRoutes.managerPortal:
+        return MaterialPageRoute(builder: (_) => const ManagerPortalPage());
+      case AppRoutes.changeTemporaryPassword:
+        return MaterialPageRoute(
+          builder: (_) => const ChangeTemporaryPasswordPage(),
+        );
       default:
         return MaterialPageRoute(builder: (_) => const HomePage());
     }

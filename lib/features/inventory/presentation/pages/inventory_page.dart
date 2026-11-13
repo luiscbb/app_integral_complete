@@ -1,19 +1,24 @@
 import 'dart:collection';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../../core/utils/smart_image.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
 import '../../../../core/widgets/empty_state.dart';
 import '../../../../core/routes/app_routes.dart';
+import '../../../../core/services/product_realtime_service.dart';
+import '../../../../core/storage/preferences_service.dart';
 import '../../data/repositories/product_repository.dart';
 import '../../domain/entities/product_entity.dart';
 import '../widgets/product_sale_card.dart';
 import '../../../sales/presentation/pages/create_promo_page.dart';
+import '../../../sales/data/repositories/sales_repository.dart';
 import '../../../purchases/data/repositories/purchases_repository.dart';
 import '../../../purchases/domain/entities/provider_entity.dart';
 
@@ -26,6 +31,8 @@ class InventoryPage extends StatefulWidget {
 
 class _InventoryPageState extends State<InventoryPage> {
   final _repo = ProductRepository();
+  final _salesRepo = SalesRepository();
+  final _prefs = PreferencesService();
   final _searchCtrl = TextEditingController();
   List<ProductEntity> _products = [];
   List<ProductEntity> _filtered = [];
@@ -33,28 +40,49 @@ class _InventoryPageState extends State<InventoryPage> {
   String? _selectedCategory;
   bool _isLoading = true;
   bool _isGrid = true;
+  StreamSubscription<void>? _productChangesSubscription;
+  Timer? _productRefreshDebounce;
+  bool _refreshingFromRealtime = false;
+  bool _productRefreshRequestedWhileRunning = false;
+  final Set<int> _deletingProductIds = {};
+  Map<int, double> _tableReserved = {};
+  RealtimeChannel? _tablesChannel;
 
   @override
   void initState() {
     super.initState();
     _refresh();
     _searchCtrl.addListener(_filter);
+    _productChangesSubscription = ProductRealtimeService.instance.changes
+        .listen((_) {
+          _productRefreshDebounce?.cancel();
+          _productRefreshDebounce = Timer(
+            const Duration(milliseconds: 250),
+            _refreshFromRealtime,
+          );
+        });
+    _subscribeToTableChanges();
   }
 
   @override
   void dispose() {
     _searchCtrl.dispose();
+    _productRefreshDebounce?.cancel();
+    _productChangesSubscription?.cancel();
+    _tablesChannel?.unsubscribe();
     super.dispose();
   }
 
   void _filter() {
     final q = _searchCtrl.text.toLowerCase();
     setState(() {
-      _filtered = _products.where((p) {
-        final matchesSearch = q.isEmpty || p.name.toLowerCase().contains(q);
-        final matchesCategory = _selectedCategory == null || p.category == _selectedCategory;
-        return matchesSearch && matchesCategory;
-      }).toList();
+      _filtered =
+          _products.where((p) {
+            final matchesSearch = q.isEmpty || p.name.toLowerCase().contains(q);
+            final matchesCategory =
+                _selectedCategory == null || p.category == _selectedCategory;
+            return matchesSearch && matchesCategory;
+          }).toList();
     });
   }
 
@@ -70,10 +98,13 @@ class _InventoryPageState extends State<InventoryPage> {
     try {
       final data = await _repo.getAll();
       final cats = await _repo.getCategories();
+      await _salesRepo.refreshTablesFromCloud();
+      final reserved = await _salesRepo.getReservedQuantities();
       if (mounted) {
         setState(() {
           _products = data;
           _categories = cats;
+          _tableReserved = reserved;
           _filter();
           _isLoading = false;
         });
@@ -81,6 +112,72 @@ class _InventoryPageState extends State<InventoryPage> {
     } catch (e) {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  Future<void> _refreshFromRealtime() async {
+    if (_refreshingFromRealtime) {
+      _productRefreshRequestedWhileRunning = true;
+      return;
+    }
+    _refreshingFromRealtime = true;
+    try {
+      do {
+        _productRefreshRequestedWhileRunning = false;
+        final data = await _repo.refreshFromCloud();
+        final reserved = await _salesRepo.getReservedQuantities();
+        if (!mounted) return;
+        setState(() {
+          _products = data;
+          _tableReserved = reserved;
+          _filter();
+        });
+      } while (_productRefreshRequestedWhileRunning);
+    } catch (e) {
+      debugPrint(
+        '[InventoryPage] Error actualizando productos por Realtime: $e',
+      );
+    } finally {
+      _refreshingFromRealtime = false;
+    }
+  }
+
+  void _subscribeToTableChanges() {
+    final billarId = _prefs.billarId;
+    if (billarId.isEmpty) return;
+    _tablesChannel =
+        Supabase.instance.client
+            .channel('public:billiard_tables:inventory-$billarId')
+            .onPostgresChanges(
+              event: PostgresChangeEvent.all,
+              schema: 'public',
+              table: 'billiard_tables',
+              callback: (payload) async {
+                final record =
+                    payload.newRecord.isNotEmpty
+                        ? payload.newRecord
+                        : payload.oldRecord;
+                if (record['billar_id']?.toString() != billarId) return;
+                await _refreshTableReservations();
+              },
+            )
+            .subscribe();
+  }
+
+  Future<void> _refreshTableReservations() async {
+    try {
+      await _salesRepo.refreshTablesFromCloud();
+      final reserved = await _salesRepo.getReservedQuantities();
+      if (mounted) setState(() => _tableReserved = reserved);
+    } catch (e) {
+      debugPrint(
+        '[InventoryPage] Error actualizando apartados de mesas/comandas: $e',
+      );
+    }
+  }
+
+  double _availableStock(ProductEntity product) {
+    final reserved = _tableReserved[product.id] ?? 0;
+    return (product.stock - reserved).clamp(0, double.infinity).toDouble();
   }
 
   String _formatStock(double stock, int pieces) {
@@ -92,6 +189,68 @@ class _InventoryPageState extends State<InventoryPage> {
     return '$boxes Caj + $loose pz';
   }
 
+  Future<void> _confirmArchive(ProductEntity product) async {
+    final productId = product.id;
+    if (productId == null || _deletingProductIds.contains(productId)) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder:
+          (dialogContext) => AlertDialog(
+            title: const Text('Archivar producto'),
+            content: Text(
+              '¿Archivar "${product.name}"? Dejará de aparecer en el inventario activo y en ventas, '
+              'pero se conservará su historial. También se archivará su presentación de caja, si tiene una. '
+              'El cambio se sincronizará cuando haya conexión.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('Cancelar'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                child: const Text('Archivar'),
+              ),
+            ],
+          ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _deletingProductIds.add(productId));
+    try {
+      final archivedCount = await _repo.archive(productId);
+      if (!mounted) return;
+      await _refresh();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            archivedCount > 0
+                ? 'Producto archivado. La sincronización pendiente se completará al tener conexión.'
+                : 'No se encontró el producto para archivar.',
+          ),
+        ),
+      );
+    } catch (e) {
+      debugPrint('[InventoryPage] Error archivando producto $productId: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No se pudo archivar el producto. Intenta de nuevo.'),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _deletingProductIds.remove(productId));
+      } else {
+        _deletingProductIds.remove(productId);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final primary = Theme.of(context).colorScheme.primary;
@@ -99,7 +258,10 @@ class _InventoryPageState extends State<InventoryPage> {
       appBar: AppBar(
         title: const Text(
           'INVENTARIO',
-          style: TextStyle(color: Color(0xFF43A047), fontWeight: FontWeight.bold),
+          style: TextStyle(
+            color: Color(0xFF43A047),
+            fontWeight: FontWeight.bold,
+          ),
         ),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(98),
@@ -135,33 +297,57 @@ class _InventoryPageState extends State<InventoryPage> {
                       Padding(
                         padding: const EdgeInsets.only(right: 8),
                         child: ChoiceChip(
-                          label: const Text('TODOS', style: TextStyle(fontSize: 11)),
+                          label: const Text(
+                            'TODOS',
+                            style: TextStyle(fontSize: 11),
+                          ),
                           selected: _selectedCategory == null,
-                          selectedColor: const Color(0xFF43A047).withValues(alpha: 0.3),
+                          selectedColor: const Color(
+                            0xFF43A047,
+                          ).withValues(alpha: 0.3),
                           backgroundColor: Colors.white10,
                           checkmarkColor: const Color(0xFF43A047),
                           labelStyle: TextStyle(
-                            color: _selectedCategory == null ? const Color(0xFF43A047) : Colors.white70,
-                            fontWeight: _selectedCategory == null ? FontWeight.bold : FontWeight.normal,
+                            color:
+                                _selectedCategory == null
+                                    ? const Color(0xFF43A047)
+                                    : Colors.white70,
+                            fontWeight:
+                                _selectedCategory == null
+                                    ? FontWeight.bold
+                                    : FontWeight.normal,
                           ),
                           onSelected: (_) => _selectCategory(null),
                         ),
                       ),
-                      ..._categories.map((c) => Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: ChoiceChip(
-                          label: Text(c, style: const TextStyle(fontSize: 11)),
-                          selected: _selectedCategory == c,
-                          selectedColor: const Color(0xFF43A047).withValues(alpha: 0.3),
-                          backgroundColor: Colors.white10,
-                          checkmarkColor: const Color(0xFF43A047),
-                          labelStyle: TextStyle(
-                            color: _selectedCategory == c ? const Color(0xFF43A047) : Colors.white70,
-                            fontWeight: _selectedCategory == c ? FontWeight.bold : FontWeight.normal,
+                      ..._categories.map(
+                        (c) => Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: ChoiceChip(
+                            label: Text(
+                              c,
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                            selected: _selectedCategory == c,
+                            selectedColor: const Color(
+                              0xFF43A047,
+                            ).withValues(alpha: 0.3),
+                            backgroundColor: Colors.white10,
+                            checkmarkColor: const Color(0xFF43A047),
+                            labelStyle: TextStyle(
+                              color:
+                                  _selectedCategory == c
+                                      ? const Color(0xFF43A047)
+                                      : Colors.white70,
+                              fontWeight:
+                                  _selectedCategory == c
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
+                            ),
+                            onSelected: (_) => _selectCategory(c),
                           ),
-                          onSelected: (_) => _selectCategory(c),
                         ),
-                      )),
+                      ),
                     ],
                   ),
                 ),
@@ -170,14 +356,20 @@ class _InventoryPageState extends State<InventoryPage> {
         ),
         actions: [
           IconButton(
-            icon: Icon(_isGrid ? Icons.view_list : Icons.grid_view, color: Colors.white70),
+            icon: Icon(
+              _isGrid ? Icons.view_list : Icons.grid_view,
+              color: Colors.white70,
+            ),
             onPressed: () => setState(() => _isGrid = !_isGrid),
           ),
           IconButton(
             icon: const Icon(Icons.star_border, color: Colors.orange),
             tooltip: 'Crear Promo',
             onPressed:
-                () => Navigator.pushNamed(context, AppRoutes.createPromo).then((_) => _refresh()),
+                () => Navigator.pushNamed(
+                  context,
+                  AppRoutes.createPromo,
+                ).then((_) => _refresh()),
           ),
           IconButton(icon: const Icon(Icons.refresh), onPressed: _refresh),
         ],
@@ -204,14 +396,40 @@ class _InventoryPageState extends State<InventoryPage> {
                 itemCount: _filtered.length,
                 itemBuilder: (_, i) {
                   final p = _filtered[i];
-                  return GestureDetector(
-                    onTap: () => _showForm(p),
-                    child: ProductSaleCard(
-                      product: p,
-                      quantity: 0,
-                      onAdd: () => _showForm(p),
-                      onRemove: () {},
-                    ),
+                  return Stack(
+                    children: [
+                      Positioned.fill(
+                        child: GestureDetector(
+                          onTap: () => _showForm(p),
+                          child: ProductSaleCard(
+                            product: p.copyWith(stock: _availableStock(p)),
+                            quantity: 0,
+                            onAdd: () => _showForm(p),
+                            onRemove: () {},
+                          ),
+                        ),
+                      ),
+                      Positioned(
+                        top: 2,
+                        right: 2,
+                        child: IconButton(
+                          tooltip: 'Archivar ${p.name}',
+                          onPressed:
+                              p.id == null || _deletingProductIds.contains(p.id)
+                                  ? null
+                                  : () => _confirmArchive(p),
+                          icon: const Icon(
+                            Icons.archive_outlined,
+                            color: Colors.redAccent,
+                          ),
+                          style: IconButton.styleFrom(
+                            backgroundColor: Colors.black54,
+                            padding: const EdgeInsets.all(6),
+                            minimumSize: const Size(36, 36),
+                          ),
+                        ),
+                      ),
+                    ],
                   );
                 },
               )
@@ -221,8 +439,10 @@ class _InventoryPageState extends State<InventoryPage> {
                 itemBuilder: (context, i) {
                   final p = _filtered[i];
                   final isPromo = p.isPromo == 1;
-                  final isLow = p.stock <= 5 && p.stock > 0;
-                  final isEmpty = p.stock <= 0;
+                  final availableStock = _availableStock(p);
+                  final reservedStock = _tableReserved[p.id] ?? 0;
+                  final isLow = availableStock <= 5 && availableStock > 0;
+                  final isEmpty = availableStock <= 0;
                   return Card(
                     child: ListTile(
                       leading: SizedBox(
@@ -230,7 +450,11 @@ class _InventoryPageState extends State<InventoryPage> {
                         height: 48,
                         child:
                             isPromo
-                                ? const Icon(Icons.stars, color: Colors.orange, size: 36)
+                                ? const Icon(
+                                  Icons.stars,
+                                  color: Colors.orange,
+                                  size: 36,
+                                )
                                 : SmartImage(
                                   imagePath: p.imagePath,
                                   size: 48,
@@ -244,10 +468,16 @@ class _InventoryPageState extends State<InventoryPage> {
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                      subtitle: Row(
+                      subtitle: Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 2,
+                            ),
                             decoration: BoxDecoration(
                               color:
                                   isEmpty
@@ -258,7 +488,7 @@ class _InventoryPageState extends State<InventoryPage> {
                               borderRadius: BorderRadius.circular(4),
                             ),
                             child: Text(
-                              _formatStock(p.stock, p.piecesPerUnit),
+                              '${_formatStock(availableStock, p.piecesPerUnit)} disponible',
                               style: TextStyle(
                                 color:
                                     isEmpty
@@ -271,16 +501,47 @@ class _InventoryPageState extends State<InventoryPage> {
                               ),
                             ),
                           ),
-                          const SizedBox(width: 8),
+                          if (reservedStock > 0)
+                            Text(
+                              '${_formatStock(reservedStock, p.piecesPerUnit)} apartado',
+                              style: const TextStyle(
+                                color: Colors.orangeAccent,
+                                fontSize: 10,
+                              ),
+                            ),
                           Text(
                             '\$${p.price.toStringAsFixed(2)}',
-                            style: const TextStyle(color: Colors.greenAccent, fontSize: 12),
+                            style: const TextStyle(
+                              color: Colors.greenAccent,
+                              fontSize: 12,
+                            ),
                           ),
                         ],
                       ),
-                      trailing: IconButton(
-                        icon: Icon(Icons.edit, color: isPromo ? Colors.orange : primary),
-                        onPressed: () => _showForm(p),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            tooltip: 'Editar ${p.name}',
+                            icon: Icon(
+                              Icons.edit,
+                              color: isPromo ? Colors.orange : primary,
+                            ),
+                            onPressed: () => _showForm(p),
+                          ),
+                          IconButton(
+                            tooltip: 'Archivar ${p.name}',
+                            icon: const Icon(
+                              Icons.archive_outlined,
+                              color: Colors.redAccent,
+                            ),
+                            onPressed:
+                                p.id == null ||
+                                        _deletingProductIds.contains(p.id)
+                                    ? null
+                                    : () => _confirmArchive(p),
+                          ),
+                        ],
                       ),
                     ),
                   );
@@ -360,10 +621,15 @@ class ProductFormSheetState extends State<ProductFormSheet> {
     _barcodeCtrl = TextEditingController(text: p?.barcode ?? '');
     _stockCtrl = TextEditingController(text: p?.stock.toString() ?? '0');
     _costCtrl = TextEditingController(text: p?.cost.toString() ?? '');
-    _piecesCtrl = TextEditingController(text: p?.piecesPerUnit.toString() ?? '0');
+    _piecesCtrl = TextEditingController(
+      text: p?.piecesPerUnit.toString() ?? '0',
+    );
     _priceUnitCtrl = TextEditingController(text: p?.price.toString() ?? '');
     _priceCajaCtrl = TextEditingController(
-      text: p != null && p.piecesPerUnit > 1 ? (p.price * p.piecesPerUnit).toString() : '',
+      text:
+          p != null && p.piecesPerUnit > 1
+              ? (p.price * p.piecesPerUnit).toString()
+              : '',
     );
     _imagePath = p?.imagePath;
     _category = (p?.category.isNotEmpty ?? false) ? p!.category : null;
@@ -375,7 +641,9 @@ class ProductFormSheetState extends State<ProductFormSheet> {
   Future<void> _loadProviders() async {
     final providers = await _purchaseRepo.getProviders();
     if (widget.product?.id != null) {
-      final ids = await _purchaseRepo.getProductProviderIds(widget.product!.id!);
+      final ids = await _purchaseRepo.getProductProviderIds(
+        widget.product!.id!,
+      );
       if (mounted) {
         setState(() {
           _providers = providers;
@@ -403,40 +671,51 @@ class ProductFormSheetState extends State<ProductFormSheet> {
     final primary = Theme.of(context).colorScheme.primary;
     final newCat = await showDialog<String>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        title: Text('NUEVA CATEGORÍA', style: TextStyle(color: primary, fontSize: 16)),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          textCapitalization: TextCapitalization.characters,
-          style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(
-            hintText: 'Ej. BEBIDAS, COMIDA, CIGARROS',
-            hintStyle: TextStyle(color: Colors.white24),
+      builder:
+          (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            title: Text(
+              'NUEVA CATEGORÍA',
+              style: TextStyle(color: primary, fontSize: 16),
+            ),
+            content: TextField(
+              controller: ctrl,
+              autofocus: true,
+              textCapitalization: TextCapitalization.characters,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                hintText: 'Ej. BEBIDAS, COMIDA, CIGARROS',
+                hintStyle: TextStyle(color: Colors.white24),
+              ),
+              onChanged: (v) {
+                final up = v.toUpperCase();
+                if (up != v) {
+                  ctrl.value = TextEditingValue(
+                    text: up,
+                    selection: TextSelection.collapsed(offset: up.length),
+                  );
+                }
+              },
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text(
+                  'Cancelar',
+                  style: TextStyle(color: Colors.white38),
+                ),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: primary),
+                onPressed:
+                    () => Navigator.pop(ctx, ctrl.text.trim().toUpperCase()),
+                child: const Text(
+                  'CREAR',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
           ),
-          onChanged: (v) {
-            final up = v.toUpperCase();
-            if (up != v) {
-              ctrl.value = TextEditingValue(
-                text: up,
-                selection: TextSelection.collapsed(offset: up.length),
-              );
-            }
-          },
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: primary),
-            onPressed: () => Navigator.pop(ctx, ctrl.text.trim().toUpperCase()),
-            child: const Text('CREAR', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
     );
     if (newCat != null && newCat.isNotEmpty) {
       await _repo.addCategory(newCat);
@@ -487,12 +766,18 @@ class ProductFormSheetState extends State<ProductFormSheet> {
           children: [
             ListTile(
               leading: Icon(Icons.camera_alt, color: primary),
-              title: const Text('Cámara', style: TextStyle(color: Colors.white)),
+              title: const Text(
+                'Cámara',
+                style: TextStyle(color: Colors.white),
+              ),
               onTap: () => _pickFrom(ImageSource.camera),
             ),
             ListTile(
               leading: Icon(Icons.photo_library, color: primary),
-              title: const Text('Galería', style: TextStyle(color: Colors.white)),
+              title: const Text(
+                'Galería',
+                style: TextStyle(color: Colors.white),
+              ),
               onTap: () => _pickFrom(ImageSource.gallery),
             ),
           ],
@@ -503,7 +788,11 @@ class ProductFormSheetState extends State<ProductFormSheet> {
 
   Future<void> _pickFrom(ImageSource source) async {
     Navigator.pop(context);
-    final img = await ImagePicker().pickImage(source: source, imageQuality: 35, maxWidth: 800);
+    final img = await ImagePicker().pickImage(
+      source: source,
+      imageQuality: 35,
+      maxWidth: 800,
+    );
     if (img != null) setState(() => _imagePath = img.path);
   }
 
@@ -534,7 +823,8 @@ class ProductFormSheetState extends State<ProductFormSheet> {
 
     final cost = double.tryParse(costText) ?? 0;
     final priceUnit = double.tryParse(priceUnitText) ?? 0;
-    final piecesText = widget.product?.parentId == null ? _piecesCtrl.text.trim() : '0';
+    final piecesText =
+        widget.product?.parentId == null ? _piecesCtrl.text.trim() : '0';
     final pieces = int.tryParse(piecesText) ?? 0;
     final costCaja = cost * pieces;
     final priceCaja = double.tryParse(_priceCajaCtrl.text.trim());
@@ -582,7 +872,8 @@ class ProductFormSheetState extends State<ProductFormSheet> {
     try {
       final p = ProductEntity(
         id: widget.product?.id,
-        barcode: _barcodeCtrl.text.trim().isEmpty ? null : _barcodeCtrl.text.trim(),
+        barcode:
+            _barcodeCtrl.text.trim().isEmpty ? null : _barcodeCtrl.text.trim(),
         name: _descCtrl.text.trim().toUpperCase(),
         description: _descCtrl.text.trim().toUpperCase(),
         price: priceUnit,
@@ -594,16 +885,22 @@ class ProductFormSheetState extends State<ProductFormSheet> {
         category: _category ?? '',
         presentation: _presentationCtrl.text.trim().toUpperCase(),
       );
-      await _repo.insert(p, priceCaja: widget.product?.parentId == null ? priceCaja : null);
+      await _repo.insert(
+        p,
+        priceCaja: widget.product?.parentId == null ? priceCaja : null,
+      );
       if (widget.product?.id != null) {
-        await _purchaseRepo.setProductProviders(widget.product!.id!, _selectedProviderIds);
+        await _purchaseRepo.setProductProviders(
+          widget.product!.id!,
+          _selectedProviderIds,
+        );
       }
       widget.onSaved();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: Colors.red));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.toString()), backgroundColor: Colors.red),
+        );
       }
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -635,16 +932,26 @@ class ProductFormSheetState extends State<ProductFormSheet> {
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(color: primary.withValues(alpha: 0.5)),
                     ),
-                    child: SmartImage(imagePath: _imagePath, placeholderIcon: Icons.add_a_photo),
+                    child: SmartImage(
+                      imagePath: _imagePath,
+                      placeholderIcon: Icons.add_a_photo,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 12),
                 Text(
                   widget.product == null ? 'NUEVO PRODUCTO' : 'EDITAR PRODUCTO',
-                  style: TextStyle(color: primary, fontWeight: FontWeight.bold, fontSize: 16),
+                  style: TextStyle(
+                    color: primary,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
                 ),
                 const Spacer(),
-                IconButton(icon: Icon(Icons.add_a_photo, color: primary), onPressed: _pickImage),
+                IconButton(
+                  icon: Icon(Icons.add_a_photo, color: primary),
+                  onPressed: _pickImage,
+                ),
               ],
             ),
             const SizedBox(height: 12),
@@ -664,7 +971,9 @@ class ProductFormSheetState extends State<ProductFormSheet> {
               icon: Icons.description,
               textCapitalization: TextCapitalization.characters,
               inputFormatters: [
-                FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9ñÑáéíóúÁÉÍÓÚüÜ\.\s\-/_#%&()]+')),
+                FilteringTextInputFormatter.allow(
+                  RegExp(r'[a-zA-Z0-9ñÑáéíóúÁÉÍÓÚüÜ\.\s\-/_#%&()]+'),
+                ),
                 TextInputFormatter.withFunction((oldValue, newValue) {
                   return TextEditingValue(
                     text: newValue.text.toUpperCase(),
@@ -688,7 +997,11 @@ class ProductFormSheetState extends State<ProductFormSheet> {
                     decoration: InputDecoration(
                       labelText: 'Categoría',
                       labelStyle: const TextStyle(color: Colors.white38),
-                      prefixIcon: Icon(Icons.category, color: primary, size: 20),
+                      prefixIcon: Icon(
+                        Icons.category,
+                        color: primary,
+                        size: 20,
+                      ),
                       border: const OutlineInputBorder(),
                     ),
                     child: DropdownButton<String>(
@@ -700,10 +1013,16 @@ class ProductFormSheetState extends State<ProductFormSheet> {
                       items: [
                         const DropdownMenuItem<String>(
                           value: null,
-                          child: Text('Sin categoría', style: TextStyle(color: Colors.white38)),
+                          child: Text(
+                            'Sin categoría',
+                            style: TextStyle(color: Colors.white38),
+                          ),
                         ),
                         ..._categories.map(
-                          (c) => DropdownMenuItem<String>(value: c, child: Text(c)),
+                          (c) => DropdownMenuItem<String>(
+                            value: c,
+                            child: Text(c),
+                          ),
                         ),
                       ],
                       onChanged: (v) => setState(() => _category = v),
@@ -749,7 +1068,10 @@ class ProductFormSheetState extends State<ProductFormSheet> {
             if (widget.product?.parentId == null)
               Text(
                 'Costo Total Caja: \$${_costCaja.toStringAsFixed(2)}',
-                style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.bold),
+                style: const TextStyle(
+                  color: Colors.orange,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             const Divider(color: Colors.red, thickness: 0.5),
             Row(
@@ -792,7 +1114,10 @@ class ProductFormSheetState extends State<ProductFormSheet> {
               const SizedBox(height: 16),
               const Align(
                 alignment: Alignment.centerLeft,
-                child: Text('PROVEEDORES QUE SURTEN ESTE PRODUCTO', style: TextStyle(color: Colors.white38, fontSize: 11)),
+                child: Text(
+                  'PROVEEDORES QUE SURTEN ESTE PRODUCTO',
+                  style: TextStyle(color: Colors.white38, fontSize: 11),
+                ),
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -801,9 +1126,14 @@ class ProductFormSheetState extends State<ProductFormSheet> {
                     _providers
                         .map(
                           (pr) => FilterChip(
-                            label: Text(pr.name, style: const TextStyle(fontSize: 11)),
+                            label: Text(
+                              pr.name,
+                              style: const TextStyle(fontSize: 11),
+                            ),
                             selected: _selectedProviderIds.contains(pr.id),
-                            selectedColor: const Color(0xFFFB8C00).withValues(alpha: 0.3),
+                            selectedColor: const Color(
+                              0xFFFB8C00,
+                            ).withValues(alpha: 0.3),
                             backgroundColor: Colors.white10,
                             checkmarkColor: const Color(0xFFFB8C00),
                             onSelected: (sel) {
@@ -848,7 +1178,9 @@ class _BarcodeScannerPageState extends State<_BarcodeScannerPage> {
   @override
   void initState() {
     super.initState();
-    _ctrl = MobileScannerController(detectionSpeed: DetectionSpeed.noDuplicates);
+    _ctrl = MobileScannerController(
+      detectionSpeed: DetectionSpeed.noDuplicates,
+    );
   }
 
   @override

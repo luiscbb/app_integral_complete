@@ -11,22 +11,45 @@ class BilliardTableRepository {
 
   static const _tableTypes = ['Billar', 'Comanda'];
 
-  Future<List<Map<String, dynamic>>> getAll({String? billarId}) async {
+  Future<List<Map<String, dynamic>>> getAll({
+    String? billarId,
+    bool includeDeleted = false,
+  }) async {
     final db = await _db.database;
-    final where = billarId != null ? 'billar_id = ?' : null;
-    final args = billarId != null ? [billarId] : null;
+    final filters = <String>[];
+    final args = <Object?>[];
+    if (billarId != null) {
+      filters.add('billar_id = ?');
+      args.add(billarId);
+    }
+    if (!includeDeleted) filters.add('is_deleted = 0');
     final rows = await db.query(
       'billiard_tables',
-      where: where,
-      whereArgs: args,
+      where: filters.isEmpty ? null : filters.join(' AND '),
+      whereArgs: args.isEmpty ? null : args,
       orderBy: 'id ASC',
     );
     return rows;
   }
 
+  Future<int> getNextId() async {
+    await _sync.pullTablesFromCloud();
+    final db = await _db.database;
+    final rows = await db.rawQuery(
+      'SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM billiard_tables WHERE billar_id = ?',
+      [PreferencesService().billarId],
+    );
+    return (rows.first['next_id'] as int?) ?? 1;
+  }
+
   Future<Map<String, dynamic>?> getById(int id) async {
     final db = await _db.database;
-    final rows = await db.query('billiard_tables', where: 'id = ?', whereArgs: [id], limit: 1);
+    final rows = await db.query(
+      'billiard_tables',
+      where: 'id = ?',
+      whereArgs: [id],
+      limit: 1,
+    );
     return rows.isEmpty ? null : rows.first;
   }
 
@@ -44,8 +67,14 @@ class BilliardTableRepository {
       'table_type': _normalizeType(tableType),
       'is_occupied': 0,
       'orders': '[]',
+      'synced': 0,
+      'is_deleted': 0,
     };
-    await db.insert('billiard_tables', row, conflictAlgorithm: ConflictAlgorithm.replace);
+    await db.insert(
+      'billiard_tables',
+      row,
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
     // Sync en background para no bloquear UI
     _sync.pushTableToCloud(row).ignore();
   }
@@ -65,9 +94,15 @@ class BilliardTableRepository {
       if (isOccupied != null) 'is_occupied': isOccupied,
       if (startTime != null) 'start_time': startTime.toIso8601String(),
       if (orders != null) 'orders': jsonEncode(orders),
+      'synced': 0,
     };
     if (payload.isEmpty) return;
-    await db.update('billiard_tables', payload, where: 'id = ?', whereArgs: [id]);
+    await db.update(
+      'billiard_tables',
+      payload,
+      where: 'id = ?',
+      whereArgs: [id],
+    );
 
     // Sync en background para no bloquear UI
     getById(id).then((updated) {
@@ -86,7 +121,12 @@ class BilliardTableRepository {
       if (tableType != null) 'table_type': _normalizeType(tableType),
     };
     if (payload.isEmpty) return;
-    await db.update('billiard_tables', payload, where: 'id = ?', whereArgs: [id]);
+    await db.update(
+      'billiard_tables',
+      payload,
+      where: 'id = ?',
+      whereArgs: [id],
+    );
   }
 
   Future<void> updateName(int id, String name) async {
@@ -113,24 +153,57 @@ class BilliardTableRepository {
     final db = await _db.database;
     await db.update(
       'billiard_tables',
-      {'is_occupied': 0, 'start_time': null, 'orders': '[]'},
+      {'is_occupied': 0, 'start_time': null, 'orders': '[]', 'synced': 0},
       where: 'id = ?',
       whereArgs: [id],
     );
+    final updated = await getById(id);
+    if (updated != null) _sync.pushTableToCloud(updated).ignore();
   }
 
   Future<void> delete(int id) async {
     final db = await _db.database;
-    await db.delete('billiard_tables', where: 'id = ?', whereArgs: [id]);
-    await _sync.deleteTableFromCloud(id);
+    final billarId = PreferencesService().billarId;
+    await db.update(
+      'billiard_tables',
+      {
+        'is_deleted': 1,
+        'is_occupied': 0,
+        'start_time': null,
+        'orders': '[]',
+        'synced': 0,
+      },
+      where: 'id = ? AND billar_id = ?',
+      whereArgs: [id, billarId],
+    );
+    final deleted = await getById(id);
+    if (deleted != null) {
+      final synced = await _sync.pushTableToCloud(deleted);
+      if (!synced) {
+        _sync.schedulePendingSync();
+      }
+    }
   }
 
   Future<void> deleteAll({String? billarId}) async {
     final db = await _db.database;
-    final where = billarId != null ? 'billar_id = ?' : null;
-    final args = billarId != null ? [billarId] : null;
-    await db.delete('billiard_tables', where: where, whereArgs: args);
-    // Opcional: borrar todas las mesas de la nube para este billar
+    final targetBillarId = billarId ?? PreferencesService().billarId;
+    await db.update(
+      'billiard_tables',
+      {
+        'is_deleted': 1,
+        'is_occupied': 0,
+        'start_time': null,
+        'orders': '[]',
+        'synced': 0,
+      },
+      where: 'billar_id = ?',
+      whereArgs: [targetBillarId],
+    );
+    final rows = await getAll(billarId: targetBillarId, includeDeleted: true);
+    for (final row in rows.where((row) => row['is_deleted'] == 1)) {
+      await _sync.pushTableToCloud(row);
+    }
   }
 
   static String _normalizeType(String type) {

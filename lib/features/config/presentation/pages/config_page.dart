@@ -4,15 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
-import 'package:sqflite/sqflite.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../../../core/formatters/phone_mask_formatter.dart';
 import '../../../../core/routes/app_routes.dart';
 import '../../../../core/services/sync_service.dart';
 import '../../../../core/storage/preferences_service.dart';
 import '../../../../core/services/config_remote_repository.dart';
 import '../../../../core/theme/theme_provider.dart';
-import '../../../../core/database/database_helper.dart';
 import '../../../../features/sales/data/repositories/billiard_table_repository.dart';
 
 class ConfigPage extends StatefulWidget {
@@ -42,7 +41,11 @@ class _ConfigPageState extends State<ConfigPage> {
       appBar: AppBar(
         title: Text(
           'CONFIGURACIÓN',
-          style: TextStyle(color: primary, fontWeight: FontWeight.bold, letterSpacing: 1.5),
+          style: TextStyle(
+            color: primary,
+            fontWeight: FontWeight.bold,
+            letterSpacing: 1.5,
+          ),
         ),
       ),
       body: Row(
@@ -61,11 +64,17 @@ class _ConfigPageState extends State<ConfigPage> {
                   onTap: () => setState(() => _selectedSection = i),
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 180),
-                    margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                    margin: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 6,
+                    ),
                     padding: const EdgeInsets.symmetric(vertical: 14),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(14),
-                      color: selected ? itemColor.withValues(alpha: 0.15) : Colors.transparent,
+                      color:
+                          selected
+                              ? itemColor.withValues(alpha: 0.15)
+                              : Colors.transparent,
                       border: Border.all(
                         color: selected ? itemColor : Colors.transparent,
                         width: 1.5,
@@ -79,7 +88,9 @@ class _ConfigPageState extends State<ConfigPage> {
                               selected
                                   ? itemColor
                                   : (isLogout
-                                      ? const Color(0xFFE53935).withValues(alpha: 0.6)
+                                      ? const Color(
+                                        0xFFE53935,
+                                      ).withValues(alpha: 0.6)
                                       : Colors.white38),
                           size: 26,
                         ),
@@ -91,10 +102,13 @@ class _ConfigPageState extends State<ConfigPage> {
                                 selected
                                     ? itemColor
                                     : (isLogout
-                                        ? const Color(0xFFE53935).withValues(alpha: 0.6)
+                                        ? const Color(
+                                          0xFFE53935,
+                                        ).withValues(alpha: 0.6)
                                         : Colors.white38),
                             fontSize: 10,
-                            fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                            fontWeight:
+                                selected ? FontWeight.bold : FontWeight.normal,
                           ),
                         ),
                       ],
@@ -118,8 +132,14 @@ class _ConfigPageState extends State<ConfigPage> {
                           constraints: const BoxConstraints(maxWidth: 480),
                           child:
                               [
-                                _NegocioSection(key: _negocioKey, isWide: isWide),
-                                _ImpresionSection(key: _impresionKey, isWide: isWide),
+                                _NegocioSection(
+                                  key: _negocioKey,
+                                  isWide: isWide,
+                                ),
+                                _ImpresionSection(
+                                  key: _impresionKey,
+                                  isWide: isWide,
+                                ),
                                 const _BillarSection(),
                                 const _AparienciaSection(),
                                 const _SesionSection(),
@@ -169,6 +189,7 @@ class _NegocioSectionState extends State<_NegocioSection> {
   late final TextEditingController _tiktokCtrl;
   String? _logoPath;
   String? _logoUrl;
+  bool _logoSelected = false;
   bool _uploadingLogo = false;
   late final TextEditingController _adminPinCtrl;
 
@@ -236,6 +257,7 @@ class _NegocioSectionState extends State<_NegocioSection> {
         setState(() {
           _logoPath = path;
           _logoUrl = null;
+          _logoSelected = true;
         });
       }
       return;
@@ -251,7 +273,10 @@ class _NegocioSectionState extends State<_NegocioSection> {
           children: [
             ListTile(
               leading: Icon(Icons.camera_alt, color: primary),
-              title: const Text('Cámara', style: TextStyle(color: Colors.white)),
+              title: const Text(
+                'Cámara',
+                style: TextStyle(color: Colors.white),
+              ),
               onTap: () {
                 Navigator.pop(context);
                 _pickFrom(ImageSource.camera);
@@ -259,7 +284,10 @@ class _NegocioSectionState extends State<_NegocioSection> {
             ),
             ListTile(
               leading: Icon(Icons.photo_library, color: primary),
-              title: const Text('Galería', style: TextStyle(color: Colors.white)),
+              title: const Text(
+                'Galería',
+                style: TextStyle(color: Colors.white),
+              ),
               onTap: () {
                 Navigator.pop(context);
                 _pickFrom(ImageSource.gallery);
@@ -289,9 +317,14 @@ class _NegocioSectionState extends State<_NegocioSection> {
           .uploadBinary(
             path,
             bytes,
-            fileOptions: const FileOptions(contentType: 'image/jpeg', upsert: true),
+            fileOptions: const FileOptions(
+              contentType: 'image/jpeg',
+              upsert: true,
+            ),
           );
-      final url = Supabase.instance.client.storage.from('product_images').getPublicUrl(path);
+      final url = Supabase.instance.client.storage
+          .from('product_images')
+          .getPublicUrl(path);
       debugPrint('[ConfigPage] Logo subido. URL: $url');
       return url;
     } catch (e, st) {
@@ -309,6 +342,7 @@ class _NegocioSectionState extends State<_NegocioSection> {
       setState(() {
         _logoPath = img.path;
         _logoUrl = null;
+        _logoSelected = true;
       });
     }
   }
@@ -318,41 +352,67 @@ class _NegocioSectionState extends State<_NegocioSection> {
   Future<void> _confirmPinReset() async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        title: const Text('RESET DE PIN', style: TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold, fontSize: 15)),
-        content: const Text(
-          'Se borrará el PIN de autorización configurado y la anulación de ventas quedará sin contraseña '
-          '(solo con aviso) hasta que configures uno nuevo.\n\n¿Continuar?',
-          style: TextStyle(color: Colors.white70, fontSize: 13),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.orangeAccent),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('RESET', style: TextStyle(color: Colors.white)),
+      builder:
+          (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            title: const Text(
+              'RESET DE PIN',
+              style: TextStyle(
+                color: Colors.orangeAccent,
+                fontWeight: FontWeight.bold,
+                fontSize: 15,
+              ),
+            ),
+            content: const Text(
+              'Se borrará el PIN de autorización configurado y la anulación de ventas quedará sin contraseña '
+              '(solo con aviso) hasta que configures uno nuevo.\n\n¿Continuar?',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text(
+                  'Cancelar',
+                  style: TextStyle(color: Colors.white38),
+                ),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.orangeAccent,
+                ),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text(
+                  'RESET',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
     );
     if (confirmed == true) {
       await _prefs.setAdminPin('');
       setState(() => _adminPinCtrl.clear());
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('PIN reiniciado. Configura uno nuevo de 4 dígitos.'), backgroundColor: Colors.green),
+          const SnackBar(
+            content: Text('PIN reiniciado. Configura uno nuevo de 4 dígitos.'),
+            backgroundColor: Colors.green,
+          ),
         );
       }
     }
   }
 
   Future<void> _save() async {
-    debugPrint('[ConfigPage] _save INICIO (Negocio) pin=${_adminPinCtrl.text.trim().isEmpty ? "(vacio)" : "(4 digitos)"}');
+    debugPrint(
+      '[ConfigPage] _save INICIO (Negocio) pin=${_adminPinCtrl.text.trim().isEmpty ? "(vacio)" : "(4 digitos)"}',
+    );
     await _prefs.setBusinessName(_businessCtrl.text.trim());
     await _prefs.setUserName(_userCtrl.text.trim());
     await _prefs.setAdminPin(_adminPinCtrl.text.trim());
-    debugPrint('[ConfigPage] PIN guardado en prefs: ${_prefs.adminPin.isEmpty ? "(vacio)" : "(configurado)"}');
+    debugPrint(
+      '[ConfigPage] PIN guardado en prefs: ${_prefs.adminPin.isEmpty ? "(vacio)" : "(configurado)"}',
+    );
     await _prefs.setBusinessStreet(_streetCtrl.text.trim());
     await _prefs.setBusinessExtNumber(_extNumberCtrl.text.trim());
     await _prefs.setBusinessIntNumber(_intNumberCtrl.text.trim());
@@ -367,12 +427,14 @@ class _NegocioSectionState extends State<_NegocioSection> {
     await _prefs.setBusinessWebsite(_websiteCtrl.text.trim());
     await _prefs.setTicketFarewell(_farewellCtrl.text.trim());
     await _prefs.setSocialNetworks({
-      if (_facebookCtrl.text.trim().isNotEmpty) 'facebook': _facebookCtrl.text.trim(),
-      if (_instagramCtrl.text.trim().isNotEmpty) 'instagram': _instagramCtrl.text.trim(),
+      if (_facebookCtrl.text.trim().isNotEmpty)
+        'facebook': _facebookCtrl.text.trim(),
+      if (_instagramCtrl.text.trim().isNotEmpty)
+        'instagram': _instagramCtrl.text.trim(),
       if (_tiktokCtrl.text.trim().isNotEmpty) 'tiktok': _tiktokCtrl.text.trim(),
     });
     // billar_id ya no se edita aqui, se genero en InitialSetup y es inamovible
-    if (_logoPath != null) {
+    if (_logoSelected && _logoPath != null) {
       await _prefs.setLogoPath(_logoPath!);
       final uploadedUrl = await _uploadLogoToStorage(_logoPath!);
       if (uploadedUrl != null) {
@@ -385,6 +447,7 @@ class _NegocioSectionState extends State<_NegocioSection> {
     debugPrint('[ConfigPage] Guardado logoUrl: ${_prefs.logoUrl}');
 
     // Sincronizar con Supabase si hay sesion activa
+    var remoteSaved = false;
     try {
       final user = Supabase.instance.client.auth.currentUser;
       if (user != null) {
@@ -409,20 +472,42 @@ class _NegocioSectionState extends State<_NegocioSection> {
           businessWebsite: _prefs.businessWebsite,
           ticketFarewell: _prefs.ticketFarewell,
           socialNetworks: _prefs.socialNetworks,
-          logoUrl: _prefs.logoUrl,
+          logoUrl: _logoUrl,
         );
         debugPrint('[ConfigPage] Respuesta upsertSettings: $res');
+        remoteSaved = res != null;
       }
     } catch (e, st) {
       debugPrint('[ConfigPage] Error sincronizando config: $e');
       debugPrint('[ConfigPage] Stack: $st');
     }
 
+    if (!remoteSaved) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              Supabase.instance.client.auth.currentUser == null
+                  ? 'Guardado localmente; inicia sesión para sincronizar la configuración.'
+                  : 'Se guardó en este dispositivo, pero no se pudo sincronizar. Revisa la conexión e inténtalo de nuevo.',
+            ),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Datos del negocio guardados'), backgroundColor: Colors.green),
+        const SnackBar(
+          content: Text('Datos del negocio guardados'),
+          backgroundColor: Colors.green,
+        ),
       );
-      Navigator.of(context).pushNamedAndRemoveUntil(AppRoutes.home, (route) => false);
+      Navigator.of(
+        context,
+      ).pushNamedAndRemoveUntil(AppRoutes.home, (route) => false);
     }
   }
 
@@ -432,7 +517,11 @@ class _NegocioSectionState extends State<_NegocioSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _SectionHeader(icon: Icons.store, title: 'DATOS DEL NEGOCIO', color: primary),
+        _SectionHeader(
+          icon: Icons.store,
+          title: 'DATOS DEL NEGOCIO',
+          color: primary,
+        ),
         const SizedBox(height: 20),
         Center(
           child: GestureDetector(
@@ -442,28 +531,44 @@ class _NegocioSectionState extends State<_NegocioSection> {
               height: 96,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                border: Border.all(color: primary.withValues(alpha: 0.5), width: 2),
+                border: Border.all(
+                  color: primary.withValues(alpha: 0.5),
+                  width: 2,
+                ),
                 color: const Color(0xFF1A1A1A),
               ),
               clipBehavior: Clip.antiAlias,
               child:
                   _uploadingLogo
-                      ? Center(child: CircularProgressIndicator(color: primary, strokeWidth: 2))
-                      : _logoPath != null && File(_logoPath!).existsSync()
-                      ? Image.file(File(_logoPath!), fit: BoxFit.cover)
+                      ? Center(
+                        child: CircularProgressIndicator(
+                          color: primary,
+                          strokeWidth: 2,
+                        ),
+                      )
                       : _logoUrl != null
                       ? Image.network(
-                          _logoUrl!,
-                          fit: BoxFit.cover,
-                          errorBuilder: (ctx, err, st) => Icon(Icons.add_a_photo, color: primary, size: 32),
-                        )
+                        _logoUrl!,
+                        fit: BoxFit.cover,
+                        errorBuilder:
+                            (ctx, err, st) => Icon(
+                              Icons.add_a_photo,
+                              color: primary,
+                              size: 32,
+                            ),
+                      )
+                      : _logoPath != null && File(_logoPath!).existsSync()
+                      ? Image.file(File(_logoPath!), fit: BoxFit.cover)
                       : Icon(Icons.add_a_photo, color: primary, size: 32),
             ),
           ),
         ),
         const SizedBox(height: 6),
         const Center(
-          child: Text('Logo del negocio', style: TextStyle(color: Colors.white38, fontSize: 12)),
+          child: Text(
+            'Logo del negocio',
+            style: TextStyle(color: Colors.white38, fontSize: 12),
+          ),
         ),
         const SizedBox(height: 20),
         _ConfigField(
@@ -488,7 +593,10 @@ class _NegocioSectionState extends State<_NegocioSection> {
                 icon: Icons.password,
                 keyboardType: TextInputType.number,
                 obscureText: true,
-                inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(4)],
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(4),
+                ],
               ),
             ),
             const SizedBox(width: 8),
@@ -496,8 +604,19 @@ class _NegocioSectionState extends State<_NegocioSection> {
             // roles formales, ocultarlo salvo para el Administrador.
             TextButton.icon(
               onPressed: () => _confirmPinReset(),
-              icon: const Icon(Icons.lock_reset, color: Colors.orangeAccent, size: 20),
-              label: const Text('RESET', style: TextStyle(color: Colors.orangeAccent, fontSize: 12, fontWeight: FontWeight.bold)),
+              icon: const Icon(
+                Icons.lock_reset,
+                color: Colors.orangeAccent,
+                size: 20,
+              ),
+              label: const Text(
+                'RESET',
+                style: TextStyle(
+                  color: Colors.orangeAccent,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
           ],
         ),
@@ -513,7 +632,11 @@ class _NegocioSectionState extends State<_NegocioSection> {
         const SizedBox(height: 8),
         const Text(
           'DIRECCION',
-          style: TextStyle(color: Colors.white38, fontSize: 11, letterSpacing: 1.5),
+          style: TextStyle(
+            color: Colors.white38,
+            fontSize: 11,
+            letterSpacing: 1.5,
+          ),
         ),
         const SizedBox(height: 12),
         _ConfigField(
@@ -582,18 +705,39 @@ class _NegocioSectionState extends State<_NegocioSection> {
         const SizedBox(height: 8),
         const Text(
           'CONTACTO',
-          style: TextStyle(color: Colors.white38, fontSize: 11, letterSpacing: 1.5),
+          style: TextStyle(
+            color: Colors.white38,
+            fontSize: 11,
+            letterSpacing: 1.5,
+          ),
         ),
         const SizedBox(height: 12),
-        _PhoneField(controller: _phoneCtrl, label: 'WhatsApp', icon: Icons.chat),
-        _ConfigField(controller: _websiteCtrl, label: 'Pagina web', icon: Icons.language_outlined),
+        _PhoneField(
+          controller: _phoneCtrl,
+          label: 'WhatsApp',
+          icon: Icons.chat,
+        ),
+        _ConfigField(
+          controller: _websiteCtrl,
+          label: 'Pagina web',
+          icon: Icons.language_outlined,
+        ),
         const SizedBox(height: 8),
         const Text(
           'TICKET / IDENTIDAD',
-          style: TextStyle(color: Colors.white38, fontSize: 11, letterSpacing: 1.5),
+          style: TextStyle(
+            color: Colors.white38,
+            fontSize: 11,
+            letterSpacing: 1.5,
+          ),
         ),
         const SizedBox(height: 12),
-        _ConfigField(controller: _sloganCtrl, label: 'Eslogan', icon: Icons.textsms_outlined, textCapitalization: TextCapitalization.sentences),
+        _ConfigField(
+          controller: _sloganCtrl,
+          label: 'Eslogan',
+          icon: Icons.textsms_outlined,
+          textCapitalization: TextCapitalization.sentences,
+        ),
         _ConfigField(
           controller: _farewellCtrl,
           label: 'Mensaje de despedida (ej: Gracias por su compra)',
@@ -603,17 +747,31 @@ class _NegocioSectionState extends State<_NegocioSection> {
         const SizedBox(height: 8),
         const Text(
           'REDES SOCIALES',
-          style: TextStyle(color: Colors.white38, fontSize: 11, letterSpacing: 1.5),
+          style: TextStyle(
+            color: Colors.white38,
+            fontSize: 11,
+            letterSpacing: 1.5,
+          ),
         ),
         const SizedBox(height: 12),
-        _ConfigField(controller: _facebookCtrl, label: 'Facebook', icon: Icons.facebook, textCapitalization: TextCapitalization.none),
+        _ConfigField(
+          controller: _facebookCtrl,
+          label: 'Facebook',
+          icon: Icons.facebook,
+          textCapitalization: TextCapitalization.none,
+        ),
         _ConfigField(
           controller: _instagramCtrl,
           label: 'Instagram',
           icon: Icons.camera_alt_outlined,
           textCapitalization: TextCapitalization.none,
         ),
-        _ConfigField(controller: _tiktokCtrl, label: 'TikTok', icon: Icons.music_video_outlined, textCapitalization: TextCapitalization.none),
+        _ConfigField(
+          controller: _tiktokCtrl,
+          label: 'TikTok',
+          icon: Icons.music_video_outlined,
+          textCapitalization: TextCapitalization.none,
+        ),
         // billar_id es solo informativo, no editable
         Padding(
           padding: const EdgeInsets.only(bottom: 14),
@@ -681,11 +839,19 @@ class _ImpresionSectionState extends State<_ImpresionSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _SectionHeader(icon: Icons.print, title: 'IMPRESIÓN DE TICKETS', color: primary),
+        _SectionHeader(
+          icon: Icons.print,
+          title: 'IMPRESIÓN DE TICKETS',
+          color: primary,
+        ),
         const SizedBox(height: 20),
         const Text(
           'ANCHO DE PAPEL',
-          style: TextStyle(color: Colors.white38, fontSize: 11, letterSpacing: 1.5),
+          style: TextStyle(
+            color: Colors.white38,
+            fontSize: 11,
+            letterSpacing: 1.5,
+          ),
         ),
         const SizedBox(height: 12),
         Row(
@@ -706,7 +872,10 @@ class _ImpresionSectionState extends State<_ImpresionSection> {
                             color: sel ? primary : Colors.white12,
                             width: sel ? 2 : 1,
                           ),
-                          color: sel ? primary.withValues(alpha: 0.12) : const Color(0xFF1A1A1A),
+                          color:
+                              sel
+                                  ? primary.withValues(alpha: 0.12)
+                                  : const Color(0xFF1A1A1A),
                         ),
                         child: Column(
                           children: [
@@ -725,7 +894,9 @@ class _ImpresionSectionState extends State<_ImpresionSection> {
                               ),
                             ),
                             Text(
-                              w == '58mm' ? 'Ticket pequeño' : 'Ticket estándar',
+                              w == '58mm'
+                                  ? 'Ticket pequeño'
+                                  : 'Ticket estándar',
                               style: TextStyle(
                                 color: sel ? Colors.white54 : Colors.white24,
                                 fontSize: 11,
@@ -765,6 +936,7 @@ class _BillarSectionState extends State<_BillarSection> {
   final _repo = BilliardTableRepository();
   final _nameCtrl = TextEditingController();
   late final TextEditingController _rateCtrl;
+  RealtimeChannel? _tablesChannel;
   String _newTableType = 'Billar';
 
   @override
@@ -773,31 +945,44 @@ class _BillarSectionState extends State<_BillarSection> {
     _rateCtrl = TextEditingController(
       text: _prefs.hourlyRate > 0 ? _prefs.hourlyRate.toStringAsFixed(2) : '',
     );
+    _subscribeToTableChanges();
   }
 
   @override
   void dispose() {
+    if (_tablesChannel != null) {
+      Supabase.instance.client.removeChannel(_tablesChannel!);
+    }
     _rateCtrl.dispose();
     _nameCtrl.dispose();
     super.dispose();
   }
 
+  void _subscribeToTableChanges() {
+    final billarId = _prefs.billarId;
+    if (billarId.isEmpty) return;
+    _tablesChannel =
+        Supabase.instance.client
+            .channel('public:billiard_tables:config-$billarId')
+            .onPostgresChanges(
+              event: PostgresChangeEvent.all,
+              schema: 'public',
+              table: 'billiard_tables',
+              callback: (payload) async {
+                final changedRecord =
+                    payload.newRecord.isNotEmpty
+                        ? payload.newRecord
+                        : payload.oldRecord;
+                if (changedRecord['billar_id']?.toString() != billarId) return;
+                await SyncService().pullTablesFromCloud(forceApply: true);
+                if (mounted) setState(() {});
+              },
+            )
+            .subscribe();
+  }
+
   Future<List<Map<String, dynamic>>> _loadTables() async {
-    var tables = await _repo.getAll(billarId: _prefs.billarId);
-    if (tables.isEmpty && _prefs.tableCount > 0) {
-      final db = await DatabaseHelper.instance.database;
-      for (int i = 1; i <= _prefs.tableCount; i++) {
-        await db.insert('billiard_tables', {
-          'id': i,
-          'billar_id': _prefs.billarId,
-          'name': 'Mesa Billar $i',
-          'table_type': 'Billar',
-          'is_occupied': 0,
-          'orders': '[]',
-        }, conflictAlgorithm: ConflictAlgorithm.ignore);
-      }
-      tables = await _repo.getAll(billarId: _prefs.billarId);
-    }
+    final tables = await _repo.getAll(billarId: _prefs.billarId);
     return tables.map((t) => Map<String, dynamic>.from(t)).toList();
   }
 
@@ -817,51 +1002,75 @@ class _BillarSectionState extends State<_BillarSection> {
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            Icon(Icons.table_bar, color: Theme.of(context).colorScheme.primary),
-            const SizedBox(width: 10),
-            const Text('CREAR MESA', style: TextStyle(color: Color(0xFFFB8C00), fontSize: 16, fontWeight: FontWeight.bold)),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('¿Confirmas crear esta mesa?', style: TextStyle(color: Colors.white70)),
-            const SizedBox(height: 16),
-            _DetailRow(label: 'Nombre', value: name),
-            _DetailRow(label: 'Tipo', value: _newTableType),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
-          ),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFFB8C00),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      builder:
+          (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
             ),
-            icon: const Icon(Icons.check, color: Colors.white, size: 18),
-            label: const Text('CREAR', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-            onPressed: () => Navigator.pop(ctx, true),
+            title: Row(
+              children: [
+                Icon(
+                  Icons.table_bar,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 10),
+                const Text(
+                  'CREAR MESA',
+                  style: TextStyle(
+                    color: Color(0xFFFB8C00),
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '¿Confirmas crear esta mesa?',
+                  style: TextStyle(color: Colors.white70),
+                ),
+                const SizedBox(height: 16),
+                _DetailRow(label: 'Nombre', value: name),
+                _DetailRow(label: 'Tipo', value: _newTableType),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text(
+                  'Cancelar',
+                  style: TextStyle(color: Colors.white38),
+                ),
+              ),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFFB8C00),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                icon: const Icon(Icons.check, color: Colors.white, size: 18),
+                label: const Text(
+                  'CREAR',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                onPressed: () => Navigator.pop(ctx, true),
+              ),
+            ],
           ),
-        ],
-      ),
     );
 
     if (confirmed != true) return;
 
     try {
-      final tables = await _loadTables();
-      final maxId =
-          tables.isEmpty ? 0 : tables.map((t) => t['id'] as int).reduce((a, b) => a > b ? a : b);
-      final newId = maxId + 1;
+      final newId = await _repo.getNextId();
       await _repo.insert(
         id: newId,
         billarId: _prefs.billarId,
@@ -873,13 +1082,19 @@ class _BillarSectionState extends State<_BillarSection> {
       await _syncCount();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Mesa "$name" creada'), backgroundColor: Colors.green),
+          SnackBar(
+            content: Text('Mesa "$name" creada'),
+            backgroundColor: Colors.green,
+          ),
         );
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error al crear mesa: $e'), backgroundColor: Colors.red),
+          SnackBar(
+            content: Text('Error al crear mesa: $e'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     }
@@ -891,17 +1106,29 @@ class _BillarSectionState extends State<_BillarSection> {
       builder:
           (ctx) => AlertDialog(
             backgroundColor: const Color(0xFF1A1A1A),
-            title: const Text('Eliminar mesa', style: TextStyle(color: Colors.white)),
-            content: Text('¿Eliminar Mesa $id?', style: const TextStyle(color: Colors.white70)),
+            title: const Text(
+              'Eliminar mesa',
+              style: TextStyle(color: Colors.white),
+            ),
+            content: Text(
+              '¿Eliminar Mesa $id?',
+              style: const TextStyle(color: Colors.white70),
+            ),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
+                child: const Text(
+                  'Cancelar',
+                  style: TextStyle(color: Colors.white38),
+                ),
               ),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
                 onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Eliminar', style: TextStyle(color: Colors.white)),
+                child: const Text(
+                  'Eliminar',
+                  style: TextStyle(color: Colors.white),
+                ),
               ),
             ],
           ),
@@ -919,7 +1146,10 @@ class _BillarSectionState extends State<_BillarSection> {
       builder:
           (ctx) => AlertDialog(
             backgroundColor: const Color(0xFF1A1A1A),
-            title: const Text('EDITAR NOMBRE', style: TextStyle(color: Color(0xFFFB8C00))),
+            title: const Text(
+              'EDITAR NOMBRE',
+              style: TextStyle(color: Color(0xFFFB8C00)),
+            ),
             content: TextField(
               controller: ctrl,
               style: const TextStyle(color: Colors.white),
@@ -932,12 +1162,20 @@ class _BillarSectionState extends State<_BillarSection> {
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
+                child: const Text(
+                  'Cancelar',
+                  style: TextStyle(color: Colors.white38),
+                ),
               ),
               ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFB8C00)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFFB8C00),
+                ),
                 onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
-                child: const Text('GUARDAR', style: TextStyle(color: Colors.white)),
+                child: const Text(
+                  'GUARDAR',
+                  style: TextStyle(color: Colors.white),
+                ),
               ),
             ],
           ),
@@ -970,7 +1208,10 @@ class _BillarSectionState extends State<_BillarSection> {
     if (rate <= 0) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Ingresa una tarifa válida'), backgroundColor: Colors.orange),
+          const SnackBar(
+            content: Text('Ingresa una tarifa válida'),
+            backgroundColor: Colors.orange,
+          ),
         );
       }
       return;
@@ -978,41 +1219,71 @@ class _BillarSectionState extends State<_BillarSection> {
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            Icon(Icons.attach_money, color: Theme.of(context).colorScheme.primary),
-            const SizedBox(width: 10),
-            const Text('GUARDAR TARIFA', style: TextStyle(color: Color(0xFFFB8C00), fontSize: 16, fontWeight: FontWeight.bold)),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('¿Confirmas guardar esta tarifa por hora?', style: TextStyle(color: Colors.white70)),
-            const SizedBox(height: 16),
-            _DetailRow(label: 'Tarifa', value: '\$${rate.toStringAsFixed(2)}/hr'),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
-          ),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFFFB8C00),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      builder:
+          (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
             ),
-            icon: const Icon(Icons.check, color: Colors.white, size: 18),
-            label: const Text('GUARDAR', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-            onPressed: () => Navigator.pop(ctx, true),
+            title: Row(
+              children: [
+                Icon(
+                  Icons.attach_money,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 10),
+                const Text(
+                  'GUARDAR TARIFA',
+                  style: TextStyle(
+                    color: Color(0xFFFB8C00),
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '¿Confirmas guardar esta tarifa por hora?',
+                  style: TextStyle(color: Colors.white70),
+                ),
+                const SizedBox(height: 16),
+                _DetailRow(
+                  label: 'Tarifa',
+                  value: '\$${rate.toStringAsFixed(2)}/hr',
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text(
+                  'Cancelar',
+                  style: TextStyle(color: Colors.white38),
+                ),
+              ),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFFB8C00),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                icon: const Icon(Icons.check, color: Colors.white, size: 18),
+                label: const Text(
+                  'GUARDAR',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                onPressed: () => Navigator.pop(ctx, true),
+              ),
+            ],
           ),
-        ],
-      ),
     );
 
     if (confirmed != true) return;
@@ -1021,7 +1292,10 @@ class _BillarSectionState extends State<_BillarSection> {
     await _syncCount();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Tarifa por hora guardada'), backgroundColor: Colors.green),
+        const SnackBar(
+          content: Text('Tarifa por hora guardada'),
+          backgroundColor: Colors.green,
+        ),
       );
     }
   }
@@ -1032,11 +1306,19 @@ class _BillarSectionState extends State<_BillarSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _SectionHeader(icon: Icons.table_bar, title: 'BILLAR / COMANDAS', color: primary),
+        _SectionHeader(
+          icon: Icons.table_bar,
+          title: 'BILLAR / COMANDAS',
+          color: primary,
+        ),
         const SizedBox(height: 24),
         const Text(
           'TARIFA POR HORA',
-          style: TextStyle(color: Colors.white38, fontSize: 11, letterSpacing: 1.5),
+          style: TextStyle(
+            color: Colors.white38,
+            fontSize: 11,
+            letterSpacing: 1.5,
+          ),
         ),
         const SizedBox(height: 12),
         _ConfigField(
@@ -1044,7 +1326,9 @@ class _BillarSectionState extends State<_BillarSection> {
           label: 'Precio por hora (\$)',
           icon: Icons.attach_money,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}'))],
+          inputFormatters: [
+            FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}')),
+          ],
           onSubmitted: (_) => _saveRate(),
         ),
         const SizedBox(height: 12),
@@ -1053,11 +1337,16 @@ class _BillarSectionState extends State<_BillarSection> {
           child: OutlinedButton.icon(
             style: OutlinedButton.styleFrom(
               side: BorderSide(color: primary),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
               padding: const EdgeInsets.symmetric(vertical: 14),
             ),
             icon: Icon(Icons.save, color: primary),
-            label: Text('GUARDAR TARIFA', style: TextStyle(color: primary, fontWeight: FontWeight.bold)),
+            label: Text(
+              'GUARDAR TARIFA',
+              style: TextStyle(color: primary, fontWeight: FontWeight.bold),
+            ),
             onPressed: () {
               // Forzar cierre de teclado y quitar foco del campo antes de guardar.
               FocusScope.of(context).unfocus();
@@ -1078,7 +1367,11 @@ class _BillarSectionState extends State<_BillarSection> {
             children: [
               const Text(
                 'CREAR MESA',
-                style: TextStyle(color: Colors.white38, fontSize: 11, letterSpacing: 1.5),
+                style: TextStyle(
+                  color: Colors.white38,
+                  fontSize: 11,
+                  letterSpacing: 1.5,
+                ),
               ),
               const SizedBox(height: 12),
               _ConfigField(
@@ -1091,7 +1384,11 @@ class _BillarSectionState extends State<_BillarSection> {
               const SizedBox(height: 8),
               const Text(
                 'TIPO DE MESA',
-                style: TextStyle(color: Colors.white38, fontSize: 11, letterSpacing: 1.5),
+                style: TextStyle(
+                  color: Colors.white38,
+                  fontSize: 11,
+                  letterSpacing: 1.5,
+                ),
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -1104,10 +1401,13 @@ class _BillarSectionState extends State<_BillarSection> {
                         selected: selected,
                         selectedColor: primary.withValues(alpha: 0.3),
                         backgroundColor: Colors.white10,
-                        side: BorderSide(color: selected ? primary : Colors.white24),
+                        side: BorderSide(
+                          color: selected ? primary : Colors.white24,
+                        ),
                         labelStyle: TextStyle(
                           color: selected ? primary : Colors.white70,
-                          fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                          fontWeight:
+                              selected ? FontWeight.bold : FontWeight.normal,
                         ),
                         onSelected: (_) => setState(() => _newTableType = type),
                       );
@@ -1121,10 +1421,15 @@ class _BillarSectionState extends State<_BillarSection> {
                     foregroundColor: primary,
                     side: BorderSide(color: primary),
                     padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                   ),
                   icon: const Icon(Icons.add),
-                  label: const Text('AGREGAR MESA', style: TextStyle(fontWeight: FontWeight.bold)),
+                  label: const Text(
+                    'AGREGAR MESA',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
                   onPressed: _addTable,
                 ),
               ),
@@ -1134,14 +1439,20 @@ class _BillarSectionState extends State<_BillarSection> {
         const SizedBox(height: 24),
         const Text(
           'MESAS EXISTENTES',
-          style: TextStyle(color: Colors.white38, fontSize: 11, letterSpacing: 1.5),
+          style: TextStyle(
+            color: Colors.white38,
+            fontSize: 11,
+            letterSpacing: 1.5,
+          ),
         ),
         const SizedBox(height: 12),
         FutureBuilder<List<Map<String, dynamic>>>(
           future: _loadTables(),
           builder: (context, snapshot) {
             if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator(color: Colors.white24));
+              return const Center(
+                child: CircularProgressIndicator(color: Colors.white24),
+              );
             }
             final tables = snapshot.data ?? [];
             if (tables.isEmpty) {
@@ -1160,17 +1471,23 @@ class _BillarSectionState extends State<_BillarSection> {
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
                 itemCount: tables.length,
-                separatorBuilder: (_, _) => const Divider(color: Colors.white10, height: 1),
+                separatorBuilder:
+                    (_, _) => const Divider(color: Colors.white10, height: 1),
                 itemBuilder: (_, i) {
                   final t = tables[i];
                   final id = t['id'] as int;
                   final type = t['table_type'] as String? ?? 'Billar';
                   return Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
                     child: Row(
                       children: [
                         Icon(
-                          type == 'Comanda' ? Icons.restaurant_menu : Icons.table_bar,
+                          type == 'Comanda'
+                              ? Icons.restaurant_menu
+                              : Icons.table_bar,
                           color: primary,
                           size: 22,
                         ),
@@ -1189,18 +1506,33 @@ class _BillarSectionState extends State<_BillarSection> {
                               ),
                               Text(
                                 '#$id · $type',
-                                style: const TextStyle(color: Colors.white38, fontSize: 11),
+                                style: const TextStyle(
+                                  color: Colors.white38,
+                                  fontSize: 11,
+                                ),
                               ),
                             ],
                           ),
                         ),
                         IconButton(
-                          icon: const Icon(Icons.edit, color: Colors.white38, size: 20),
-                          onPressed: () => _editTableName(id, t['name'] as String? ?? 'Mesa $id'),
+                          icon: const Icon(
+                            Icons.edit,
+                            color: Colors.white38,
+                            size: 20,
+                          ),
+                          onPressed:
+                              () => _editTableName(
+                                id,
+                                t['name'] as String? ?? 'Mesa $id',
+                              ),
                           tooltip: 'Editar nombre',
                         ),
                         IconButton(
-                          icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
+                          icon: const Icon(
+                            Icons.delete_outline,
+                            color: Colors.redAccent,
+                            size: 20,
+                          ),
                           onPressed: () => _removeTable(id),
                           tooltip: 'Eliminar mesa',
                         ),
@@ -1222,7 +1554,11 @@ class _TableRow extends StatefulWidget {
   final ValueChanged<String> onNameChanged;
   final VoidCallback onDelete;
 
-  const _TableRow({required this.table, required this.onNameChanged, required this.onDelete});
+  const _TableRow({
+    required this.table,
+    required this.onNameChanged,
+    required this.onDelete,
+  });
 
   @override
   State<_TableRow> createState() => _TableRowState();
@@ -1252,7 +1588,14 @@ class _TableRowState extends State<_TableRow> {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       child: Row(
         children: [
-          Text('#$id', style: TextStyle(color: primary, fontWeight: FontWeight.bold, fontSize: 12)),
+          Text(
+            '#$id',
+            style: TextStyle(
+              color: primary,
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+            ),
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: TextField(
@@ -1268,14 +1611,21 @@ class _TableRowState extends State<_TableRow> {
                   borderRadius: BorderRadius.circular(10),
                   borderSide: BorderSide.none,
                 ),
-                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
               ),
               onSubmitted: widget.onNameChanged,
             ),
           ),
           const SizedBox(width: 8),
           IconButton(
-            icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 20),
+            icon: const Icon(
+              Icons.delete_outline,
+              color: Colors.redAccent,
+              size: 20,
+            ),
             onPressed: widget.onDelete,
             tooltip: 'Eliminar mesa',
           ),
@@ -1300,21 +1650,7 @@ class _TableListEditorState extends State<_TableListEditor> {
 
   Future<List<Map<String, dynamic>>> _load() async {
     final prefs = PreferencesService();
-    var tables = await _repo.getAll(billarId: prefs.billarId);
-    if (tables.isEmpty && prefs.tableCount > 0) {
-      final db = await DatabaseHelper.instance.database;
-      for (int i = 1; i <= prefs.tableCount; i++) {
-        await db.insert('billiard_tables', {
-          'id': i,
-          'billar_id': prefs.billarId,
-          'name': 'Mesa $i',
-          'table_type': prefs.defaultTableType,
-          'is_occupied': 0,
-          'orders': '[]',
-        }, conflictAlgorithm: ConflictAlgorithm.ignore);
-      }
-      tables = await _repo.getAll(billarId: prefs.billarId);
-    }
+    final tables = await _repo.getAll(billarId: prefs.billarId);
     return tables.map((t) => Map<String, dynamic>.from(t)).toList();
   }
 
@@ -1324,7 +1660,9 @@ class _TableListEditorState extends State<_TableListEditor> {
       future: _load(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator(color: Colors.white24));
+          return const Center(
+            child: CircularProgressIndicator(color: Colors.white24),
+          );
         }
         final tables = snapshot.data ?? [];
         if (tables.isEmpty) {
@@ -1343,7 +1681,8 @@ class _TableListEditorState extends State<_TableListEditor> {
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
             itemCount: tables.length,
-            separatorBuilder: (_, _) => const Divider(color: Colors.white10, height: 1),
+            separatorBuilder:
+                (_, _) => const Divider(color: Colors.white10, height: 1),
             itemBuilder: (_, i) {
               final t = tables[i];
               final id = t['id'] as int;
@@ -1392,11 +1731,19 @@ class _AparienciaSection extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _SectionHeader(icon: Icons.palette, title: 'APARIENCIA', color: theme.primaryColor),
+        _SectionHeader(
+          icon: Icons.palette,
+          title: 'APARIENCIA',
+          color: theme.primaryColor,
+        ),
         const SizedBox(height: 24),
         const Text(
           'MODO DE PANTALLA',
-          style: TextStyle(color: Colors.white38, fontSize: 11, letterSpacing: 1.5),
+          style: TextStyle(
+            color: Colors.white38,
+            fontSize: 11,
+            letterSpacing: 1.5,
+          ),
         ),
         const SizedBox(height: 12),
         Row(
@@ -1425,7 +1772,11 @@ class _AparienciaSection extends StatelessWidget {
         const SizedBox(height: 28),
         const Text(
           'COLOR PRINCIPAL',
-          style: TextStyle(color: Colors.white38, fontSize: 11, letterSpacing: 1.5),
+          style: TextStyle(
+            color: Colors.white38,
+            fontSize: 11,
+            letterSpacing: 1.5,
+          ),
         ),
         const SizedBox(height: 16),
         Wrap(
@@ -1434,7 +1785,8 @@ class _AparienciaSection extends StatelessWidget {
           children:
               _palette.map((entry) {
                 final (color, name) = entry;
-                final isSelected = theme.primaryColor.toARGB32() == color.toARGB32();
+                final isSelected =
+                    theme.primaryColor.toARGB32() == color.toARGB32();
                 return GestureDetector(
                   onTap: () => theme.setPrimaryColor(color),
                   child: Tooltip(
@@ -1463,7 +1815,11 @@ class _AparienciaSection extends StatelessWidget {
                       ),
                       child:
                           isSelected
-                              ? const Icon(Icons.check, color: Colors.white, size: 22)
+                              ? const Icon(
+                                Icons.check,
+                                color: Colors.white,
+                                size: 22,
+                              )
                               : null,
                     ),
                   ),
@@ -1473,7 +1829,11 @@ class _AparienciaSection extends StatelessWidget {
         const SizedBox(height: 28),
         const Text(
           'ESTILO DE COLORES',
-          style: TextStyle(color: Colors.white38, fontSize: 11, letterSpacing: 1.5),
+          style: TextStyle(
+            color: Colors.white38,
+            fontSize: 11,
+            letterSpacing: 1.5,
+          ),
         ),
         const SizedBox(height: 12),
         _buildCardStyleOption(
@@ -1500,7 +1860,10 @@ class _AparienciaSection extends StatelessWidget {
           subtitle: 'Fondo de color con icono y texto en blanco',
         ),
         const SizedBox(height: 8),
-        Text('Color actual', style: TextStyle(color: Colors.white38, fontSize: 11)),
+        Text(
+          'Color actual',
+          style: TextStyle(color: Colors.white38, fontSize: 11),
+        ),
 
         const SizedBox(height: 4),
         Row(
@@ -1508,12 +1871,19 @@ class _AparienciaSection extends StatelessWidget {
             Container(
               width: 20,
               height: 20,
-              decoration: BoxDecoration(color: theme.primaryColor, shape: BoxShape.circle),
+              decoration: BoxDecoration(
+                color: theme.primaryColor,
+                shape: BoxShape.circle,
+              ),
             ),
             const SizedBox(width: 8),
             Text(
               '#${theme.primaryColor.toARGB32().toRadixString(16).toUpperCase().substring(2)}',
-              style: const TextStyle(color: Colors.white54, fontSize: 13, fontFamily: 'monospace'),
+              style: const TextStyle(
+                color: Colors.white54,
+                fontSize: 13,
+                fontFamily: 'monospace',
+              ),
             ),
           ],
         ),
@@ -1540,11 +1910,18 @@ class _AparienciaSection extends StatelessWidget {
             color: selected ? theme.primaryColor : Colors.white12,
             width: selected ? 2 : 1,
           ),
-          color: selected ? theme.primaryColor.withValues(alpha: 0.12) : const Color(0xFF1A1A1A),
+          color:
+              selected
+                  ? theme.primaryColor.withValues(alpha: 0.12)
+                  : const Color(0xFF1A1A1A),
         ),
         child: Row(
           children: [
-            Icon(icon, color: selected ? theme.primaryColor : Colors.white38, size: 28),
+            Icon(
+              icon,
+              color: selected ? theme.primaryColor : Colors.white38,
+              size: 28,
+            ),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -1559,7 +1936,10 @@ class _AparienciaSection extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 2),
-                  Text(subtitle, style: const TextStyle(color: Colors.white38, fontSize: 11)),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(color: Colors.white38, fontSize: 11),
+                  ),
                 ],
               ),
             ),
@@ -1600,8 +1980,14 @@ class _ModeCard extends StatelessWidget {
           padding: const EdgeInsets.symmetric(vertical: 20),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: selected ? color : Colors.white12, width: selected ? 2 : 1),
-            color: selected ? color.withValues(alpha: 0.12) : const Color(0xFF1A1A1A),
+            border: Border.all(
+              color: selected ? color : Colors.white12,
+              width: selected ? 2 : 1,
+            ),
+            color:
+                selected
+                    ? color.withValues(alpha: 0.12)
+                    : const Color(0xFF1A1A1A),
           ),
           child: Column(
             children: [
@@ -1639,7 +2025,9 @@ class _SesionSectionState extends State<_SesionSection> {
       builder:
           (ctx) => AlertDialog(
             backgroundColor: const Color(0xFF1A1A1A),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
             title: const Row(
               children: [
                 Icon(Icons.logout, color: Color(0xFFE53935)),
@@ -1654,15 +2042,23 @@ class _SesionSectionState extends State<_SesionSection> {
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Cancelar', style: TextStyle(color: Colors.white54)),
+                child: const Text(
+                  'Cancelar',
+                  style: TextStyle(color: Colors.white54),
+                ),
               ),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFFE53935),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
                 ),
                 onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('Cerrar sesión', style: TextStyle(color: Colors.white)),
+                child: const Text(
+                  'Cerrar sesión',
+                  style: TextStyle(color: Colors.white),
+                ),
               ),
             ],
           ),
@@ -1683,7 +2079,9 @@ class _SesionSectionState extends State<_SesionSection> {
       await _prefs.clearSession();
     } finally {
       if (mounted) {
-        Navigator.of(context).pushNamedAndRemoveUntil(AppRoutes.login, (route) => false);
+        Navigator.of(
+          context,
+        ).pushNamedAndRemoveUntil(AppRoutes.login, (route) => false);
       }
     }
   }
@@ -1694,7 +2092,11 @@ class _SesionSectionState extends State<_SesionSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader(icon: Icons.person, title: 'SESIÓN ACTIVA', color: Color(0xFFE53935)),
+        const _SectionHeader(
+          icon: Icons.person,
+          title: 'SESIÓN ACTIVA',
+          color: Color(0xFFE53935),
+        ),
         const SizedBox(height: 24),
         Container(
           padding: const EdgeInsets.all(16),
@@ -1726,7 +2128,10 @@ class _SesionSectionState extends State<_SesionSection> {
                     const SizedBox(height: 2),
                     Text(
                       user?.email ?? 'Sin conexión activa',
-                      style: const TextStyle(color: Colors.white38, fontSize: 12),
+                      style: const TextStyle(
+                        color: Colors.white38,
+                        fontSize: 12,
+                      ),
                     ),
                   ],
                 ),
@@ -1746,7 +2151,9 @@ class _SesionSectionState extends State<_SesionSection> {
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFFE53935),
               minimumSize: const Size(double.infinity, 52),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
             ),
             onPressed: _loading ? null : _confirmLogout,
             icon:
@@ -1754,7 +2161,10 @@ class _SesionSectionState extends State<_SesionSection> {
                     ? const SizedBox(
                       width: 20,
                       height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
                     )
                     : const Icon(Icons.logout, color: Colors.white),
             label: Text(
@@ -1778,7 +2188,11 @@ class _SectionHeader extends StatelessWidget {
   final String title;
   final Color color;
 
-  const _SectionHeader({required this.icon, required this.title, required this.color});
+  const _SectionHeader({
+    required this.icon,
+    required this.title,
+    required this.color,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1833,7 +2247,10 @@ class _ConfigField extends StatelessWidget {
         obscureText: obscureText,
         onTap: () {
           if (controller.text.isEmpty) return;
-          controller.selection = TextSelection(baseOffset: 0, extentOffset: controller.text.length);
+          controller.selection = TextSelection(
+            baseOffset: 0,
+            extentOffset: controller.text.length,
+          );
         },
         onSubmitted: onSubmitted,
         style: const TextStyle(color: Colors.white),
@@ -1847,7 +2264,11 @@ class _PhoneField extends StatefulWidget {
   final TextEditingController controller;
   final String label;
   final IconData icon;
-  const _PhoneField({required this.controller, required this.label, required this.icon});
+  const _PhoneField({
+    required this.controller,
+    required this.label,
+    required this.icon,
+  });
 
   @override
   State<_PhoneField> createState() => _PhoneFieldState();
@@ -1862,10 +2283,16 @@ class _PhoneFieldState extends State<_PhoneField> {
         controller: widget.controller,
         keyboardType: TextInputType.phone,
         maxLength: 12, // 10 dígitos + 2 guiones de la máscara
-        buildCounter: (context, {required currentLength, required isFocused, maxLength}) => null,
+        buildCounter:
+            (
+              context, {
+              required currentLength,
+              required isFocused,
+              maxLength,
+            }) => null,
         inputFormatters: [
           FilteringTextInputFormatter.digitsOnly,
-          _PhoneMaskFormatter(),
+          PhoneMaskFormatter(),
         ],
         onTap: () {
           if (widget.controller.text.isEmpty) return;
@@ -1884,29 +2311,6 @@ class _PhoneFieldState extends State<_PhoneField> {
           ),
         ),
       ),
-    );
-  }
-}
-
-class _PhoneMaskFormatter extends TextInputFormatter {
-  @override
-  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
-    final digits = newValue.text.replaceAll(RegExp(r'\D'), '');
-    if (digits.length > 10) {
-      return oldValue;
-    }
-    String masked;
-    if (digits.length >= 7) {
-      masked = '${digits.substring(0, 3)}-${digits.substring(3, 6)}-${digits.substring(6)}';
-    } else if (digits.length >= 4) {
-      masked = '${digits.substring(0, 3)}-${digits.substring(3)}';
-    } else {
-      masked = digits;
-    }
-    final selectionIndex = masked.length;
-    return TextEditingValue(
-      text: masked,
-      selection: TextSelection.collapsed(offset: selectionIndex),
     );
   }
 }
@@ -1932,7 +2336,11 @@ class _DetailRow extends StatelessWidget {
           Expanded(
             child: Text(
               value,
-              style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ),
         ],
@@ -1955,13 +2363,19 @@ class _SaveButton extends StatelessWidget {
         style: ElevatedButton.styleFrom(
           backgroundColor: color,
           minimumSize: const Size(double.infinity, 52),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
         ),
         onPressed: onPressed,
         icon: const Icon(Icons.save, color: Colors.white),
         label: const Text(
           'GUARDAR',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: 15,
+          ),
         ),
       ),
     );

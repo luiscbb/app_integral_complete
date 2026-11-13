@@ -3,23 +3,31 @@ import 'package:provider/provider.dart';
 import '../providers/game_provider.dart';
 import 'game_screen.dart';
 
-class GameSelectionScreen extends StatelessWidget {
+class GameSelectionScreen extends StatefulWidget {
   const GameSelectionScreen({super.key});
 
+  @override
+  State<GameSelectionScreen> createState() => _GameSelectionScreenState();
+}
+
+class _GameSelectionScreenState extends State<GameSelectionScreen> {
   static const _modes = [
     ('BOLA 8', 'Bola 8', 'assets/balls/bola_8.png', Colors.white),
     ('BOLA 9', 'Bola 9', 'assets/balls/bola_9.png', Colors.amber),
     ('BOLA 10', 'Bola 10', 'assets/balls/bola_10.png', Colors.blueAccent),
   ];
 
+  bool _realMatch = false;
+
   @override
   Widget build(BuildContext context) {
     final primary = Theme.of(context).colorScheme.primary;
+    final selectedGameType = context.watch<GameProvider>().gameType;
 
     return Scaffold(
       appBar: AppBar(
         title: const Text(
-          'NUEVA PARTIDA',
+          'RETAS / TRAINING',
           style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2),
         ),
       ),
@@ -30,7 +38,11 @@ class GameSelectionScreen extends StatelessWidget {
           children: [
             Text(
               'MODALIDAD',
-              style: TextStyle(color: Colors.white38, fontSize: 11, letterSpacing: 1.5),
+              style: TextStyle(
+                color: Colors.white38,
+                fontSize: 11,
+                letterSpacing: 1.5,
+              ),
             ),
             const SizedBox(height: 12),
             _ModeCard(
@@ -38,20 +50,26 @@ class GameSelectionScreen extends StatelessWidget {
               subtitle: 'Práctica libre sin guardar jugadores',
               icon: Icons.sports_score,
               color: primary,
-              onTap: () => _goToMatch(context, realMatch: false),
+              selected: !_realMatch,
+              onTap: () => setState(() => _realMatch = false),
             ),
             const SizedBox(height: 12),
             _ModeCard(
-              title: '1 VS 1 REAL',
-              subtitle: 'Registra partida entre jugadores',
+              title: 'RETA',
+              subtitle: 'Partida 1 vs 1 entre jugadores',
               icon: Icons.people,
               color: primary,
-              onTap: () => _goToMatch(context, realMatch: true),
+              selected: _realMatch,
+              onTap: () => setState(() => _realMatch = true),
             ),
             const SizedBox(height: 28),
             Text(
               'TIPO DE JUEGO',
-              style: TextStyle(color: Colors.white38, fontSize: 11, letterSpacing: 1.5),
+              style: TextStyle(
+                color: Colors.white38,
+                fontSize: 11,
+                letterSpacing: 1.5,
+              ),
             ),
             const SizedBox(height: 16),
             Expanded(
@@ -67,6 +85,17 @@ class GameSelectionScreen extends StatelessWidget {
                     onTap: () => context.read<GameProvider>().setGameType(mode),
                   );
                 },
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: () => _goToMatch(context, realMatch: _realMatch),
+                icon: const Icon(Icons.play_arrow),
+                label: Text(
+                  'INICIAR ${_realMatch ? 'RETA' : 'TRAINING'} · ${selectedGameType.toUpperCase()}',
+                ),
               ),
             ),
           ],
@@ -101,6 +130,7 @@ class _ModeCard extends StatelessWidget {
   final IconData icon;
   final Color color;
   final VoidCallback onTap;
+  final bool selected;
 
   const _ModeCard({
     required this.title,
@@ -108,6 +138,7 @@ class _ModeCard extends StatelessWidget {
     required this.icon,
     required this.color,
     required this.onTap,
+    required this.selected,
   });
 
   @override
@@ -119,7 +150,10 @@ class _ModeCard extends StatelessWidget {
         decoration: BoxDecoration(
           color: const Color(0xFF1A1A1A),
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: color.withValues(alpha: 0.4), width: 1.5),
+          border: Border.all(
+            color: selected ? color : color.withValues(alpha: 0.4),
+            width: selected ? 2.5 : 1.5,
+          ),
         ),
         child: Row(
           children: [
@@ -137,11 +171,18 @@ class _ModeCard extends StatelessWidget {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  Text(subtitle, style: const TextStyle(color: Colors.white38, fontSize: 12)),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(color: Colors.white38, fontSize: 12),
+                  ),
                 ],
               ),
             ),
-            Icon(Icons.arrow_forward_ios, color: color, size: 16),
+            Icon(
+              selected ? Icons.check_circle : Icons.arrow_forward_ios,
+              color: color,
+              size: 16,
+            ),
           ],
         ),
       ),

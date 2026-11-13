@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../../core/routes/app_routes.dart';
+import '../../../../core/services/config_remote_repository.dart';
+import '../../../../core/services/product_realtime_service.dart';
 import '../../../../core/storage/preferences_service.dart';
 import '../../../../core/theme/theme_provider.dart';
 import '../../../../core/widgets/module_card.dart';
@@ -27,26 +30,75 @@ class _HomePageState extends State<HomePage> {
   RealtimeChannel? _settingsChannel;
 
   static final _modules = [
-    _Module('VENTA\nRÁPIDA',    Icons.flash_on_rounded,         Color(0xFFE53935), AppRoutes.quickSale,    'Ventas'),
-    _Module('MESAS\nBILLAR',    Icons.table_bar_rounded,        Color(0xFF1E88E5), AppRoutes.billiardTables, 'Ventas'),
-    _Module('INVENTARIO',       Icons.inventory_2_rounded,      Color(0xFF43A047), AppRoutes.inventory,    'Admin'),
-    _Module('COMPRAS',          Icons.shopping_cart_rounded,    Color(0xFFFB8C00), AppRoutes.purchases,    'Admin'),
-    _Module('INFORMES',         Icons.bar_chart_rounded,        Color(0xFF8E24AA), AppRoutes.reports,      'Admin'),
-    _Module('JUGADORES',        Icons.sports_esports_rounded,   Color(0xFF00ACC1), AppRoutes.playersHub,   'Juego'),
-    _Module('COMENSALES',       Icons.restaurant_rounded,       Color(0xFFE91E63), AppRoutes.dineIn,       'Ventas'),
-    _Module('TORNEOS',          Icons.emoji_events_rounded,     Color(0xFFFF5722), AppRoutes.tournaments,  'Juego'),
-    _Module('CONFIGURACIÓN',    Icons.settings_suggest_rounded, Color(0xFF78909C), AppRoutes.config,       'Admin'),
+    _Module(
+      'VENTA\nRÁPIDA',
+      Icons.flash_on_rounded,
+      Color(0xFFE53935),
+      AppRoutes.quickSale,
+      'Ventas',
+    ),
+    _Module(
+      'MESAS\nBILLAR',
+      Icons.table_bar_rounded,
+      Color(0xFF1E88E5),
+      AppRoutes.billiardTables,
+      'Ventas',
+    ),
+    _Module(
+      'COMANDAS',
+      Icons.restaurant_rounded,
+      Color(0xFFE91E63),
+      AppRoutes.dineIn,
+      'Ventas',
+    ),
+    _Module(
+      'INVENTARIO',
+      Icons.inventory_2_rounded,
+      Color(0xFF43A047),
+      AppRoutes.inventory,
+      'Admin',
+    ),
+    _Module(
+      'COMPRAS',
+      Icons.shopping_cart_rounded,
+      Color(0xFFFB8C00),
+      AppRoutes.purchases,
+      'Admin',
+    ),
+    _Module(
+      'INFORMES',
+      Icons.bar_chart_rounded,
+      Color(0xFF8E24AA),
+      AppRoutes.reports,
+      'Admin',
+    ),
+    _Module(
+      'JUGADORES',
+      Icons.sports_esports_rounded,
+      Color(0xFF00ACC1),
+      AppRoutes.playersHub,
+      'Juego',
+    ),
+    _Module(
+      'CONFIGURACIÓN',
+      Icons.settings_suggest_rounded,
+      Color(0xFF78909C),
+      AppRoutes.config,
+      'Admin',
+    ),
   ];
 
   @override
   void initState() {
     super.initState();
     _subscribeToSettingsChanges();
+    ProductRealtimeService.instance.start();
   }
 
   @override
   void dispose() {
     _settingsChannel?.unsubscribe();
+    ProductRealtimeService.instance.stop();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -64,12 +116,16 @@ class _HomePageState extends State<HomePage> {
           table: 'billar_settings',
           callback: (payload) async {
             final newRecord = payload.newRecord;
-            debugPrint('[HomePage] Realtime cambio en billar_settings: $newRecord');
+            debugPrint(
+              '[HomePage] Realtime cambio en billar_settings: $newRecord',
+            );
             if (newRecord.isEmpty) return;
             // Filtrar manualmente por user_id para evitar restricciones de filtros en Realtime.
             final recordUserId = newRecord['user_id']?.toString();
             if (recordUserId != user.id) {
-              debugPrint('[HomePage] Cambio descartado, no pertenece al usuario actual');
+              debugPrint(
+                '[HomePage] Cambio descartado, no pertenece al usuario actual',
+              );
               return;
             }
             await _applyRemoteSettings(newRecord);
@@ -81,17 +137,88 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _applyRemoteSettings(Map<String, dynamic> settings) async {
-    final tableCount = (settings['table_count'] as num?)?.toInt() ?? _prefs.tableCount;
+    final tableCount =
+        (settings['table_count'] as num?)?.toInt() ?? _prefs.tableCount;
     final primaryColor = (settings['primary_color'] as num?)?.toInt();
-    final logoUrl = settings['logo_url']?.toString() ?? _prefs.logoUrl;
+    final remoteLogoUrl = ConfigRemoteRepository.normalizeLogoUrl(
+      settings['logo_url']?.toString(),
+    );
+    final logoUrl = remoteLogoUrl.isNotEmpty ? remoteLogoUrl : _prefs.logoUrl;
 
     debugPrint('[HomePage] Aplicando settings. logoUrl: "$logoUrl"');
 
-    await _prefs.setBusinessName(settings['business_name']?.toString() ?? _prefs.businessName);
-    await _prefs.setBillarId(settings['billar_id']?.toString() ?? _prefs.billarId);
+    await _prefs.setBusinessName(
+      settings['business_name']?.toString() ?? _prefs.businessName,
+    );
+    await _prefs.setBillarId(
+      settings['billar_id']?.toString() ?? _prefs.billarId,
+    );
     await _prefs.setTableCount(tableCount);
-    await _prefs.setHourlyRate((settings['hourly_rate'] as num?)?.toDouble() ?? _prefs.hourlyRate);
+    await _prefs.setHourlyRate(
+      (settings['hourly_rate'] as num?)?.toDouble() ?? _prefs.hourlyRate,
+    );
     await _prefs.setLogoUrl(logoUrl);
+    await _prefs.setBusinessAddress(
+      settings['business_address']?.toString() ?? _prefs.businessAddress,
+    );
+    await _prefs.setBusinessStreet(
+      settings['business_street']?.toString() ?? _prefs.businessStreet,
+    );
+    await _prefs.setBusinessExtNumber(
+      settings['business_ext_number']?.toString() ?? _prefs.businessExtNumber,
+    );
+    await _prefs.setBusinessIntNumber(
+      settings['business_int_number']?.toString() ?? _prefs.businessIntNumber,
+    );
+    await _prefs.setBusinessColony(
+      settings['business_colony']?.toString() ?? _prefs.businessColony,
+    );
+    await _prefs.setBusinessZipCode(
+      settings['business_zip_code']?.toString() ?? _prefs.businessZipCode,
+    );
+    await _prefs.setBusinessCity(
+      settings['business_city']?.toString() ?? _prefs.businessCity,
+    );
+    await _prefs.setBusinessState(
+      settings['business_state']?.toString() ?? _prefs.businessState,
+    );
+    await _prefs.setBusinessPhone(
+      settings['business_phone']?.toString() ?? _prefs.businessPhone,
+    );
+    await _prefs.setBusinessWhatsapp(
+      settings['business_whatsapp']?.toString() ?? _prefs.businessWhatsapp,
+    );
+    await _prefs.setBusinessSlogan(
+      settings['business_slogan']?.toString() ?? _prefs.businessSlogan,
+    );
+    await _prefs.setBusinessWebsite(
+      settings['business_website']?.toString() ?? _prefs.businessWebsite,
+    );
+    await _prefs.setTicketFarewell(
+      settings['ticket_farewell']?.toString() ?? _prefs.ticketFarewell,
+    );
+
+    final socials = settings['social_networks'];
+    if (socials is Map) {
+      await _prefs.setSocialNetworks(
+        socials.map((key, value) => MapEntry(key.toString(), value.toString())),
+      );
+    } else if (socials is String && socials.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(socials);
+        if (decoded is Map) {
+          await _prefs.setSocialNetworks(
+            decoded.map(
+              (key, value) => MapEntry(key.toString(), value.toString()),
+            ),
+          );
+        }
+      } on FormatException catch (e) {
+        debugPrint(
+          '[HomePage] social_networks inválido en configuración remota: $e',
+        );
+      }
+    }
 
     if (primaryColor != null && mounted) {
       final color = Color(0xFF000000 | (primaryColor.toInt() & 0x00FFFFFF));
@@ -113,8 +240,11 @@ class _HomePageState extends State<HomePage> {
   List<_Module> get _filteredModules {
     final query = _searchCtrl.text.trim().toLowerCase();
     return _modules.where((m) {
-      final matchesCategory = _selectedCategory == 'Todos' || m.category == _selectedCategory;
-      final matchesSearch = query.isEmpty || m.label.replaceAll('\n', ' ').toLowerCase().contains(query);
+      final matchesCategory =
+          _selectedCategory == 'Todos' || m.category == _selectedCategory;
+      final matchesSearch =
+          query.isEmpty ||
+          m.label.replaceAll('\n', ' ').toLowerCase().contains(query);
       return matchesCategory && matchesSearch;
     }).toList();
   }
@@ -126,17 +256,23 @@ class _HomePageState extends State<HomePage> {
     final size = MediaQuery.of(context).size;
     final isDesktop = size.width > 900;
 
-    final categories = ['Todos'] + _modules.map((m) => m.category).toSet().toList();
+    final categories =
+        ['Todos'] + _modules.map((m) => m.category).toSet().toList();
 
     return HomeLayout(
       isDesktop: isDesktop,
       extendedRail: size.width > 1200,
       selectedIndex: _selectedIndex,
       onDestinationSelected: _navigate,
-      destinations: _modules.map((m) => NavigationRailDestination(
-        icon: Icon(m.icon),
-        label: Text(m.label.replaceAll('\n', ' ')),
-      )).toList(),
+      destinations:
+          _modules
+              .map(
+                (m) => NavigationRailDestination(
+                  icon: Icon(m.icon),
+                  label: Text(m.label.replaceAll('\n', ' ')),
+                ),
+              )
+              .toList(),
       railLeading: Padding(
         padding: const EdgeInsets.symmetric(vertical: 16),
         child: Column(
@@ -153,7 +289,11 @@ class _HomePageState extends State<HomePage> {
               const SizedBox(height: 6),
               Text(
                 'BAUMAR POS',
-                style: TextStyle(color: primary, fontWeight: FontWeight.bold, fontSize: 12),
+                style: TextStyle(
+                  color: primary,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
               ),
             ],
           ],
@@ -171,11 +311,21 @@ class _HomePageState extends State<HomePage> {
               isDesktop: isDesktop,
               searchController: _searchCtrl,
               isSearching: _isSearching,
-              onSearchToggle: () => setState(() => _isSearching = !_isSearching),
+              onSearchToggle:
+                  () => setState(() => _isSearching = !_isSearching),
               onSearchChanged: (_) => setState(() {}),
-              onSearchClear: () => setState(() { _searchCtrl.clear(); _isSearching = false; }),
+              onSearchClear:
+                  () => setState(() {
+                    _searchCtrl.clear();
+                    _isSearching = false;
+                  }),
             ),
-            const Divider(color: Colors.white10, thickness: 1, indent: 20, endIndent: 20),
+            const Divider(
+              color: Colors.white10,
+              thickness: 1,
+              indent: 20,
+              endIndent: 20,
+            ),
             if (!_isSearching) ...[
               SizedBox(
                 height: 40,
@@ -190,7 +340,10 @@ class _HomePageState extends State<HomePage> {
                       child: FilterChip(
                         label: Text(categories[i]),
                         selected: sel,
-                        onSelected: (_) => setState(() => _selectedCategory = categories[i]),
+                        onSelected:
+                            (_) => setState(
+                              () => _selectedCategory = categories[i],
+                            ),
                         selectedColor: primary.withValues(alpha: 0.2),
                         checkmarkColor: primary,
                         side: BorderSide(color: sel ? primary : Colors.white12),

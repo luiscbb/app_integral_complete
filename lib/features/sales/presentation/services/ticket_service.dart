@@ -24,19 +24,13 @@ class TicketService {
   }
 
   Future<Uint8List?> _loadLogoBytes() async {
-    // Preferir archivo local si existe.
-    final logoPath = _prefs.logoPath;
-    if (logoPath.isNotEmpty) {
-      final file = File(logoPath);
-      if (await file.exists()) {
-        return file.readAsBytes();
-      }
-    }
-    // Fallback a URL remota (logo sincronizado entre dispositivos).
+    // The remote URL is the shared source of truth; a local file may be stale
+    // when the logo was changed from another device.
     final logoUrl = _prefs.logoUrl;
     if (logoUrl.isNotEmpty) {
+      final client =
+          HttpClient()..connectionTimeout = const Duration(seconds: 4);
       try {
-        final client = HttpClient();
         final req = await client.getUrl(Uri.parse(logoUrl));
         final res = await req.close().timeout(const Duration(seconds: 8));
         if (res.statusCode == 200) {
@@ -44,11 +38,29 @@ class TicketService {
           await for (final chunk in res) {
             bytes.addAll(chunk);
           }
-          client.close();
           return Uint8List.fromList(bytes);
         }
-        client.close();
-      } catch (_) {}
+        debugPrint(
+          '[TicketService] No se pudo descargar el logo remoto: HTTP ${res.statusCode}',
+        );
+      } catch (e) {
+        debugPrint('[TicketService] Error descargando el logo remoto: $e');
+      } finally {
+        client.close(force: true);
+      }
+    }
+
+    // Offline fallback; this file can be older than the remote logo.
+    final logoPath = _prefs.logoPath;
+    if (logoPath.isNotEmpty) {
+      final file = File(logoPath);
+      if (await file.exists()) {
+        try {
+          return await file.readAsBytes();
+        } catch (e) {
+          debugPrint('[TicketService] Error leyendo el logo local: $e');
+        }
+      }
     }
     return null;
   }
@@ -150,7 +162,10 @@ class TicketService {
                 leading: Icon(Icons.bluetooth, color: primary),
                 title: Text(
                   d.name ?? 'Desconocido',
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 subtitle: Text(
                   d.address ?? '',
@@ -278,7 +293,10 @@ class TicketService {
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error al imprimir: $e'), backgroundColor: Colors.red),
+          SnackBar(
+            content: Text('Error al imprimir: $e'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     }
@@ -338,72 +356,90 @@ class TicketService {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      builder: (ctx) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.9,
-        maxChildSize: 0.95,
-        builder: (_, ctrl) => Column(
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: const BoxDecoration(
-                color: Color(0xFF1A1A1A),
-                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-              ),
-              child: Row(
-                children: [
-                  const Text(
-                    'VISTA PREVIA DEL TICKET',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
+      builder:
+          (ctx) => DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: 0.9,
+            maxChildSize: 0.95,
+            builder:
+                (_, ctrl) => Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF1A1A1A),
+                        borderRadius: BorderRadius.vertical(
+                          top: Radius.circular(24),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          const Text(
+                            'VISTA PREVIA DEL TICKET',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                          const Spacer(),
+                          IconButton(
+                            icon: const Icon(Icons.share, color: Colors.blue),
+                            onPressed:
+                                () => sharePdf(
+                                  items: items,
+                                  total: total,
+                                  paid: paid,
+                                  paymentMethod: paymentMethod,
+                                  saleType: saleType,
+                                  ticketNumber: resolvedTicketNumber,
+                                ),
+                          ),
+                          IconButton(
+                            icon: Icon(
+                              Icons.print,
+                              color: Theme.of(ctx).colorScheme.primary,
+                            ),
+                            onPressed:
+                                () => printTicket(
+                                  items: items,
+                                  total: total,
+                                  paid: paid,
+                                  paymentMethod: paymentMethod,
+                                  saleType: saleType,
+                                  context: ctx,
+                                  ticketNumber: resolvedTicketNumber,
+                                ),
+                          ),
+                          IconButton(
+                            icon: const Icon(
+                              Icons.close,
+                              color: Colors.white54,
+                            ),
+                            onPressed: () => Navigator.pop(ctx),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.share, color: Colors.blue),
-                    onPressed: () => sharePdf(
-                      items: items,
-                      total: total,
-                      paid: paid,
-                      paymentMethod: paymentMethod,
-                      saleType: saleType,
-                      ticketNumber: resolvedTicketNumber,
+                    Expanded(
+                      child: PdfPreview(
+                        padding: const EdgeInsets.all(12),
+                        build: (_) => Future.value(bytes),
+                        allowSharing: false,
+                        allowPrinting: false,
+                        initialPageFormat: const PdfPageFormat(
+                          80 * PdfPageFormat.mm,
+                          200 * PdfPageFormat.mm,
+                        ),
+                        pageFormats: const {},
+                      ),
                     ),
-                  ),
-                  IconButton(
-                    icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
-                    onPressed: () => printTicket(
-                      items: items,
-                      total: total,
-                      paid: paid,
-                      paymentMethod: paymentMethod,
-                      saleType: saleType,
-                      context: ctx,
-                      ticketNumber: resolvedTicketNumber,
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white54),
-                    onPressed: () => Navigator.pop(ctx),
-                  ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: PdfPreview(
-                padding: const EdgeInsets.all(12),
-                build: (_) => Future.value(bytes),
-                allowSharing: false,
-                allowPrinting: false,
-                initialPageFormat: const PdfPageFormat(80 * PdfPageFormat.mm, 200 * PdfPageFormat.mm),
-                pageFormats: const {},
-              ),
-            ),
-          ],
-        ),
-      ),
+                  ],
+                ),
+          ),
     );
   }
 
@@ -442,10 +478,20 @@ class TicketService {
 
     final itemHeight = (is58 ? 9 : 7) * PdfPageFormat.mm;
     final headerHeight = (logoImage != null ? 54 : 40) * PdfPageFormat.mm;
-    final footerHeight = (paymentMethod == 'Efectivo' && paid > 0 ? 34 : 24) * PdfPageFormat.mm;
+    final footerHeight =
+        (paymentMethod == 'Efectivo' && paid > 0 ? 34 : 24) * PdfPageFormat.mm;
     final headerLineCount = layout.pdfHeaderLines(dateStr).length;
-    final pageHeight = headerHeight + (headerLineCount * 3 * PdfPageFormat.mm) + (items.length + 1) * itemHeight + footerHeight + 4 * PdfPageFormat.mm;
-    final format = PdfPageFormat(pageWidth, pageHeight, marginAll: (is58 ? 2 : 4) * PdfPageFormat.mm);
+    final pageHeight =
+        headerHeight +
+        (headerLineCount * 3 * PdfPageFormat.mm) +
+        (items.length + 1) * itemHeight +
+        footerHeight +
+        4 * PdfPageFormat.mm;
+    final format = PdfPageFormat(
+      pageWidth,
+      pageHeight,
+      marginAll: (is58 ? 2 : 4) * PdfPageFormat.mm,
+    );
 
     const white = PdfColors.white;
     const black = PdfColors.black;
@@ -515,7 +561,10 @@ class TicketService {
         child: pw.Row(
           crossAxisAlignment: pw.CrossAxisAlignment.start,
           children: [
-            pw.Expanded(flex: 6, child: pw.Text(item.productName, style: normalStyle)),
+            pw.Expanded(
+              flex: 6,
+              child: pw.Text(item.productName, style: normalStyle),
+            ),
             pw.Expanded(
               flex: 3,
               child: pw.Text(
@@ -526,11 +575,19 @@ class TicketService {
             ),
             pw.Expanded(
               flex: 2,
-              child: pw.Text(item.qtyLabel, style: normalStyle, textAlign: pw.TextAlign.center),
+              child: pw.Text(
+                item.qtyLabel,
+                style: normalStyle,
+                textAlign: pw.TextAlign.center,
+              ),
             ),
             pw.Expanded(
               flex: 3,
-              child: pw.Text(lineTotal, style: boldStyle, textAlign: pw.TextAlign.right),
+              child: pw.Text(
+                lineTotal,
+                style: boldStyle,
+                textAlign: pw.TextAlign.right,
+              ),
             ),
           ],
         ),
@@ -552,15 +609,27 @@ class TicketService {
           pw.Expanded(flex: 6, child: pw.Text('PRODUCTO', style: colHeadStyle)),
           pw.Expanded(
             flex: 3,
-            child: pw.Text('P.UNIT', style: colHeadStyle, textAlign: pw.TextAlign.right),
+            child: pw.Text(
+              'P.UNIT',
+              style: colHeadStyle,
+              textAlign: pw.TextAlign.right,
+            ),
           ),
           pw.Expanded(
             flex: 2,
-            child: pw.Text('CANT', style: colHeadStyle, textAlign: pw.TextAlign.center),
+            child: pw.Text(
+              'CANT',
+              style: colHeadStyle,
+              textAlign: pw.TextAlign.center,
+            ),
           ),
           pw.Expanded(
             flex: 3,
-            child: pw.Text('IMPORTE', style: colHeadStyle, textAlign: pw.TextAlign.right),
+            child: pw.Text(
+              'IMPORTE',
+              style: colHeadStyle,
+              textAlign: pw.TextAlign.right,
+            ),
           ),
         ],
       );
@@ -580,15 +649,16 @@ class TicketService {
             pw.Text(label, style: emphasize ? totalStyle : normalStyle),
             pw.Text(
               value,
-              style: emphasize
-                  ? (valueColor != null
-                      ? pw.TextStyle(
-                          fontWeight: pw.FontWeight.bold,
-                          fontSize: is58 ? 11 : 13,
-                          color: valueColor,
-                        )
-                      : totalStyle)
-                  : normalStyle,
+              style:
+                  emphasize
+                      ? (valueColor != null
+                          ? pw.TextStyle(
+                            fontWeight: pw.FontWeight.bold,
+                            fontSize: is58 ? 11 : 13,
+                            color: valueColor,
+                          )
+                          : totalStyle)
+                      : normalStyle,
             ),
           ],
         ),
@@ -600,98 +670,111 @@ class TicketService {
     doc.addPage(
       pw.Page(
         pageFormat: format,
-        build: (ctx) => pw.Container(
-          color: white,
-          child: pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.center,
-            children: [
-              pw.SizedBox(height: 4),
-              if (logoImage != null) ...[
-                pw.Image(logoImage, width: logoSize, height: logoSize),
-                pw.SizedBox(height: 4),
-              ],
-              pw.Text(
-                _prefs.businessName.toUpperCase(),
-                style: titleStyle,
-                textAlign: pw.TextAlign.center,
-              ),
-              pw.SizedBox(height: 1),
-              if (_prefs.businessSlogan.isNotEmpty)
-                pw.Text(
-                  '"${_prefs.businessSlogan}"',
-                  style: italicStyle,
-                  textAlign: pw.TextAlign.center,
-                ),
-              pw.SizedBox(height: 2),
-              ...layout.pdfHeaderLines(dateStr).map(
-                    (line) => pw.Text(line, style: tinyStyle, textAlign: pw.TextAlign.center),
-                  ),
-              if (_prefs.businessWhatsapp.isNotEmpty)
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.center,
-                  children: [
-                    pw.Text('Whats: ', style: tinyStyle),
-                    pw.Text(_prefs.businessWhatsapp, style: smallStyle),
+        build:
+            (ctx) => pw.Container(
+              color: white,
+              child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.center,
+                children: [
+                  pw.SizedBox(height: 4),
+                  if (logoImage != null) ...[
+                    pw.Image(logoImage, width: logoSize, height: logoSize),
+                    pw.SizedBox(height: 4),
                   ],
-                ),
-              pw.SizedBox(height: 2),
-              pw.Divider(color: primaryColor, thickness: 0.8),
-              ...layout.pdfMetaLines(dateStr).map(
-                    (line) => pw.Text(line, style: smallStyle, textAlign: pw.TextAlign.center),
+                  pw.Text(
+                    _prefs.businessName.toUpperCase(),
+                    style: titleStyle,
+                    textAlign: pw.TextAlign.center,
                   ),
-              pw.Text(
-                'Tipo: $saleType | Pago: $paymentMethod',
-                style: smallStyle,
-                textAlign: pw.TextAlign.center,
+                  pw.SizedBox(height: 1),
+                  if (_prefs.businessSlogan.isNotEmpty)
+                    pw.Text(
+                      '"${_prefs.businessSlogan}"',
+                      style: italicStyle,
+                      textAlign: pw.TextAlign.center,
+                    ),
+                  pw.SizedBox(height: 2),
+                  ...layout
+                      .pdfHeaderLines(dateStr)
+                      .map(
+                        (line) => pw.Text(
+                          line,
+                          style: tinyStyle,
+                          textAlign: pw.TextAlign.center,
+                        ),
+                      ),
+                  if (_prefs.businessWhatsapp.isNotEmpty)
+                    pw.Row(
+                      mainAxisAlignment: pw.MainAxisAlignment.center,
+                      children: [
+                        pw.Text('Whats: ', style: tinyStyle),
+                        pw.Text(_prefs.businessWhatsapp, style: smallStyle),
+                      ],
+                    ),
+                  pw.SizedBox(height: 2),
+                  pw.Divider(color: primaryColor, thickness: 0.8),
+                  ...layout
+                      .pdfMetaLines(dateStr)
+                      .map(
+                        (line) => pw.Text(
+                          line,
+                          style: smallStyle,
+                          textAlign: pw.TextAlign.center,
+                        ),
+                      ),
+                  pw.Text(
+                    'Tipo: $saleType | Pago: $paymentMethod',
+                    style: smallStyle,
+                    textAlign: pw.TextAlign.center,
+                  ),
+                  pw.Text(
+                    'Atendio: ${_prefs.userName}',
+                    style: smallStyle,
+                    textAlign: pw.TextAlign.center,
+                  ),
+                  pw.SizedBox(height: 2),
+                  pw.Divider(color: primaryColor, thickness: 0.8),
+                  buildColumnsHeader(),
+                  pw.SizedBox(height: 2),
+                  ...items.map(buildItemRow),
+                  pw.Divider(color: primaryColor, thickness: 0.8),
+                  buildSummaryRow(
+                    'TOTAL',
+                    '\$${layout.safeTotal.toStringAsFixed(2)}',
+                    emphasize: true,
+                  ),
+                  if (paymentMethod == 'Efectivo' && paid > 0) ...[
+                    buildSummaryRow('PAGO', '\$${paid.toStringAsFixed(2)}'),
+                    buildSummaryRow(
+                      (paid - layout.safeTotal) < 0 ? 'FALTA' : 'CAMBIO',
+                      '\$${(paid - layout.safeTotal).abs().toStringAsFixed(2)}',
+                      emphasize: true,
+                      valueColor: primaryColor,
+                    ),
+                  ],
+                  pw.SizedBox(height: 8),
+                  pw.Text(
+                    '*** ${_prefs.ticketFarewell.toUpperCase()} ***',
+                    style: farewellStyle,
+                    textAlign: pw.TextAlign.center,
+                  ),
+                  pw.SizedBox(height: 2),
+                  if (_prefs.businessWebsite.isNotEmpty)
+                    pw.Text(
+                      _prefs.businessWebsite,
+                      style: smallStyle,
+                      textAlign: pw.TextAlign.center,
+                    ),
+                  if (layout.socialFooter.isNotEmpty)
+                    pw.Text(
+                      layout.socialFooter,
+                      style: tinyStyle,
+                      textAlign: pw.TextAlign.center,
+                    ),
+                  pw.SizedBox(height: 4),
+                ],
               ),
-              pw.Text(
-                'Atendio: ${_prefs.userName}',
-                style: smallStyle,
-                textAlign: pw.TextAlign.center,
-              ),
-              pw.SizedBox(height: 2),
-              pw.Divider(color: primaryColor, thickness: 0.8),
-              buildColumnsHeader(),
-              pw.SizedBox(height: 2),
-              ...items.map(buildItemRow),
-              pw.Divider(color: primaryColor, thickness: 0.8),
-              buildSummaryRow(
-                'TOTAL',
-                '\$${layout.safeTotal.toStringAsFixed(2)}',
-                emphasize: true,
-              ),
-              if (paymentMethod == 'Efectivo' && paid > 0) ...[
-                buildSummaryRow('PAGO', '\$${paid.toStringAsFixed(2)}'),
-                buildSummaryRow(
-                  (paid - layout.safeTotal) < 0 ? 'FALTA' : 'CAMBIO',
-                  '\$${(paid - layout.safeTotal).abs().toStringAsFixed(2)}',
-                  emphasize: true,
-                  valueColor: primaryColor,
-                ),
-              ],
-              pw.SizedBox(height: 8),
-              pw.Text(
-                '*** ${_prefs.ticketFarewell.toUpperCase()} ***',
-                style: farewellStyle,
-                textAlign: pw.TextAlign.center,
-              ),
-              pw.SizedBox(height: 2),
-              if (_prefs.businessWebsite.isNotEmpty)
-                pw.Text(
-                  _prefs.businessWebsite,
-                  style: smallStyle,
-                  textAlign: pw.TextAlign.center,
-                ),
-              if (layout.socialFooter.isNotEmpty)
-                pw.Text(
-                  layout.socialFooter,
-                  style: tinyStyle,
-                  textAlign: pw.TextAlign.center,
-                ),
-              pw.SizedBox(height: 4),
-            ],
-          ),
-        ),
+            ),
       ),
     );
     return doc;
@@ -722,35 +805,43 @@ class _TicketLayout {
     required this.saleType,
     required this.ticketNumber,
   }) {
-    safeTotal = total > 0 ? total : items.fold<double>(0, (acc, item) => acc + item.price * item.quantity);
+    safeTotal =
+        total > 0
+            ? total
+            : items.fold<double>(
+              0,
+              (acc, item) => acc + item.price * item.quantity,
+            );
     _buildItemLines();
     _buildTotalLines();
     socialFooter = _buildSocialFooter();
   }
 
   String get bluetoothSeparator {
-    return prefs.printWidth == '58mm' ? '------------------------' : '--------------------------------';
+    return prefs.printWidth == '58mm'
+        ? '------------------------'
+        : '--------------------------------';
   }
 
   void _buildItemLines() {
     final is58 = prefs.printWidth == '58mm';
     final sep = bluetoothSeparator;
-    itemLines = items.map((item) {
-      final name = item.productName.length > (is58 ? 18 : 26) ? item.productName.substring(0, is58 ? 18 : 26) : item.productName;
-      final detail = '  \$${item.price.toStringAsFixed(2)} x${item.qtyLabel}';
-      final price = '\$${(item.price * item.quantity).toStringAsFixed(2)}';
-      final spaces = sep.length - detail.length - price.length;
-      return [
-        name,
-        '$detail${' ' * (spaces > 1 ? spaces : 1)}$price',
-      ];
-    }).toList();
+    itemLines =
+        items.map((item) {
+          final name =
+              item.productName.length > (is58 ? 18 : 26)
+                  ? item.productName.substring(0, is58 ? 18 : 26)
+                  : item.productName;
+          final detail =
+              '  \$${item.price.toStringAsFixed(2)} x${item.qtyLabel}';
+          final price = '\$${(item.price * item.quantity).toStringAsFixed(2)}';
+          final spaces = sep.length - detail.length - price.length;
+          return [name, '$detail${' ' * (spaces > 1 ? spaces : 1)}$price'];
+        }).toList();
   }
 
   void _buildTotalLines() {
-    totalLines = [
-      'TOTAL: \$${safeTotal.toStringAsFixed(2)}',
-    ];
+    totalLines = ['TOTAL: \$${safeTotal.toStringAsFixed(2)}'];
   }
 
   String _buildSocialFooter() {
@@ -761,21 +852,24 @@ class _TicketLayout {
   List<String> pdfHeaderLines(String dateStr) {
     final lines = <String>[];
 
-    final addressPart1 = [
-      prefs.businessStreet,
-      if (prefs.businessExtNumber.isNotEmpty)
-        'No. ${prefs.businessExtNumber}${prefs.businessIntNumber.isNotEmpty ? ' Int. ${prefs.businessIntNumber}' : ''}',
-    ].where((s) => s.isNotEmpty).toList();
+    final addressPart1 =
+        [
+          prefs.businessStreet,
+          if (prefs.businessExtNumber.isNotEmpty)
+            'No. ${prefs.businessExtNumber}${prefs.businessIntNumber.isNotEmpty ? ' Int. ${prefs.businessIntNumber}' : ''}',
+        ].where((s) => s.isNotEmpty).toList();
 
-    final addressPart2 = [
-      prefs.businessColony,
-      if (prefs.businessCity.isNotEmpty) prefs.businessCity,
-    ].where((s) => s.isNotEmpty).toList();
+    final addressPart2 =
+        [
+          prefs.businessColony,
+          if (prefs.businessCity.isNotEmpty) prefs.businessCity,
+        ].where((s) => s.isNotEmpty).toList();
 
-    final addressPart3 = [
-      if (prefs.businessState.isNotEmpty) prefs.businessState,
-      if (prefs.businessZipCode.isNotEmpty) 'CP ${prefs.businessZipCode}',
-    ].where((s) => s.isNotEmpty).toList();
+    final addressPart3 =
+        [
+          if (prefs.businessState.isNotEmpty) prefs.businessState,
+          if (prefs.businessZipCode.isNotEmpty) 'CP ${prefs.businessZipCode}',
+        ].where((s) => s.isNotEmpty).toList();
 
     if (addressPart1.isNotEmpty) lines.add(addressPart1.join(' | '));
     if (addressPart2.isNotEmpty) lines.add(addressPart2.join(' | '));
@@ -785,9 +879,7 @@ class _TicketLayout {
   }
 
   List<String> pdfMetaLines(String dateStr) {
-    return [
-      'Folio: #$ticketNumber  |  $dateStr',
-    ];
+    return ['Folio: #$ticketNumber  |  $dateStr'];
   }
 
   List<String> bluetoothHeaderLines() {
@@ -807,9 +899,7 @@ class _TicketLayout {
   }
 
   List<String> bluetoothFooterLines() {
-    final lines = <String>[
-      '*** ${prefs.ticketFarewell.toUpperCase()} ***',
-    ];
+    final lines = <String>['*** ${prefs.ticketFarewell.toUpperCase()} ***'];
     if (prefs.businessWebsite.isNotEmpty) lines.add(prefs.businessWebsite);
     if (socialFooter.isNotEmpty) lines.add(socialFooter);
     return lines;

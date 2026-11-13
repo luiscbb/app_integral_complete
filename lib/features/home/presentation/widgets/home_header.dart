@@ -48,26 +48,53 @@ class HomeHeader extends StatelessWidget {
   }
 
   Widget _buildLogoCircle(double radius) {
-    final image = _buildLogoImage();
+    final image = logoUrl.isEmpty ? _buildLogoImage() : null;
     return Container(
       padding: const EdgeInsets.all(2),
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         border: Border.all(color: primaryColor.withValues(alpha: 0.5), width: 2),
       ),
-      child: CircleAvatar(
-        radius: radius,
-        backgroundColor: const Color(0xFF1A1A1A),
-        backgroundImage: image,
-        onBackgroundImageError: image != null
-            ? (exception, stackTrace) {
-                log('[HomeHeader] Error cargando imagen de logo: $exception');
-              }
-            : null,
-        child: _hasLogo ? null : Icon(Icons.sports_bar_outlined, color: primaryColor, size: radius * 0.9),
+      child: ClipOval(
+        child: SizedBox(
+          width: radius * 2,
+          height: radius * 2,
+          child:
+              logoUrl.isNotEmpty
+                  ? CachedNetworkImage(
+                    imageUrl: logoUrl,
+                    fit: BoxFit.cover,
+                    memCacheWidth: 128,
+                    memCacheHeight: 128,
+                    placeholder: (_, _) => _logoPlaceholder(radius),
+                    errorWidget: (_, url, error) {
+                      log('[HomeHeader] Error cargando imagen de logo ($url): $error');
+                      return _logoPlaceholder(radius);
+                    },
+                  )
+                  : image != null
+                  ? Image(
+                    image: image,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, error, stackTrace) {
+                      log('[HomeHeader] Error cargando imagen local de logo: $error');
+                      return _logoPlaceholder(radius);
+                    },
+                  )
+                  : _logoPlaceholder(radius),
+        ),
       ),
     );
   }
+
+  Widget _logoPlaceholder(double radius) => ColoredBox(
+    color: const Color(0xFF1A1A1A),
+    child: Icon(
+      _hasLogo ? Icons.image_not_supported_outlined : Icons.sports_bar_outlined,
+      color: primaryColor,
+      size: radius * 0.9,
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -77,14 +104,15 @@ class HomeHeader extends StatelessWidget {
         child: Row(
           children: [
             if (_hasLogo)
-              Padding(
-                padding: const EdgeInsets.only(right: 14),
-                child: _buildLogoCircle(24),
-              ),
+              Padding(padding: const EdgeInsets.only(right: 14), child: _buildLogoCircle(24)),
             Expanded(
               child: Text(
                 'PANEL DE CONTROL — $businessName',
-                style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
             if (isSearching)
@@ -98,7 +126,10 @@ class HomeHeader extends StatelessWidget {
                     hintStyle: const TextStyle(color: Colors.white38),
                     filled: true,
                     fillColor: Colors.white.withValues(alpha: 0.05),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide.none,
+                    ),
                     prefixIcon: const Icon(Icons.search, color: Colors.white38),
                     suffixIcon: IconButton(
                       icon: const Icon(Icons.close, color: Colors.white38),
@@ -139,7 +170,10 @@ class HomeHeader extends StatelessWidget {
                 Text(
                   businessName,
                   style: const TextStyle(
-                    color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold, letterSpacing: 1,
+                    color: Colors.white,
+                    fontSize: 17,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1,
                   ),
                 ),
                 const SizedBox(height: 3),

@@ -754,6 +754,57 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab>
                           itemCount: _cart.length,
                           itemBuilder: (_, i) {
                             final item = _cart[i];
+                            final quantityField = TextField(
+                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              decoration: InputDecoration(
+                                filled: true,
+                                fillColor: Colors.white.withValues(alpha: 0.05),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(6),
+                                  borderSide: BorderSide.none,
+                                ),
+                                contentPadding: const EdgeInsets.symmetric(vertical: 4),
+                              ),
+                              controller: _qtyControllers[i],
+                              onTap: () => _selectAll(_qtyControllers[i]),
+                              onChanged: (v) => _updateQty(i, double.tryParse(v) ?? 1),
+                            );
+                            final costField = TextField(
+                              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(color: Colors.white, fontSize: 13),
+                              decoration: InputDecoration(
+                                prefixText: '\$',
+                                prefixStyle: const TextStyle(color: Colors.white38, fontSize: 10),
+                                filled: true,
+                                fillColor: Colors.white.withValues(alpha: 0.05),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(6),
+                                  borderSide: BorderSide.none,
+                                ),
+                                contentPadding: const EdgeInsets.symmetric(vertical: 4),
+                              ),
+                              controller: _costControllers[i],
+                              onTap: () => _selectAll(_costControllers[i]),
+                              onChanged: (v) => _updateCost(i, double.tryParse(v) ?? 0),
+                            );
+                            final subtotal = Text(
+                              '\$${item.subtotal.toStringAsFixed(2)}',
+                              textAlign: TextAlign.right,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.greenAccent,
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            );
                             return Container(
                               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                               decoration: BoxDecoration(
@@ -761,95 +812,19 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab>
                                   bottom: BorderSide(color: Colors.white.withValues(alpha: 0.05)),
                                 ),
                               ),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    flex: 4,
-                                    child: Text(
-                                      item.product.name,
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w600,
-                                      ),
+                              child: LayoutBuilder(
+                                builder: (context, constraints) {
+                                  final name = Text(
+                                    item.product.name,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
                                     ),
-                                  ),
-                                  Expanded(
-                                    flex: 2,
-                                    child: Center(
-                                      child: SizedBox(
-                                        width: 56,
-                                        child: TextField(
-                                          keyboardType: const TextInputType.numberWithOptions(
-                                            decimal: true,
-                                          ),
-                                          textAlign: TextAlign.center,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                          decoration: InputDecoration(
-                                            filled: true,
-                                            fillColor: Colors.white.withValues(alpha: 0.05),
-                                            border: OutlineInputBorder(
-                                              borderRadius: BorderRadius.circular(6),
-                                              borderSide: BorderSide.none,
-                                            ),
-                                            contentPadding: const EdgeInsets.symmetric(vertical: 4),
-                                          ),
-                                          controller: _qtyControllers[i],
-                                          onTap: () => _selectAll(_qtyControllers[i]),
-                                          onChanged: (v) => _updateQty(i, double.tryParse(v) ?? 1),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  Expanded(
-                                    flex: 2,
-                                    child: Center(
-                                      child: SizedBox(
-                                        width: 64,
-                                        child: TextField(
-                                          keyboardType: const TextInputType.numberWithOptions(
-                                            decimal: true,
-                                          ),
-                                          textAlign: TextAlign.center,
-                                          style: const TextStyle(color: Colors.white, fontSize: 13),
-                                          decoration: InputDecoration(
-                                            prefixText: '\$',
-                                            prefixStyle: const TextStyle(
-                                              color: Colors.white38,
-                                              fontSize: 10,
-                                            ),
-                                            filled: true,
-                                            fillColor: Colors.white.withValues(alpha: 0.05),
-                                            border: OutlineInputBorder(
-                                              borderRadius: BorderRadius.circular(6),
-                                              borderSide: BorderSide.none,
-                                            ),
-                                            contentPadding: const EdgeInsets.symmetric(vertical: 4),
-                                          ),
-                                          controller: _costControllers[i],
-                                          onTap: () => _selectAll(_costControllers[i]),
-                                          onChanged: (v) => _updateCost(i, double.tryParse(v) ?? 0),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  Expanded(
-                                    flex: 2,
-                                    child: Text(
-                                      '\${item.subtotal.toStringAsFixed(2)}',
-                                      textAlign: TextAlign.right,
-                                      style: const TextStyle(
-                                        color: Colors.greenAccent,
-                                        fontSize: 13,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                  ),
-                                  SizedBox(
+                                  );
+                                  final deleteButton = SizedBox(
                                     width: 36,
                                     child: IconButton(
                                       icon: const Icon(
@@ -860,8 +835,70 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab>
                                       onPressed: () => _removeFromCart(i),
                                       padding: EdgeInsets.zero,
                                     ),
-                                  ),
-                                ],
+                                  );
+                                  if (constraints.maxWidth < 420) {
+                                    return Column(
+                                      children: [
+                                        Row(children: [Expanded(child: name), deleteButton]),
+                                        const SizedBox(height: 6),
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  const Text('CANTIDAD', style: TextStyle(color: Colors.white30, fontSize: 9)),
+                                                  quantityField,
+                                                ],
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  const Text('COSTO', style: TextStyle(color: Colors.white30, fontSize: 9)),
+                                                  costField,
+                                                ],
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: Column(
+                                                crossAxisAlignment: CrossAxisAlignment.end,
+                                                children: [
+                                                  const Text('SUBTOTAL', style: TextStyle(color: Colors.white30, fontSize: 9)),
+                                                  SizedBox(height: 42, child: Align(alignment: Alignment.centerRight, child: subtotal)),
+                                                ],
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    );
+                                  }
+                                  return Row(
+                                    children: [
+                                      Expanded(flex: 4, child: name),
+                                      Expanded(
+                                        flex: 2,
+                                        child: Padding(
+                                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                                          child: quantityField,
+                                        ),
+                                      ),
+                                      Expanded(
+                                        flex: 2,
+                                        child: Padding(
+                                          padding: const EdgeInsets.symmetric(horizontal: 4),
+                                          child: costField,
+                                        ),
+                                      ),
+                                      Expanded(flex: 2, child: subtotal),
+                                      deleteButton,
+                                    ],
+                                  );
+                                },
                               ),
                             );
                           },
@@ -1482,7 +1519,7 @@ Future<Uint8List?> _loadLogoBytes() async {
   }
   if (prefs.logoUrl.isNotEmpty) {
     try {
-      final client = HttpClient();
+      final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
       final req = await client.getUrl(Uri.parse(prefs.logoUrl));
       final res = await req.close().timeout(const Duration(seconds: 8));
       if (res.statusCode == 200) {
@@ -1826,7 +1863,7 @@ class _HistoryTab extends StatelessWidget {
     }
     if (prefs.logoUrl.isNotEmpty) {
       try {
-        final client = HttpClient();
+        final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
         final req = await client.getUrl(Uri.parse(prefs.logoUrl));
         final res = await req.close().timeout(const Duration(seconds: 8));
         if (res.statusCode == 200) {

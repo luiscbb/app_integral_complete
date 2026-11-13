@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 class PlayersPage extends StatefulWidget {
   const PlayersPage({super.key});
@@ -51,6 +52,12 @@ class _PlayersPageState extends State<PlayersPage> {
                 Expanded(
                   child: TextField(
                     controller: _nameCtrl,
+                    textCapitalization: TextCapitalization.characters,
+                    inputFormatters: [
+                      TextInputFormatter.withFunction(
+                        (_, value) => value.copyWith(text: value.text.toUpperCase()),
+                      ),
+                    ],
                     style: const TextStyle(color: Colors.white),
                     decoration: InputDecoration(
                       hintText: 'Nombre del jugador',

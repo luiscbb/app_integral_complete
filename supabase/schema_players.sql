@@ -2,6 +2,8 @@
 -- SCHEMA SUPABASE - Baumar POS (ESTADO REAL)
 -- Copiar y pegar en Supabase SQL Editor para crear TODO desde cero
 -- O usar migrate_supabase.sql para migrar tablas existentes
+-- Para altas de jugadores con cuenta, roles y vigencia, ejecutar despues
+-- supabase/add_player_registration.sql.
 -- ============================================================
 
 create extension if not exists "uuid-ossp";
@@ -63,6 +65,7 @@ create table if not exists public.products (
     is_promo integer not null default 0,
     parent_id bigint,
     pieces_per_unit integer not null default 1,
+    is_active boolean not null default true,
     created_at timestamptz default now()
 );
 
@@ -276,8 +279,9 @@ create table if not exists public.players (
     id uuid default uuid_generate_v4 () primary key,
     name text not null,
     nickname text default '',
+    avatar text default '',
     avatar_url text default '',
-    handicap integer not null default 0,
+    handicap integer not null default 1,
     wins integer not null default 0,
     losses integer not null default 0,
     draws integer not null default 0,
@@ -292,25 +296,39 @@ create table if not exists public.players (
     updated_at timestamptz default now(),
     local_id integer,
     billar_id text default 'BILLAR_001',
-    version integer default 1
+    version integer default 1,
+    cloud_id text,
+    auth_user_id uuid references auth.users(id) on delete set null,
+    email text,
+    player_code text,
+    is_active boolean not null default true,
+    registered_at timestamptz not null default now(),
+    expires_at timestamptz not null default (now() + interval '1 year'),
+    archived_at timestamptz,
+    must_change_password boolean not null default true,
+    client_id text
 );
 
 alter table public.players enable row level security;
 
+drop policy if exists "players_select" on public.players;
 create policy "players_select" on public.players for
 select to authenticated using (true);
 
+drop policy if exists "players_insert" on public.players;
 create policy "players_insert" on public.players for
 insert
     to authenticated
 with
     check (true);
 
+drop policy if exists "players_update" on public.players;
 create policy "players_update" on public.players for
 update to authenticated using (true)
 with
     check (true);
 
+drop policy if exists "players_delete" on public.players;
 create policy "players_delete" on public.players for delete to authenticated using (true);
 
 create index idx_players_billar on public.players (billar_id);

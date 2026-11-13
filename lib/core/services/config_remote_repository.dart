@@ -7,16 +7,27 @@ class ConfigRemoteRepository {
 
   static const _table = 'billar_settings';
 
+  static String normalizeLogoUrl(String? value) {
+    final trimmed = value?.trim() ?? '';
+    if (trimmed.length >= 2 &&
+        trimmed.startsWith('`') &&
+        trimmed.endsWith('`')) {
+      return trimmed.substring(1, trimmed.length - 1).trim();
+    }
+    return trimmed;
+  }
+
   Future<Map<String, dynamic>?> fetchSettings() async {
     try {
       final user = _client.auth.currentUser;
       if (user == null) return null;
 
-      final res = await _client
-          .from(_table)
-          .select()
-          .eq('user_id', user.id)
-          .maybeSingle();
+      final res =
+          await _client
+              .from(_table)
+              .select()
+              .eq('user_id', user.id)
+              .maybeSingle();
 
       if (res == null) return null;
 
@@ -26,6 +37,7 @@ class ConfigRemoteRepository {
       if (raw is num) {
         res['primary_color'] = 0xFF000000 | (raw.toInt() & 0x00FFFFFF);
       }
+      res['logo_url'] = normalizeLogoUrl(res['logo_url']?.toString());
       return res;
     } catch (e, st) {
       log('[ConfigRemoteRepository] fetchSettings error: $e', stackTrace: st);
@@ -85,26 +97,26 @@ class ConfigRemoteRepository {
         'business_slogan': value(businessSlogan),
         'business_website': value(businessWebsite),
         'ticket_farewell': value(ticketFarewell),
-        if (socialNetworks != null && socialNetworks.isNotEmpty) 'social_networks': jsonEncode(socialNetworks),
-        if (logoUrl != null && logoUrl.isNotEmpty) 'logo_url': logoUrl,
+        'social_networks': jsonEncode(
+          socialNetworks ?? const <String, String>{},
+        ),
+        if (logoUrl != null) 'logo_url': normalizeLogoUrl(logoUrl),
       };
 
       if (existing != null) {
         // Actualizar
-        final res = await _client
-            .from(_table)
-            .update(payload)
-            .eq('user_id', user.id)
-            .select()
-            .single();
+        final res =
+            await _client
+                .from(_table)
+                .update(payload)
+                .eq('user_id', user.id)
+                .select()
+                .single();
         return res;
       } else {
         // Insertar
-        final res = await _client
-            .from(_table)
-            .insert(payload)
-            .select()
-            .single();
+        final res =
+            await _client.from(_table).insert(payload).select().single();
         return res;
       }
     } catch (e, st) {

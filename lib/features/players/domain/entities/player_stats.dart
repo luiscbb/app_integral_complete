@@ -62,6 +62,18 @@ class PlayerEntity {
   final String name;
   final String nickname;
   final String avatar;
+  final String email;
+  final String phone;
+  final String playerCode;
+  final int handicap;
+  final String billarId;
+  final bool isActive;
+  final String registeredAt;
+  final String expiresAt;
+  final String? archivedAt;
+  final String? authUserId;
+  final bool mustChangePassword;
+  final String clientId;
   final int totalSeconds;
   final PlayerStats stats;
   final String createdAt;
@@ -73,6 +85,18 @@ class PlayerEntity {
     required this.name,
     this.nickname = '',
     this.avatar = '',
+    this.email = '',
+    this.phone = '',
+    this.playerCode = '',
+    this.handicap = 1,
+    this.billarId = 'BILLAR_001',
+    this.isActive = true,
+    this.registeredAt = '',
+    this.expiresAt = '',
+    this.archivedAt,
+    this.authUserId,
+    this.mustChangePassword = false,
+    this.clientId = '',
     this.totalSeconds = 0,
     this.stats = const PlayerStats(),
     this.createdAt = '',
@@ -80,16 +104,19 @@ class PlayerEntity {
     this.cloudId,
   });
 
-  String get displayName => nickname.isNotEmpty ? nickname : name;
+  String get displayName => (nickname.isNotEmpty ? nickname : name).toUpperCase();
   String get initials => name.isNotEmpty ? name[0].toUpperCase() : '?';
-  int get level {
-    if (stats.totalMatches < 10) return 1;
-    if (stats.totalMatches < 50) return 2;
-    if (stats.totalMatches < 100) return 3;
-    if (stats.totalMatches < 250) return 4;
-    return 5;
+  int get level => handicap.clamp(1, 6).toInt();
+  String get levelLabel => 'HANDICAP $level';
+
+  bool get isExpired {
+    final expiry = DateTime.tryParse(expiresAt);
+    return expiry != null && !expiry.isAfter(DateTime.now());
   }
-  String get levelLabel => switch (level) { 1 => 'NOVATO', 2 => 'APRENDIZ', 3 => 'PRO', 4 => 'MAESTRO', _ => 'LEYENDA' };
+
+  bool get enrollmentIsActive =>
+      isActive && archivedAt == null && !isExpired;
+
   String get formattedTime {
     final h = totalSeconds ~/ 3600;
     final m = (totalSeconds % 3600) ~/ 60;
@@ -101,6 +128,18 @@ class PlayerEntity {
     'name': name,
     'nickname': nickname,
     'avatar': avatar,
+    'email': email,
+    'phone': phone,
+    'player_code': playerCode,
+    'handicap': handicap,
+    'billar_id': billarId,
+    'is_active': isActive ? 1 : 0,
+    'registered_at': registeredAt,
+    'expires_at': expiresAt,
+    'archived_at': archivedAt,
+    'auth_user_id': authUserId,
+    'must_change_password': mustChangePassword ? 1 : 0,
+    'client_id': clientId,
     'wins': stats.wins,
     'losses': stats.losses,
     'draws': stats.draws,
@@ -113,6 +152,9 @@ class PlayerEntity {
     'best_streak': stats.bestStreak,
     'synced': synced ? 1 : 0,
     'cloud_id': cloudId,
+    'created_at': createdAt.isEmpty
+        ? DateTime.now().toIso8601String()
+        : createdAt,
   };
 
   factory PlayerEntity.fromMap(Map<String, dynamic> m) => PlayerEntity(
@@ -120,27 +162,69 @@ class PlayerEntity {
     name: m['name'] as String? ?? '',
     nickname: m['nickname'] as String? ?? '',
     avatar: m['avatar'] as String? ?? '',
-    totalSeconds: m['total_seconds'] as int? ?? 0,
+    email: m['email'] as String? ?? '',
+    phone: m['phone'] as String? ?? '',
+    playerCode: m['player_code'] as String? ?? '',
+    handicap: (m['handicap'] as num?)?.toInt() ?? 1,
+    billarId: m['billar_id'] as String? ?? 'BILLAR_001',
+    isActive: _asBool(m['is_active'], fallback: true),
+    registeredAt: m['registered_at'] as String? ?? '',
+    expiresAt: m['expires_at'] as String? ?? '',
+    archivedAt: m['archived_at'] as String?,
+    authUserId: m['auth_user_id']?.toString(),
+    mustChangePassword: _asBool(m['must_change_password']),
+    clientId: m['client_id'] as String? ?? '',
+    totalSeconds: (m['total_seconds'] as num?)?.toInt() ?? 0,
     stats: PlayerStats(
-      wins: m['wins'] as int? ?? 0,
-      losses: m['losses'] as int? ?? 0,
-      draws: m['draws'] as int? ?? 0,
-      breakAndRun: m['break_and_run'] as int? ?? 0,
-      goldenBreaks: m['golden_breaks'] as int? ?? 0,
-      highRun: m['high_run'] as int? ?? 0,
-      currentStreak: m['current_streak'] as int? ?? 0,
-      bestStreak: m['best_streak'] as int? ?? 0,
+      wins: (m['wins'] as num?)?.toInt() ?? 0,
+      losses: (m['losses'] as num?)?.toInt() ?? 0,
+      draws: (m['draws'] as num?)?.toInt() ?? 0,
+      breakAndRun: (m['break_and_run'] as num?)?.toInt() ?? 0,
+      goldenBreaks: (m['golden_breaks'] as num?)?.toInt() ?? 0,
+      highRun: (m['high_run'] as num?)?.toInt() ?? 0,
+      currentStreak: (m['current_streak'] as num?)?.toInt() ?? 0,
+      bestStreak: (m['best_streak'] as num?)?.toInt() ?? 0,
     ),
     createdAt: m['created_at'] as String? ?? '',
     synced: m['synced'] == 1,
     cloudId: m['cloud_id'] as String?,
   );
 
+  factory PlayerEntity.fromCloudMap(
+    Map<String, dynamic> map, {
+    required int? localId,
+  }) {
+    final normalized = <String, dynamic>{
+      ...map,
+      'id': localId,
+      'avatar': map['avatar_url']?.toString().isNotEmpty == true
+          ? map['avatar_url']
+          : map['avatar'],
+      'cloud_id': map['id']?.toString(),
+      'is_active': map['is_active'] == true ? 1 : 0,
+      'must_change_password': map['must_change_password'] == true ? 1 : 0,
+      'synced': 1,
+    };
+    return PlayerEntity.fromMap(normalized);
+  }
+
   PlayerEntity copyWith({
     int? id,
     String? name,
     String? nickname,
     String? avatar,
+    String? email,
+    String? phone,
+    String? playerCode,
+    int? handicap,
+    String? billarId,
+    bool? isActive,
+    String? registeredAt,
+    String? expiresAt,
+    String? archivedAt,
+    String? authUserId,
+    bool? mustChangePassword,
+    String? clientId,
     int? totalSeconds,
     PlayerStats? stats,
     String? createdAt,
@@ -152,11 +236,29 @@ class PlayerEntity {
       name: name ?? this.name,
       nickname: nickname ?? this.nickname,
       avatar: avatar ?? this.avatar,
+      email: email ?? this.email,
+      phone: phone ?? this.phone,
+      playerCode: playerCode ?? this.playerCode,
+      handicap: handicap ?? this.handicap,
+      billarId: billarId ?? this.billarId,
+      isActive: isActive ?? this.isActive,
+      registeredAt: registeredAt ?? this.registeredAt,
+      expiresAt: expiresAt ?? this.expiresAt,
+      archivedAt: archivedAt ?? this.archivedAt,
+      authUserId: authUserId ?? this.authUserId,
+      mustChangePassword: mustChangePassword ?? this.mustChangePassword,
+      clientId: clientId ?? this.clientId,
       totalSeconds: totalSeconds ?? this.totalSeconds,
       stats: stats ?? this.stats,
       createdAt: createdAt ?? this.createdAt,
       synced: synced ?? this.synced,
       cloudId: cloudId ?? this.cloudId,
     );
+  }
+
+  static bool _asBool(dynamic value, {bool fallback = false}) {
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    return fallback;
   }
 }

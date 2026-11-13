@@ -100,10 +100,14 @@ create table if not exists public.billiard_tables (
     is_occupied int not null default 0,
     start_time timestamptz,
     orders text default '[]',
+    is_deleted integer not null default 0,
     created_at timestamptz default now(),
     updated_at timestamptz default now(),
     primary key (billar_id, id)
 );
+
+alter table public.billiard_tables
+    add column if not exists is_deleted integer not null default 0;
 
 alter table public.billiard_tables enable row level security;
 

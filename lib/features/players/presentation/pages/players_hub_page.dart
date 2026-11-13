@@ -8,7 +8,7 @@ class PlayersHubPage extends StatelessWidget {
   static const _modules = [
     _Module('JUGADORES', Icons.sports_esports_rounded, Color(0xFF00ACC1), AppRoutes.players),
     _Module('PARTIDAS', Icons.sports_bar_rounded, Color(0xFF7C4DFF), AppRoutes.games),
-    _Module('STATS PERS.', Icons.trending_up_rounded, Color(0xFF00BFA5), AppRoutes.personalStats),
+    _Module('TORNEOS', Icons.emoji_events_rounded, Color(0xFFFF5722), AppRoutes.tournaments),
   ];
 
   @override

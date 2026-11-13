@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -13,6 +15,7 @@ import '../../../sales/domain/entities/sale_item_entity.dart';
 import '../../../sales/presentation/services/ticket_service.dart';
 import '../../data/repositories/reports_repository.dart';
 import '../../../../core/routes/app_routes.dart';
+import '../../../../core/services/sync_service.dart';
 import '../../../../core/theme/theme_provider.dart';
 import '../../../../core/storage/preferences_service.dart';
 import '../../../../core/widgets/admin_pin_dialog.dart';
@@ -45,10 +48,13 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   Map<String, dynamic>? _openSession;
   List<String> _concepts = [];
 
+  List<Map<String, String>> _profitExpenses = []; // pares concepto/monto ordenados
+  Map<String, dynamic> _profit = {};
+
   @override
   void initState() {
     super.initState();
-    _tabCtrl = TabController(length: 4, vsync: this);
+    _tabCtrl = TabController(length: 5, vsync: this);
     _load();
   }
 
@@ -63,9 +69,16 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final sales = await _salesRepo.getSalesByDateRange(_start, _end);
     final purchases = await _purchasesRepo.getHistory();
     final cashFlow = await _reportsRepo.getCashFlowSummary(_start, _end);
-    final products = await _productRepo.getAll();
+    final products = await _productRepo.getAll(includeArchived: true);
     final openSession = await _reportsRepo.getOpenSession();
     final concepts = await _reportsRepo.getConcepts();
+    final profit = await _reportsRepo.getProfitSummary(_start, _end);
+    List<Map<String, String>> profitExpenses = [];
+    final byConcept = profit['expensesByConcept'] as Map<String, double>;
+    final entries = byConcept.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    for (final e in entries) {
+      profitExpenses.add({'concept': e.key, 'amount': e.value.toString()});
+    }
     List<Map<String, dynamic>> movements = [];
     if (_selectedProductId != null) {
       movements = await _reportsRepo.getInventoryMovements(_selectedProductId!);
@@ -79,9 +92,29 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
         _movements = movements;
         _openSession = openSession;
         _concepts = concepts;
+        _profit = profit;
+        _profitExpenses = profitExpenses;
         _isLoading = false;
       });
     }
+    unawaited(_refreshOutflowsAfterPull(_start, _end));
+  }
+
+  Future<void> _refreshOutflowsAfterPull(DateTime start, DateTime end) async {
+    await SyncService().pullOutflowsFromCloud();
+    if (!mounted || start != _start || end != _end) return;
+    final cashFlow = await _reportsRepo.getCashFlowSummary(start, end);
+    final profit = await _reportsRepo.getProfitSummary(start, end);
+    final byConcept = profit['expensesByConcept'] as Map<String, double>;
+    final entries = byConcept.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    final expenses =
+        entries.map((entry) => {'concept': entry.key, 'amount': entry.value.toString()}).toList();
+    if (!mounted) return;
+    setState(() {
+      _cashFlow = cashFlow;
+      _profit = profit;
+      _profitExpenses = expenses;
+    });
   }
 
   Future<void> _pickDateRange() async {
@@ -90,12 +123,15 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       firstDate: DateTime(2024),
       lastDate: DateTime.now().add(const Duration(days: 1)),
       initialDateRange: DateTimeRange(start: _start, end: _end),
-      builder: (context, child) => Theme(
-        data: Theme.of(context).copyWith(
-          colorScheme: Theme.of(context).colorScheme.copyWith(primary: Theme.of(context).colorScheme.primary),
-        ),
-        child: child!,
-      ),
+      builder:
+          (context, child) => Theme(
+            data: Theme.of(context).copyWith(
+              colorScheme: Theme.of(
+                context,
+              ).colorScheme.copyWith(primary: Theme.of(context).colorScheme.primary),
+            ),
+            child: child!,
+          ),
     );
     if (picked != null) {
       setState(() {
@@ -109,12 +145,17 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   Future<void> _showSaleDetail(Map<String, dynamic> sale, Color color) async {
     final details = await _salesRepo.getSalesDetails(sale['id'] as int);
     if (!mounted) return;
-    final items = details.map((d) => SaleItemEntity(
-      productId: d['product_id'] as int?,
-      productName: d['product_name'] as String,
-      price: (d['price_at_sale'] as num).toDouble(),
-      quantity: (d['quantity'] as num).toDouble(),
-    )).toList();
+    final items =
+        details
+            .map(
+              (d) => SaleItemEntity(
+                productId: d['product_id'] as int?,
+                productName: d['product_name'] as String,
+                price: (d['price_at_sale'] as num).toDouble(),
+                quantity: (d['quantity'] as num).toDouble(),
+              ),
+            )
+            .toList();
 
     final total = (sale['total'] as num).toDouble();
     final paid = ((sale['paid'] as num?) ?? total).toDouble();
@@ -125,85 +166,131 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (_) => Padding(
-        padding: EdgeInsets.only(
-          left: 20, right: 20, top: 20,
-          bottom: MediaQuery.of(context).viewInsets.bottom + 20,
-        ),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder:
+          (_) => Padding(
+            padding: EdgeInsets.only(
+              left: 20,
+              right: 20,
+              top: 20,
+              bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(Icons.receipt_long, color: color, size: 22),
-                  const SizedBox(width: 8),
-                  Text(type, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 15, letterSpacing: 1)),
-                  const Spacer(),
-                  Text('\$${total.toStringAsFixed(2)}', style: const TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold, fontSize: 18)),
+                  Row(
+                    children: [
+                      Icon(Icons.receipt_long, color: color, size: 22),
+                      const SizedBox(width: 8),
+                      Text(
+                        type,
+                        style: TextStyle(
+                          color: color,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                          letterSpacing: 1,
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        '\$${total.toStringAsFixed(2)}',
+                        style: const TextStyle(
+                          color: Colors.greenAccent,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    sale['date'] ?? '',
+                    style: const TextStyle(color: Colors.white24, fontSize: 11),
+                  ),
+                  const Divider(color: Colors.white10, height: 20),
+                  ...details.map(
+                    (d) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 5),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              d['product_name'] ?? '',
+                              style: const TextStyle(color: Colors.white70, fontSize: 13),
+                            ),
+                          ),
+                          Text(
+                            '${d['quantity']} x \$${(d['price_at_sale'] as num).toStringAsFixed(2)}',
+                            style: const TextStyle(color: Colors.white38, fontSize: 12),
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            '\$${((d['quantity'] as num) * (d['price_at_sale'] as num)).toStringAsFixed(2)}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: color,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      icon: const Icon(Icons.receipt_long, color: Colors.white),
+                      label: const Text(
+                        'REIMPRIMIR / REENVIAR TICKET',
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      ),
+                      onPressed: () {
+                        Navigator.pop(context);
+                        TicketService().showPreviewSheet(
+                          context: context,
+                          items: items,
+                          total: total,
+                          paid: paid,
+                          paymentMethod: method,
+                          saleType: type,
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.redAccent,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      icon: const Icon(Icons.cancel_outlined, color: Colors.white),
+                      label: const Text(
+                        'ANULAR VENTA',
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      ),
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _cancelSaleFromReports(sale);
+                      },
+                    ),
+                  ),
                 ],
               ),
-              const SizedBox(height: 4),
-              Text(sale['date'] ?? '', style: const TextStyle(color: Colors.white24, fontSize: 11)),
-              const Divider(color: Colors.white10, height: 20),
-              ...details.map((d) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 5),
-                child: Row(
-                  children: [
-                    Expanded(child: Text(d['product_name'] ?? '', style: const TextStyle(color: Colors.white70, fontSize: 13))),
-                    Text('${d['quantity']} x \$${(d['price_at_sale'] as num).toStringAsFixed(2)}', style: const TextStyle(color: Colors.white38, fontSize: 12)),
-                    const SizedBox(width: 12),
-                    Text('\$${((d['quantity'] as num) * (d['price_at_sale'] as num)).toStringAsFixed(2)}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                  ],
-                ),
-              )),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: color,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                  ),
-                  icon: const Icon(Icons.receipt_long, color: Colors.white),
-                  label: const Text('REIMPRIMIR / REENVIAR TICKET', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                  onPressed: () {
-                    Navigator.pop(context);
-                    TicketService().showPreviewSheet(
-                      context: context,
-                      items: items,
-                      total: total,
-                      paid: paid,
-                      paymentMethod: method,
-                      saleType: type,
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(height: 8),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.redAccent,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                  ),
-                  icon: const Icon(Icons.cancel_outlined, color: Colors.white),
-                  label: const Text('ANULAR VENTA', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _cancelSaleFromReports(sale);
-                  },
-                ),
-              ),
-            ],
+            ),
           ),
-        ),
-      ),
     );
   }
 
@@ -221,7 +308,9 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Anulando sin PIN. Configura un PIN en Configuración para proteger esta acción.'),
+            content: Text(
+              'Anulando sin PIN. Configura un PIN en Configuración para proteger esta acción.',
+            ),
             backgroundColor: Colors.orange,
             duration: Duration(seconds: 3),
           ),
@@ -231,23 +320,30 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        title: const Text('ANULAR VENTA', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 15)),
-        content: Text(
-          'Se anulará la venta de \$${(sale['total'] as num).toStringAsFixed(2)}.\n\n'
-          'El stock de los productos regresará al inventario y la venta dejará de contar en informes y caja.\n\n¿Continuar?',
-          style: const TextStyle(color: Colors.white70, fontSize: 13),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('ANULAR', style: TextStyle(color: Colors.white)),
+      builder:
+          (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            title: const Text(
+              'ANULAR VENTA',
+              style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 15),
+            ),
+            content: Text(
+              'Se anulará la venta de \$${(sale['total'] as num).toStringAsFixed(2)}.\n\n'
+              'El stock de los productos regresará al inventario y la venta dejará de contar en informes y caja.\n\n¿Continuar?',
+              style: const TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('ANULAR', style: TextStyle(color: Colors.white)),
+              ),
+            ],
           ),
-        ],
-      ),
     );
     if (confirmed != true || !mounted) return;
 
@@ -255,7 +351,9 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(ok ? 'Venta anulada. Stock devuelto al inventario.' : 'No se pudo anular la venta.'),
+        content: Text(
+          ok ? 'Venta anulada. Stock devuelto al inventario.' : 'No se pudo anular la venta.',
+        ),
         backgroundColor: ok ? Colors.green : Colors.red,
       ),
     );
@@ -269,7 +367,8 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   /// la pestaña Ventas de Informes.
   Future<void> _showCancelSalePdf(Map<String, dynamic> sale) async {
     final prefs = PreferencesService();
-    final businessName = prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
+    final businessName =
+        prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
     final primaryColor = PdfColor.fromInt(prefs.primaryColorValue);
 
     pw.MemoryImage? logoImage;
@@ -289,32 +388,63 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     pdf.addPage(
       pw.Page(
         pageFormat: PdfPageFormat.roll80,
-        build: (pw.Context ctx) => pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.center,
-          children: [
-            pw.SizedBox(height: 4),
-            if (logoImage != null) ...[
-              pw.Center(child: pw.Image(logoImage, width: 56, height: 56)),
-              pw.SizedBox(height: 4),
-            ],
-            pw.Center(child: pw.Text(businessName.toUpperCase(), style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12, letterSpacing: 1))),
-            pw.SizedBox(height: 2),
-            pw.Center(child: pw.Text('VENTA ANULADA', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10))),
-            pw.SizedBox(height: 2),
-            pw.Center(child: pw.Text(dateStr, style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700))),
-            pw.SizedBox(height: 2),
-            pw.Divider(color: primaryColor, thickness: 0.8),
-            pw.Text('Venta: $type', style: const pw.TextStyle(fontSize: 9.5)),
-            pw.Text('Fecha original: $saleDateStr', style: const pw.TextStyle(fontSize: 9.5)),
-            pw.Text('Anuló: ${prefs.userName}', style: const pw.TextStyle(fontSize: 9.5)),
-            pw.Divider(color: primaryColor, thickness: 0.8),
-            pw.Text('Monto anulado: \$${total.toStringAsFixed(2)}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
-            pw.SizedBox(height: 2),
-            pw.Text('El stock de los productos fue devuelto al inventario.', style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700)),
-            pw.SizedBox(height: 10),
-            pw.Center(child: pw.Text('Documento interno / control de caja', style: const pw.TextStyle(fontSize: 7))),
-          ],
-        ),
+        build:
+            (pw.Context ctx) => pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.center,
+              children: [
+                pw.SizedBox(height: 4),
+                if (logoImage != null) ...[
+                  pw.Center(child: pw.Image(logoImage, width: 56, height: 56)),
+                  pw.SizedBox(height: 4),
+                ],
+                pw.Center(
+                  child: pw.Text(
+                    businessName.toUpperCase(),
+                    style: pw.TextStyle(
+                      fontWeight: pw.FontWeight.bold,
+                      fontSize: 12,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                ),
+                pw.SizedBox(height: 2),
+                pw.Center(
+                  child: pw.Text(
+                    'VENTA ANULADA',
+                    style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10),
+                  ),
+                ),
+                pw.SizedBox(height: 2),
+                pw.Center(
+                  child: pw.Text(
+                    dateStr,
+                    style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+                  ),
+                ),
+                pw.SizedBox(height: 2),
+                pw.Divider(color: primaryColor, thickness: 0.8),
+                pw.Text('Venta: $type', style: const pw.TextStyle(fontSize: 9.5)),
+                pw.Text('Fecha original: $saleDateStr', style: const pw.TextStyle(fontSize: 9.5)),
+                pw.Text('Anuló: ${prefs.userName}', style: const pw.TextStyle(fontSize: 9.5)),
+                pw.Divider(color: primaryColor, thickness: 0.8),
+                pw.Text(
+                  'Monto anulado: \$${total.toStringAsFixed(2)}',
+                  style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10),
+                ),
+                pw.SizedBox(height: 2),
+                pw.Text(
+                  'El stock de los productos fue devuelto al inventario.',
+                  style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+                ),
+                pw.SizedBox(height: 10),
+                pw.Center(
+                  child: pw.Text(
+                    'Documento interno / control de caja',
+                    style: const pw.TextStyle(fontSize: 7),
+                  ),
+                ),
+              ],
+            ),
       ),
     );
 
@@ -325,49 +455,61 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     showDialog(
       context: context,
       barrierColor: Colors.black54,
-      builder: (ctx) => Dialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        child: SizedBox(
-          width: 420,
-          height: 560,
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                child: Row(
-                  children: [
-                    const Text('VENTA ANULADA', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
-                    const Spacer(),
-                    IconButton(
-                      icon: const Icon(Icons.share, color: Colors.blue),
-                      onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
+      builder:
+          (ctx) => Dialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            child: SizedBox(
+              width: 420,
+              height: 560,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    child: Row(
+                      children: [
+                        const Text(
+                          'VENTA ANULADA',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.share, color: Colors.blue),
+                          onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
+                        ),
+                        IconButton(
+                          icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
+                          onPressed:
+                              () =>
+                                  Printing.layoutPdf(onLayout: (_) async => bytes, name: fileName),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, color: Colors.white54),
+                          onPressed: () => Navigator.pop(ctx),
+                        ),
+                      ],
                     ),
-                    IconButton(
-                      icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
-                      onPressed: () => Printing.layoutPdf(onLayout: (_) async => bytes, name: fileName),
+                  ),
+                  Expanded(
+                    child: PdfPreview(
+                      padding: const EdgeInsets.all(12),
+                      build: (_) => Future.value(bytes),
+                      allowSharing: false,
+                      allowPrinting: false,
+                      initialPageFormat: const PdfPageFormat(
+                        80 * PdfPageFormat.mm,
+                        200 * PdfPageFormat.mm,
+                      ),
+                      pageFormats: const {},
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.close, color: Colors.white54),
-                      onPressed: () => Navigator.pop(ctx),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-              Expanded(
-                child: PdfPreview(
-                  padding: const EdgeInsets.all(12),
-                  build: (_) => Future.value(bytes),
-                  allowSharing: false,
-                  allowPrinting: false,
-                  initialPageFormat: const PdfPageFormat(80 * PdfPageFormat.mm, 200 * PdfPageFormat.mm),
-                  pageFormats: const {},
-                ),
-              ),
-            ],
+            ),
           ),
-        ),
-      ),
     );
   }
 
@@ -378,63 +520,109 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (_) => Padding(
-        padding: EdgeInsets.only(
-          left: 20, right: 20, top: 20,
-          bottom: MediaQuery.of(context).viewInsets.bottom + 20,
-        ),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder:
+          (_) => Padding(
+            padding: EdgeInsets.only(
+              left: 20,
+              right: 20,
+              top: 20,
+              bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(Icons.shopping_cart, color: Colors.orangeAccent, size: 22),
-                  const SizedBox(width: 8),
-                  Text('COMPRA', style: TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.bold, fontSize: 15, letterSpacing: 1)),
-                  const Spacer(),
-                  Text('\$${(purchase['total'] as num).toStringAsFixed(2)}', style: const TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold, fontSize: 18)),
+                  Row(
+                    children: [
+                      const Icon(Icons.shopping_cart, color: Colors.orangeAccent, size: 22),
+                      const SizedBox(width: 8),
+                      Text(
+                        'COMPRA',
+                        style: TextStyle(
+                          color: Colors.orangeAccent,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                          letterSpacing: 1,
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        '\$${(purchase['total'] as num).toStringAsFixed(2)}',
+                        style: const TextStyle(
+                          color: Colors.greenAccent,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    purchase['date'] ?? '',
+                    style: const TextStyle(color: Colors.white24, fontSize: 11),
+                  ),
+                  if ((purchase['provider_name'] ?? '').toString().isNotEmpty)
+                    Text(
+                      'Proveedor: ${purchase['provider_name']}',
+                      style: const TextStyle(color: Colors.white38, fontSize: 12),
+                    ),
+                  const Divider(color: Colors.white10, height: 20),
+                  ...details.map(
+                    (d) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 5),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              d['product_name'] ?? '',
+                              style: const TextStyle(color: Colors.white70, fontSize: 13),
+                            ),
+                          ),
+                          Text(
+                            '${d['quantity']} x \$${(d['cost_per_unit'] as num).toStringAsFixed(2)}',
+                            style: const TextStyle(color: Colors.white38, fontSize: 12),
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            '\$${((d['quantity'] as num) * (d['cost_per_unit'] as num)).toStringAsFixed(2)}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.redAccent,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      icon: const Icon(Icons.cancel_outlined, color: Colors.white),
+                      label: const Text(
+                        'ANULAR COMPRA',
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      ),
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _cancelPurchaseFromReports(purchase);
+                      },
+                    ),
+                  ),
                 ],
               ),
-              const SizedBox(height: 4),
-              Text(purchase['date'] ?? '', style: const TextStyle(color: Colors.white24, fontSize: 11)),
-              if ((purchase['provider_name'] ?? '').toString().isNotEmpty)
-                Text('Proveedor: ${purchase['provider_name']}', style: const TextStyle(color: Colors.white38, fontSize: 12)),
-              const Divider(color: Colors.white10, height: 20),
-              ...details.map((d) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 5),
-                child: Row(
-                  children: [
-                    Expanded(child: Text(d['product_name'] ?? '', style: const TextStyle(color: Colors.white70, fontSize: 13))),
-                    Text('${d['quantity']} x \$${(d['cost_per_unit'] as num).toStringAsFixed(2)}', style: const TextStyle(color: Colors.white38, fontSize: 12)),
-                    const SizedBox(width: 12),
-                    Text('\$${((d['quantity'] as num) * (d['cost_per_unit'] as num)).toStringAsFixed(2)}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                  ],
-                ),
-              )),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.redAccent,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                  ),
-                  icon: const Icon(Icons.cancel_outlined, color: Colors.white),
-                  label: const Text('ANULAR COMPRA', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _cancelPurchaseFromReports(purchase);
-                  },
-                ),
-              ),
-            ],
+            ),
           ),
-        ),
-      ),
     );
   }
 
@@ -451,7 +639,9 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Anulando sin PIN. Configura un PIN en Configuración para proteger esta acción.'),
+            content: Text(
+              'Anulando sin PIN. Configura un PIN en Configuración para proteger esta acción.',
+            ),
             backgroundColor: Colors.orange,
             duration: Duration(seconds: 3),
           ),
@@ -462,23 +652,30 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     if (!mounted) return;
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        title: const Text('ANULAR COMPRA', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 15)),
-        content: Text(
-          'Se anulará la compra de \$${(purchase['total'] as num).toStringAsFixed(2)}.\n\n'
-          'El stock que la compra sumó será descontado del inventario y la compra dejará de contar en informes y caja.\n\n¿Continuar?',
-          style: const TextStyle(color: Colors.white70, fontSize: 13),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('ANULAR', style: TextStyle(color: Colors.white)),
+      builder:
+          (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            title: const Text(
+              'ANULAR COMPRA',
+              style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 15),
+            ),
+            content: Text(
+              'Se anulará la compra de \$${(purchase['total'] as num).toStringAsFixed(2)}.\n\n'
+              'El stock que la compra sumó será descontado del inventario y la compra dejará de contar en informes y caja.\n\n¿Continuar?',
+              style: const TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('ANULAR', style: TextStyle(color: Colors.white)),
+              ),
+            ],
           ),
-        ],
-      ),
     );
     if (confirmed != true || !mounted) return;
 
@@ -486,7 +683,9 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(ok ? 'Compra anulada. Stock descontado del inventario.' : 'No se pudo anular la compra.'),
+        content: Text(
+          ok ? 'Compra anulada. Stock descontado del inventario.' : 'No se pudo anular la compra.',
+        ),
         backgroundColor: ok ? Colors.green : Colors.red,
       ),
     );
@@ -500,7 +699,8 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   /// la pestaña Compras de Informes.
   Future<void> _showCancelPurchasePdf(Map<String, dynamic> purchase) async {
     final prefs = PreferencesService();
-    final businessName = prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
+    final businessName =
+        prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
     final primaryColor = PdfColor.fromInt(prefs.primaryColorValue);
 
     pw.MemoryImage? logoImage;
@@ -518,32 +718,69 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     pdf.addPage(
       pw.Page(
         pageFormat: PdfPageFormat.roll80,
-        build: (pw.Context ctx) => pw.Column(
-          crossAxisAlignment: pw.CrossAxisAlignment.center,
-          children: [
-            pw.SizedBox(height: 4),
-            if (logoImage != null) ...[
-              pw.Center(child: pw.Image(logoImage, width: 56, height: 56)),
-              pw.SizedBox(height: 4),
-            ],
-            pw.Center(child: pw.Text(businessName.toUpperCase(), style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12, letterSpacing: 1))),
-            pw.SizedBox(height: 2),
-            pw.Center(child: pw.Text('COMPRA ANULADA', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10))),
-            pw.SizedBox(height: 2),
-            pw.Center(child: pw.Text(dateStr, style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700))),
-            pw.SizedBox(height: 2),
-            pw.Divider(color: primaryColor, thickness: 0.8),
-            pw.Text('Proveedor: ${purchase['provider_name'] ?? 'Sin proveedor'}', style: const pw.TextStyle(fontSize: 9.5)),
-            pw.Text('Fecha original: $purchaseDateStr', style: const pw.TextStyle(fontSize: 9.5)),
-            pw.Text('Anuló: ${prefs.userName}', style: const pw.TextStyle(fontSize: 9.5)),
-            pw.Divider(color: primaryColor, thickness: 0.8),
-            pw.Text('Monto anulado: \$${total.toStringAsFixed(2)}', style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
-            pw.SizedBox(height: 2),
-            pw.Text('El stock de los productos fue descontado del inventario.', style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700)),
-            pw.SizedBox(height: 10),
-            pw.Center(child: pw.Text('Documento interno / control de caja', style: const pw.TextStyle(fontSize: 7))),
-          ],
-        ),
+        build:
+            (pw.Context ctx) => pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.center,
+              children: [
+                pw.SizedBox(height: 4),
+                if (logoImage != null) ...[
+                  pw.Center(child: pw.Image(logoImage, width: 56, height: 56)),
+                  pw.SizedBox(height: 4),
+                ],
+                pw.Center(
+                  child: pw.Text(
+                    businessName.toUpperCase(),
+                    style: pw.TextStyle(
+                      fontWeight: pw.FontWeight.bold,
+                      fontSize: 12,
+                      letterSpacing: 1,
+                    ),
+                  ),
+                ),
+                pw.SizedBox(height: 2),
+                pw.Center(
+                  child: pw.Text(
+                    'COMPRA ANULADA',
+                    style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10),
+                  ),
+                ),
+                pw.SizedBox(height: 2),
+                pw.Center(
+                  child: pw.Text(
+                    dateStr,
+                    style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+                  ),
+                ),
+                pw.SizedBox(height: 2),
+                pw.Divider(color: primaryColor, thickness: 0.8),
+                pw.Text(
+                  'Proveedor: ${purchase['provider_name'] ?? 'Sin proveedor'}',
+                  style: const pw.TextStyle(fontSize: 9.5),
+                ),
+                pw.Text(
+                  'Fecha original: $purchaseDateStr',
+                  style: const pw.TextStyle(fontSize: 9.5),
+                ),
+                pw.Text('Anuló: ${prefs.userName}', style: const pw.TextStyle(fontSize: 9.5)),
+                pw.Divider(color: primaryColor, thickness: 0.8),
+                pw.Text(
+                  'Monto anulado: \$${total.toStringAsFixed(2)}',
+                  style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10),
+                ),
+                pw.SizedBox(height: 2),
+                pw.Text(
+                  'El stock de los productos fue descontado del inventario.',
+                  style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+                ),
+                pw.SizedBox(height: 10),
+                pw.Center(
+                  child: pw.Text(
+                    'Documento interno / control de caja',
+                    style: const pw.TextStyle(fontSize: 7),
+                  ),
+                ),
+              ],
+            ),
       ),
     );
 
@@ -554,49 +791,62 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     showDialog(
       context: context,
       barrierColor: Colors.black54,
-      builder: (ctx) => Dialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        child: SizedBox(
-          width: 420,
-          height: 560,
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                child: Row(
-                  children: [
-                    const Text('COMPRA ANULADA', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
-                    const Spacer(),
-                    IconButton(
-                      icon: const Icon(Icons.share, color: Colors.blue),
-                      onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
+      builder:
+          (ctx) => Dialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            child: SizedBox(
+              width: 420,
+              height: 560,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    child: Row(
+                      children: [
+                        const Text(
+                          'COMPRA ANULADA',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          icon: const Icon(Icons.share, color: Colors.blue),
+                          onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
+                        ),
+                        IconButton(
+                          icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
+                          onPressed:
+                              () =>
+                                  Printing.layoutPdf(onLayout: (_) async => bytes, name: fileName),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, color: Colors.white54),
+                          onPressed: () => Navigator.pop(ctx),
+                        ),
+                      ],
                     ),
-                    IconButton(
-                      icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
-                      onPressed: () => Printing.layoutPdf(onLayout: (_) async => bytes, name: fileName),
+                  ),
+                  Expanded(
+                    child: PdfPreview(
+                      padding: const EdgeInsets.all(12),
+                      build: (_) => Future.value(bytes),
+                      allowSharing: false,
+                      allowPrinting: false,
+                      initialPageFormat: const PdfPageFormat(
+                        80 * PdfPageFormat.mm,
+                        200 * PdfPageFormat.mm,
+                      ),
+                      pageFormats: const {},
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.close, color: Colors.white54),
-                      onPressed: () => Navigator.pop(ctx),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-              Expanded(
-                child: PdfPreview(
-                  padding: const EdgeInsets.all(12),
-                  build: (_) => Future.value(bytes),
-                  allowSharing: false,
-                  allowPrinting: false,
-                  initialPageFormat: const PdfPageFormat(80 * PdfPageFormat.mm, 200 * PdfPageFormat.mm),
-                  pageFormats: const {},
-                ),
-              ),
-            ],
+            ),
           ),
-        ),
-      ),
     );
   }
 
@@ -607,107 +857,127 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final amountCtrl = TextEditingController();
     await showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        title: const Text('REGISTRAR RETIRO / GASTO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
+      builder:
+          (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            title: const Text(
+              'REGISTRAR RETIRO / GASTO',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    value: type,
-                    dropdownColor: const Color(0xFF1A1A1A),
-                    style: const TextStyle(color: Colors.white),
-                    decoration: const InputDecoration(labelText: 'Concepto', labelStyle: TextStyle(color: Colors.white38)),
-                    items: [
-                      if (_concepts.isEmpty)
-                        const DropdownMenuItem(value: 'GASTO', child: Text('GASTO')),
-                      ..._concepts.map((c) => DropdownMenuItem(value: c, child: Text(c))),
-                    ],
-                    onChanged: (v) => type = v!,
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        initialValue: type,
+                        dropdownColor: const Color(0xFF1A1A1A),
+                        style: const TextStyle(color: Colors.white),
+                        decoration: const InputDecoration(
+                          labelText: 'Concepto',
+                          labelStyle: TextStyle(color: Colors.white38),
+                        ),
+                        items: [
+                          if (_concepts.isEmpty)
+                            const DropdownMenuItem(value: 'GASTO', child: Text('GASTO')),
+                          ..._concepts.map((c) => DropdownMenuItem(value: c, child: Text(c))),
+                        ],
+                        onChanged: (v) => type = v!,
+                      ),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.add_circle, color: Theme.of(ctx).colorScheme.primary),
+                      tooltip: 'Agregar concepto',
+                      onPressed: () async {
+                        await _showAddConceptDialog(ctx);
+                        await _reloadConceptsOnly();
+                        if (ctx.mounted && _concepts.isNotEmpty) {
+                          type = _concepts.first;
+                        }
+                      },
+                    ),
+                  ],
+                ),
+                TextField(
+                  controller: amountCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Monto',
+                    labelStyle: TextStyle(color: Colors.white38),
                   ),
                 ),
-                IconButton(
-                  icon: Icon(Icons.add_circle, color: Theme.of(ctx).colorScheme.primary),
-                  tooltip: 'Agregar concepto',
-                  onPressed: () async {
-                    await _showAddConceptDialog(ctx);
-                    await _reloadConceptsOnly();
-                    if (ctx.mounted && _concepts.isNotEmpty) {
-                      type = _concepts.first;
-                    }
-                  },
+                TextField(
+                  controller: descCtrl,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Descripción (opcional)',
+                    labelStyle: TextStyle(color: Colors.white38),
+                  ),
                 ),
               ],
             ),
-            TextField(
-              controller: amountCtrl,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(labelText: 'Monto', labelStyle: TextStyle(color: Colors.white38)),
-            ),
-            TextField(
-              controller: descCtrl,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(labelText: 'Descripción (opcional)', labelStyle: TextStyle(color: Colors.white38)),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
-          ElevatedButton(
-            onPressed: () async {
-              final amount = double.tryParse(amountCtrl.text) ?? 0;
-              if (amount <= 0) {
-                if (ctx.mounted) {
-                  ScaffoldMessenger.of(ctx).showSnackBar(
-                    const SnackBar(
-                      content: Text('Ingresa un monto válido mayor a 0'),
-                      backgroundColor: Colors.red,
-                    ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  final amount = double.tryParse(amountCtrl.text) ?? 0;
+                  if (amount <= 0) {
+                    if (ctx.mounted) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                        const SnackBar(
+                          content: Text('Ingresa un monto válido mayor a 0'),
+                          backgroundColor: Colors.red,
+                        ),
+                      );
+                    }
+                    return;
+                  }
+                  if (type.isEmpty) {
+                    if (ctx.mounted) {
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                        const SnackBar(
+                          content: Text('Selecciona un concepto'),
+                          backgroundColor: Colors.red,
+                        ),
+                      );
+                    }
+                    return;
+                  }
+                  await _reportsRepo.addCashOutflow(
+                    outflowType: type,
+                    amount: amount,
+                    description: descCtrl.text.trim(),
+                    createdBy: prefs.userName,
                   );
-                }
-                return;
-              }
-              if (type.isEmpty) {
-                if (ctx.mounted) {
-                  ScaffoldMessenger.of(ctx).showSnackBar(
-                    const SnackBar(
-                      content: Text('Selecciona un concepto'),
-                      backgroundColor: Colors.red,
-                    ),
-                  );
-                }
-                return;
-              }
-              await _reportsRepo.addCashOutflow(
-                outflowType: type,
-                amount: amount,
-                description: descCtrl.text.trim(),
-                createdBy: prefs.userName,
-              );
-              if (ctx.mounted) Navigator.pop(ctx);
-              await _load();
-              if (mounted) {
-                await _showCashReceiptPdf(
-                  title: 'COMPROBANTE DE RETIRO / GASTO',
-                  subtitle: 'Concepto: $type',
-                  bodyLines: [
-                    'Monto: ${_fmt(amount)}',
-                    if (descCtrl.text.trim().isNotEmpty) 'Descripción: ${descCtrl.text.trim()}',
-                    'Registrado por: ${prefs.userName}',
-                  ],
-                  boldLabel: 'Total en caja',
-                  boldAmount: _currentCashTotal(),
-                );
-              }
-            },
-            child: const Text('GUARDAR', style: TextStyle(color: Colors.white)),
+                  // Disparar subida inmediata del retiro a Supabase (mismo
+                  // patrón que ventas: sin esto el retiro queda local hasta
+                  // el próximo ciclo automático y el otro dispositivo no lo ve).
+                  SyncService().schedulePendingSync();
+                  if (ctx.mounted) Navigator.pop(ctx);
+                  await _load();
+                  if (mounted) {
+                    await _showCashReceiptPdf(
+                      title: 'COMPROBANTE DE RETIRO / GASTO',
+                      subtitle: 'Concepto: $type',
+                      bodyLines: [
+                        'Monto: ${_fmt(amount)}',
+                        if (descCtrl.text.trim().isNotEmpty) 'Descripción: ${descCtrl.text.trim()}',
+                        'Registrado por: ${prefs.userName}',
+                      ],
+                      boldLabel: 'Total en caja',
+                      boldAmount: _currentCashTotal(),
+                    );
+                  }
+                },
+                child: const Text('GUARDAR', style: TextStyle(color: Colors.white)),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 
@@ -720,35 +990,45 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final ctrl = TextEditingController();
     await showDialog(
       context: parentCtx,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        title: const Text('NUEVO CONCEPTO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          textCapitalization: TextCapitalization.characters,
-          style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(labelText: 'Nombre del concepto', labelStyle: TextStyle(color: Colors.white38)),
-          inputFormatters: [
-            TextInputFormatter.withFunction(
-              (oldValue, newValue) => newValue.copyWith(text: newValue.text.toUpperCase()),
+      builder:
+          (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            title: const Text(
+              'NUEVO CONCEPTO',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
             ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
-          ElevatedButton(
-            onPressed: () async {
-              final name = ctrl.text.trim();
-              if (name.isNotEmpty) {
-                await _reportsRepo.addConcept(name);
-                if (ctx.mounted) Navigator.pop(ctx);
-              }
-            },
-            child: const Text('CREAR', style: TextStyle(color: Colors.white)),
+            content: TextField(
+              controller: ctrl,
+              autofocus: true,
+              textCapitalization: TextCapitalization.characters,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                labelText: 'Nombre del concepto',
+                labelStyle: TextStyle(color: Colors.white38),
+              ),
+              inputFormatters: [
+                TextInputFormatter.withFunction(
+                  (oldValue, newValue) => newValue.copyWith(text: newValue.text.toUpperCase()),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  final name = ctrl.text.trim();
+                  if (name.isNotEmpty) {
+                    await _reportsRepo.addConcept(name);
+                    if (ctx.mounted) Navigator.pop(ctx);
+                  }
+                },
+                child: const Text('CREAR', style: TextStyle(color: Colors.white)),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 
@@ -759,101 +1039,156 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       context: context,
       isScrollControlled: true,
       backgroundColor: const Color(0xFF1A1A1A),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
       builder: (ctx) {
         return StatefulBuilder(
-          builder: (ctx, setSheetState) => DraggableScrollableSheet(
-            expand: false,
-            initialChildSize: 0.8,
-            maxChildSize: 0.95,
-            builder: (_, ctrl) => Column(
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  decoration: const BoxDecoration(
-                    color: Color(0xFF1A1A1A),
-                    borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-                  ),
-                  child: Row(
-                    children: [
-                      const Text('CONCEPTOS DE RETIRO / GASTO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                      const Spacer(),
-                      IconButton(
-                        icon: Icon(Icons.add, color: Theme.of(ctx).colorScheme.primary),
-                        tooltip: 'Agregar concepto',
-                        onPressed: () async {
-                          await _showAddConceptDialog(ctx);
-                          final concepts = await _reportsRepo.getConcepts();
-                          setSheetState(() => _concepts = concepts);
-                        },
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.close, color: Colors.white54),
-                        onPressed: () => Navigator.pop(ctx),
-                      ),
-                    ],
-                  ),
-                ),
-                const Divider(color: Colors.white10, height: 1),
-                Expanded(
-                  child: _concepts.isEmpty
-                      ? const Center(child: Text('Sin conceptos. Agrega uno con el +', style: TextStyle(color: Colors.white24)))
-                      : ListView.builder(
-                          controller: ctrl,
-                          padding: const EdgeInsets.symmetric(vertical: 8),
-                          itemCount: _concepts.length,
-                          itemBuilder: (_, i) {
-                            final c = _concepts[i];
-                            return ListTile(
-                              leading: const Icon(Icons.label, color: Colors.orangeAccent),
-                              title: Text(c, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                              trailing: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  IconButton(
-                                    icon: const Icon(Icons.edit, color: Colors.white54),
-                                    tooltip: 'Renombrar',
-                                    onPressed: () async {
-                                      await _showRenameConceptDialog(ctx, c);
-                                      final concepts = await _reportsRepo.getConcepts();
-                                      setSheetState(() => _concepts = concepts);
-                                    },
-                                  ),
-                                  IconButton(
-                                    icon: const Icon(Icons.delete, color: Colors.redAccent),
-                                    tooltip: 'Eliminar',
-                                    onPressed: () async {
-                                      final ok = await showDialog<bool>(
-                                        context: ctx,
-                                        builder: (dctx) => AlertDialog(
-                                          backgroundColor: const Color(0xFF1A1A1A),
-                                          title: const Text('ELIMINAR CONCEPTO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
-                                          content: Text('¿Eliminar "$c"?', style: const TextStyle(color: Colors.white70)),
-                                          actions: [
-                                            TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
-                                            ElevatedButton(
-                                              onPressed: () => Navigator.pop(dctx, true),
-                                              child: const Text('ELIMINAR', style: TextStyle(color: Colors.white)),
+          builder:
+              (ctx, setSheetState) => DraggableScrollableSheet(
+                expand: false,
+                initialChildSize: 0.8,
+                maxChildSize: 0.95,
+                builder:
+                    (_, ctrl) => Column(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          decoration: const BoxDecoration(
+                            color: Color(0xFF1A1A1A),
+                            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                          ),
+                          child: Row(
+                            children: [
+                              const Text(
+                                'CONCEPTOS DE RETIRO / GASTO',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13,
+                                ),
+                              ),
+                              const Spacer(),
+                              IconButton(
+                                icon: Icon(Icons.add, color: Theme.of(ctx).colorScheme.primary),
+                                tooltip: 'Agregar concepto',
+                                onPressed: () async {
+                                  await _showAddConceptDialog(ctx);
+                                  final concepts = await _reportsRepo.getConcepts();
+                                  setSheetState(() => _concepts = concepts);
+                                },
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.close, color: Colors.white54),
+                                onPressed: () => Navigator.pop(ctx),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const Divider(color: Colors.white10, height: 1),
+                        Expanded(
+                          child:
+                              _concepts.isEmpty
+                                  ? const Center(
+                                    child: Text(
+                                      'Sin conceptos. Agrega uno con el +',
+                                      style: TextStyle(color: Colors.white24),
+                                    ),
+                                  )
+                                  : ListView.builder(
+                                    controller: ctrl,
+                                    padding: const EdgeInsets.symmetric(vertical: 8),
+                                    itemCount: _concepts.length,
+                                    itemBuilder: (_, i) {
+                                      final c = _concepts[i];
+                                      return ListTile(
+                                        leading: const Icon(
+                                          Icons.label,
+                                          color: Colors.orangeAccent,
+                                        ),
+                                        title: Text(
+                                          c,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                        trailing: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            IconButton(
+                                              icon: const Icon(Icons.edit, color: Colors.white54),
+                                              tooltip: 'Renombrar',
+                                              onPressed: () async {
+                                                await _showRenameConceptDialog(ctx, c);
+                                                final concepts = await _reportsRepo.getConcepts();
+                                                setSheetState(() => _concepts = concepts);
+                                              },
+                                            ),
+                                            IconButton(
+                                              icon: const Icon(
+                                                Icons.delete,
+                                                color: Colors.redAccent,
+                                              ),
+                                              tooltip: 'Eliminar',
+                                              onPressed: () async {
+                                                final ok = await showDialog<bool>(
+                                                  context: ctx,
+                                                  builder:
+                                                      (dctx) => AlertDialog(
+                                                        backgroundColor: const Color(0xFF1A1A1A),
+                                                        title: const Text(
+                                                          'ELIMINAR CONCEPTO',
+                                                          style: TextStyle(
+                                                            color: Colors.white,
+                                                            fontWeight: FontWeight.bold,
+                                                            fontSize: 15,
+                                                          ),
+                                                        ),
+                                                        content: Text(
+                                                          '¿Eliminar "$c"?',
+                                                          style: const TextStyle(
+                                                            color: Colors.white70,
+                                                          ),
+                                                        ),
+                                                        actions: [
+                                                          TextButton(
+                                                            onPressed:
+                                                                () => Navigator.pop(dctx, false),
+                                                            child: const Text(
+                                                              'Cancelar',
+                                                              style: TextStyle(
+                                                                color: Colors.white38,
+                                                              ),
+                                                            ),
+                                                          ),
+                                                          ElevatedButton(
+                                                            onPressed:
+                                                                () => Navigator.pop(dctx, true),
+                                                            child: const Text(
+                                                              'ELIMINAR',
+                                                              style: TextStyle(color: Colors.white),
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                );
+                                                if (ok == true) {
+                                                  await _reportsRepo.deleteConcept(c);
+                                                  final concepts = await _reportsRepo.getConcepts();
+                                                  setSheetState(() => _concepts = concepts);
+                                                }
+                                              },
                                             ),
                                           ],
                                         ),
                                       );
-                                      if (ok == true) {
-                                        await _reportsRepo.deleteConcept(c);
-                                        final concepts = await _reportsRepo.getConcepts();
-                                        setSheetState(() => _concepts = concepts);
-                                      }
                                     },
                                   ),
-                                ],
-                              ),
-                            );
-                          },
                         ),
-                ),
-              ],
-            ),
-          ),
+                      ],
+                    ),
+              ),
         );
       },
     );
@@ -863,35 +1198,45 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final ctrl = TextEditingController(text: current);
     await showDialog(
       context: parentCtx,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        title: const Text('RENOMBRAR CONCEPTO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          textCapitalization: TextCapitalization.characters,
-          style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(labelText: 'Nuevo nombre', labelStyle: TextStyle(color: Colors.white38)),
-          inputFormatters: [
-            TextInputFormatter.withFunction(
-              (oldValue, newValue) => newValue.copyWith(text: newValue.text.toUpperCase()),
+      builder:
+          (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            title: const Text(
+              'RENOMBRAR CONCEPTO',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
             ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
-          ElevatedButton(
-            onPressed: () async {
-              final name = ctrl.text.trim();
-              if (name.isNotEmpty) {
-                await _reportsRepo.renameConcept(current, name);
-                if (ctx.mounted) Navigator.pop(ctx);
-              }
-            },
-            child: const Text('GUARDAR', style: TextStyle(color: Colors.white)),
+            content: TextField(
+              controller: ctrl,
+              autofocus: true,
+              textCapitalization: TextCapitalization.characters,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                labelText: 'Nuevo nombre',
+                labelStyle: TextStyle(color: Colors.white38),
+              ),
+              inputFormatters: [
+                TextInputFormatter.withFunction(
+                  (oldValue, newValue) => newValue.copyWith(text: newValue.text.toUpperCase()),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  final name = ctrl.text.trim();
+                  if (name.isNotEmpty) {
+                    await _reportsRepo.renameConcept(current, name);
+                    if (ctx.mounted) Navigator.pop(ctx);
+                  }
+                },
+                child: const Text('GUARDAR', style: TextStyle(color: Colors.white)),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 
@@ -901,53 +1246,65 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final amountCtrl = TextEditingController();
     await showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        title: const Text('ABRIR TURNO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameCtrl,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(labelText: 'Cajero (quien abre)', labelStyle: TextStyle(color: Colors.white38)),
+      builder:
+          (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            title: const Text(
+              'ABRIR TURNO',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: amountCtrl,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(labelText: 'Monto inicial en caja', labelStyle: TextStyle(color: Colors.white38)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: nameCtrl,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Cajero (quien abre)',
+                    labelStyle: TextStyle(color: Colors.white38),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: amountCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Monto inicial en caja',
+                    labelStyle: TextStyle(color: Colors.white38),
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
-          ElevatedButton(
-            onPressed: () async {
-              final amount = double.tryParse(amountCtrl.text) ?? 0;
-              if (amount >= 0) {
-                final cashier = nameCtrl.text.trim().isEmpty ? prefs.userName : nameCtrl.text.trim();
-                await _reportsRepo.openSession(openingAmount: amount, createdBy: cashier);
-                if (ctx.mounted) Navigator.pop(ctx);
-                await _load();
-                if (mounted) {
-                  await _showCashReceiptPdf(
-                    title: 'COMPROBANTE DE APERTURA',
-                    subtitle: 'Cajero que abre: $cashier',
-                    bodyLines: [
-                      'Monto inicial en caja: ${_fmt(amount)}',
-                    ],
-                    boldLabel: 'Total en caja',
-                    boldAmount: _currentCashTotal(),
-                  );
-                }
-              }
-            },
-            child: const Text('ABRIR', style: TextStyle(color: Colors.white)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  final amount = double.tryParse(amountCtrl.text) ?? 0;
+                  if (amount >= 0) {
+                    final cashier =
+                        nameCtrl.text.trim().isEmpty ? prefs.userName : nameCtrl.text.trim();
+                    await _reportsRepo.openSession(openingAmount: amount, createdBy: cashier);
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    await _load();
+                    if (mounted) {
+                      await _showCashReceiptPdf(
+                        title: 'COMPROBANTE DE APERTURA',
+                        subtitle: 'Cajero que abre: $cashier',
+                        bodyLines: ['Monto inicial en caja: ${_fmt(amount)}'],
+                        boldLabel: 'Total en caja',
+                        boldAmount: _currentCashTotal(),
+                      );
+                    }
+                  }
+                },
+                child: const Text('ABRIR', style: TextStyle(color: Colors.white)),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 
@@ -956,53 +1313,69 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final notesCtrl = TextEditingController();
     await showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        title: const Text('CORTE PARCIAL', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: amountCtrl,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(labelText: 'Monto retirado', labelStyle: TextStyle(color: Colors.white38)),
+      builder:
+          (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            title: const Text(
+              'CORTE PARCIAL',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: notesCtrl,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(labelText: 'Notas (opcional)', labelStyle: TextStyle(color: Colors.white38)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: amountCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Monto retirado',
+                    labelStyle: TextStyle(color: Colors.white38),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: notesCtrl,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Notas (opcional)',
+                    labelStyle: TextStyle(color: Colors.white38),
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
-          ElevatedButton(
-            onPressed: () async {
-              final amount = double.tryParse(amountCtrl.text) ?? 0;
-              if (amount > 0) {
-                await _reportsRepo.addPartialClosure(amount: amount, notes: notesCtrl.text.trim());
-                if (ctx.mounted) Navigator.pop(ctx);
-                await _load();
-                if (mounted) {
-                  final summary = await _reportsRepo.getCashFlowSummary(_start, _end);
-                  final session = _openSession;
-                  await _showCutoffPdf(
-                    openingAmount: (session?['opening_amount'] as num?)?.toDouble() ?? 0,
-                    openedBy: (session?['created_by'] ?? '').toString(),
-                    closingAmount: amount,
-                    closedBy: '',
-                    summary: summary,
-                    isPartial: true,
-                  );
-                }
-              }
-            },
-            child: const Text('GUARDAR', style: TextStyle(color: Colors.white)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  final amount = double.tryParse(amountCtrl.text) ?? 0;
+                  if (amount > 0) {
+                    await _reportsRepo.addPartialClosure(
+                      amount: amount,
+                      notes: notesCtrl.text.trim(),
+                    );
+                    if (ctx.mounted) Navigator.pop(ctx);
+                    await _load();
+                    if (mounted) {
+                      final summary = await _reportsRepo.getCashFlowSummary(_start, _end);
+                      final session = _openSession;
+                      await _showCutoffPdf(
+                        openingAmount: (session?['opening_amount'] as num?)?.toDouble() ?? 0,
+                        openedBy: (session?['created_by'] ?? '').toString(),
+                        closingAmount: amount,
+                        closedBy: '',
+                        summary: summary,
+                        isPartial: true,
+                      );
+                    }
+                  }
+                },
+                child: const Text('GUARDAR', style: TextStyle(color: Colors.white)),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 
@@ -1015,55 +1388,71 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
 
     await showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        title: const Text('CORTE TOTAL', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Abrió: ${session['created_by'] ?? '?'}  con  ${_fmt(((session['opening_amount'] as num?) ?? 0).toDouble())}',
-                style: const TextStyle(color: Colors.white54, fontSize: 12)),
-            const SizedBox(height: 12),
-            TextField(
-              controller: closedByCtrl,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(labelText: 'Cajero que cierra', labelStyle: TextStyle(color: Colors.white38)),
+      builder:
+          (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            title: const Text(
+              'CORTE TOTAL',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
             ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: closingCtrl,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(labelText: 'Efectivo contado', labelStyle: TextStyle(color: Colors.white38)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Abrió: ${session['created_by'] ?? '?'}  con  ${_fmt(((session['opening_amount'] as num?) ?? 0).toDouble())}',
+                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: closedByCtrl,
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Cajero que cierra',
+                    labelStyle: TextStyle(color: Colors.white38),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: closingCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: 'Efectivo contado',
+                    labelStyle: TextStyle(color: Colors.white38),
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
-          ElevatedButton(
-            onPressed: () async {
-              final closing = double.tryParse(closingCtrl.text) ?? 0;
-              final closedBy = closedByCtrl.text.trim().isEmpty ? prefs.userName : closedByCtrl.text.trim();
-              await _reportsRepo.closeSession(closingAmount: closing, closedBy: closedBy);
-              if (ctx.mounted) Navigator.pop(ctx);
-              await _load();
-              if (mounted) {
-                final summary = await _reportsRepo.getCashFlowSummary(_start, _end);
-                await _showCutoffPdf(
-                  openingAmount: (session['opening_amount'] as num?)?.toDouble() ?? 0,
-                  openedBy: (session['created_by'] ?? '').toString(),
-                  closingAmount: closing,
-                  closedBy: closedBy,
-                  summary: summary,
-                  isPartial: false,
-                );
-              }
-            },
-            child: const Text('CERRAR TURNO', style: TextStyle(color: Colors.white)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  final closing = double.tryParse(closingCtrl.text) ?? 0;
+                  final closedBy =
+                      closedByCtrl.text.trim().isEmpty ? prefs.userName : closedByCtrl.text.trim();
+                  await _reportsRepo.closeSession(closingAmount: closing, closedBy: closedBy);
+                  if (ctx.mounted) Navigator.pop(ctx);
+                  await _load();
+                  if (mounted) {
+                    final summary = await _reportsRepo.getCashFlowSummary(_start, _end);
+                    await _showCutoffPdf(
+                      openingAmount: (session['opening_amount'] as num?)?.toDouble() ?? 0,
+                      openedBy: (session['created_by'] ?? '').toString(),
+                      closingAmount: closing,
+                      closedBy: closedBy,
+                      summary: summary,
+                      isPartial: false,
+                    );
+                  }
+                },
+                child: const Text('CERRAR TURNO', style: TextStyle(color: Colors.white)),
+              ),
+            ],
           ),
-        ],
-      ),
     );
   }
 
@@ -1076,7 +1465,8 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     required bool isPartial,
   }) async {
     final prefs = PreferencesService();
-    final businessName = prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
+    final businessName =
+        prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
     final primaryColor = PdfColor.fromInt(prefs.primaryColorValue);
 
     pw.MemoryImage? logoImage;
@@ -1090,9 +1480,18 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final dateStr =
         '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}  ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
 
-    final titleStyle = pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12, color: PdfColors.black, letterSpacing: 1);
+    final titleStyle = pw.TextStyle(
+      fontWeight: pw.FontWeight.bold,
+      fontSize: 12,
+      color: PdfColors.black,
+      letterSpacing: 1,
+    );
     final normalStyle = pw.TextStyle(fontSize: 9.5, color: PdfColors.black);
-    final boldStyle = pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10, color: PdfColors.black);
+    final boldStyle = pw.TextStyle(
+      fontWeight: pw.FontWeight.bold,
+      fontSize: 10,
+      color: PdfColors.black,
+    );
     final smallStyle = pw.TextStyle(fontSize: 8, color: PdfColors.grey700);
 
     final sales = summary['sales'] ?? 0;
@@ -1116,7 +1515,12 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
               ],
               pw.Center(child: pw.Text(businessName.toUpperCase(), style: titleStyle)),
               pw.SizedBox(height: 2),
-              pw.Center(child: pw.Text(isPartial ? 'CORTE PARCIAL DE CAJA' : 'CORTE TOTAL DE CAJA', style: boldStyle)),
+              pw.Center(
+                child: pw.Text(
+                  isPartial ? 'CORTE PARCIAL DE CAJA' : 'CORTE TOTAL DE CAJA',
+                  style: boldStyle,
+                ),
+              ),
               pw.SizedBox(height: 2),
               pw.Center(child: pw.Text(dateStr, style: smallStyle)),
               pw.SizedBox(height: 2),
@@ -1144,7 +1548,12 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                 pw.Text('Diferencia: ${_fmt(difference)}', style: boldStyle),
               ],
               pw.SizedBox(height: 10),
-              pw.Center(child: pw.Text('Documento interno / control de caja', style: const pw.TextStyle(fontSize: 7))),
+              pw.Center(
+                child: pw.Text(
+                  'Documento interno / control de caja',
+                  style: const pw.TextStyle(fontSize: 7),
+                ),
+              ),
             ],
           );
         },
@@ -1164,63 +1573,66 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      builder: (ctx) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.9,
-        maxChildSize: 0.95,
-        builder: (_, ctrl) => Column(
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: const BoxDecoration(
-                color: Color(0xFF1A1A1A),
-                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-              ),
-              child: Row(
-                children: [
-                  Text(
-                    isPartial ? 'CORTE PARCIAL' : 'CORTE TOTAL',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
+      builder:
+          (ctx) => DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: 0.9,
+            maxChildSize: 0.95,
+            builder:
+                (_, ctrl) => Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF1A1A1A),
+                        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                      ),
+                      child: Row(
+                        children: [
+                          Text(
+                            isPartial ? 'CORTE PARCIAL' : 'CORTE TOTAL',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                          const Spacer(),
+                          IconButton(
+                            icon: const Icon(Icons.share, color: Colors.blue),
+                            onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
+                          ),
+                          IconButton(
+                            icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
+                            onPressed:
+                                () => Printing.layoutPdf(
+                                  onLayout: (_) async => bytes,
+                                  name: fileName,
+                                ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close, color: Colors.white54),
+                            onPressed: () => Navigator.pop(ctx),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.share, color: Colors.blue),
-                    onPressed: () => Printing.sharePdf(
-                      bytes: bytes,
-                      filename: fileName,
+                    Expanded(
+                      child: PdfPreview(
+                        padding: const EdgeInsets.all(12),
+                        build: (_) => Future.value(bytes),
+                        allowSharing: false,
+                        allowPrinting: false,
+                        initialPageFormat: const PdfPageFormat(
+                          80 * PdfPageFormat.mm,
+                          200 * PdfPageFormat.mm,
+                        ),
+                        pageFormats: const {},
+                      ),
                     ),
-                  ),
-                  IconButton(
-                    icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
-                    onPressed: () => Printing.layoutPdf(
-                      onLayout: (_) async => bytes,
-                      name: fileName,
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white54),
-                    onPressed: () => Navigator.pop(ctx),
-                  ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: PdfPreview(
-                padding: const EdgeInsets.all(12),
-                build: (_) => Future.value(bytes),
-                allowSharing: false,
-                allowPrinting: false,
-                initialPageFormat: const PdfPageFormat(80 * PdfPageFormat.mm, 200 * PdfPageFormat.mm),
-                pageFormats: const {},
-              ),
-            ),
-          ],
-        ),
-      ),
+                  ],
+                ),
+          ),
     );
   }
 
@@ -1232,7 +1644,12 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     }
     if (prefs.logoUrl.isNotEmpty) {
       try {
-        final client = HttpClient();
+        final client =
+            HttpClient()
+              // Sin conexión, la conexión/DNS puede quedar bloqueada indefinidamente
+              // y "congelar" la generación del PDF. Timeout corto: si no hay logo,
+              // el PDF se genera igual sin logo.
+              ..connectionTimeout = const Duration(seconds: 4);
         final req = await client.getUrl(Uri.parse(prefs.logoUrl));
         final res = await req.close().timeout(const Duration(seconds: 8));
         if (res.statusCode == 200) {
@@ -1247,6 +1664,147 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       } catch (_) {}
     }
     return null;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // ETAPA 4 — Pestaña UTILIDAD
+  // ─────────────────────────────────────────────────────────────
+
+  Widget _buildProfitTab(Color primary) {
+    final sales = _profit['sales'] ?? 0;
+    final cost = _profit['costOfGoodsSold'] ?? 0;
+    final expenses = _profit['expenses'] ?? 0;
+    final profit = _profit['profit'] ?? 0;
+    final salesCount = (_profit['salesCount'] ?? 0).toInt();
+    final profitColor = profit >= 0 ? Colors.greenAccent : Colors.redAccent;
+
+    return Column(
+      children: [
+        _buildDateFilter(),
+        Expanded(
+          child: RefreshIndicator(
+            color: primary,
+            onRefresh: _load,
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
+              children: [
+                _StatsCard(
+                  label: 'Ventas ($salesCount)',
+                  value: _fmt(sales),
+                  icon: Icons.arrow_upward,
+                  color: Colors.greenAccent,
+                ),
+                const SizedBox(height: 12),
+                _StatsCard(
+                  label: 'Costo de lo vendido',
+                  value: '-${_fmt(cost)}',
+                  icon: Icons.inventory,
+                  color: Colors.orangeAccent,
+                ),
+                const SizedBox(height: 12),
+                _StatsCard(
+                  label: 'Retiros/Gastos',
+                  value: '-${_fmt(expenses)}',
+                  icon: Icons.arrow_downward,
+                  color: Colors.redAccent,
+                ),
+                const SizedBox(height: 12),
+                _StatsCard(
+                  label: 'UTILIDAD NETA',
+                  value: _fmt(profit),
+                  icon: Icons.trending_up,
+                  color: profitColor,
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  'DESGLOSE DE GASTOS POR CONCEPTO',
+                  style: TextStyle(
+                    color: Colors.white38,
+                    fontSize: 12,
+                    letterSpacing: 1,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                if (_profitExpenses.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Text(
+                      'Sin retiros/gastos en el periodo.',
+                      style: TextStyle(color: Colors.white38),
+                    ),
+                  )
+                else
+                  ..._profitExpenses.map((e) {
+                    final concept = e['concept'] ?? '';
+                    final amount = double.tryParse(e['amount'] ?? '0') ?? 0;
+                    return Card(
+                      color: const Color(0xFF1A1A1A),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      child: ListTile(
+                        leading: Icon(Icons.receipt, color: Colors.redAccent),
+                        title: Text(concept, style: const TextStyle(color: Colors.white)),
+                        trailing: Text(
+                          _fmt(amount),
+                          style: const TextStyle(
+                            color: Colors.redAccent,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                const SizedBox(height: 20),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: primary,
+                    side: BorderSide(color: primary),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                  ),
+                  icon: const Icon(Icons.picture_as_pdf),
+                  label: const Text('TICKET DE UTILIDAD'),
+                  onPressed: _showProfitPdf,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Ticket (vista previa en app) del informe de utilidad del periodo.
+  Future<void> _showProfitPdf() async {
+    final sales = _profit['sales'] ?? 0;
+    final cost = _profit['costOfGoodsSold'] ?? 0;
+    final expenses = _profit['expenses'] ?? 0;
+    final profit = _profit['profit'] ?? 0;
+    final salesCount = (_profit['salesCount'] ?? 0).toInt();
+
+    final dateStr =
+        '${_start.day.toString().padLeft(2, '0')}/${_start.month.toString().padLeft(2, '0')} - ${_end.day.toString().padLeft(2, '0')}/${_end.month.toString().padLeft(2, '0')}/${_end.year}';
+
+    final bodyLines = <String>[
+      'Periodo: $dateStr',
+      '--------------------------------',
+      'Ventas ($salesCount): ${_fmt(sales)}',
+      'Costo de lo vendido: -${_fmt(cost)}',
+      'Retiros/Gastos: -${_fmt(expenses)}',
+      '--------------------------------',
+    ];
+    for (final e in _profitExpenses) {
+      final amount = double.tryParse(e['amount'] ?? '0') ?? 0;
+      bodyLines.add('  ${e['concept']}: ${_fmt(amount)}');
+    }
+    if (_profitExpenses.isEmpty) bodyLines.add('  (sin gastos)');
+
+    await _showCashReceiptPdf(
+      title: 'INFORME DE UTILIDAD',
+      subtitle: '',
+      bodyLines: bodyLines,
+      boldLabel: 'UTILIDAD NETA',
+      boldAmount: profit,
+    );
   }
 
   /// Formatea un monto como moneda con separador de miles: $1,234.56
@@ -1278,51 +1836,76 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       context: context,
       isScrollControlled: true,
       backgroundColor: const Color(0xFF1A1A1A),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (ctx) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.9,
-        maxChildSize: 0.95,
-        builder: (_, ctrl) => Column(
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: const BoxDecoration(
-                color: Color(0xFF1A1A1A),
-                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-              ),
-              child: Row(
-                children: [
-                  Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
-                  const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.share, color: Colors.blue),
-                    onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
-                  ),
-                  IconButton(
-                    icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
-                    onPressed: () => Printing.layoutPdf(onLayout: (_) async => bytes, name: fileName),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white54),
-                    onPressed: () => Navigator.pop(ctx),
-                  ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: PdfPreview(
-                padding: const EdgeInsets.all(12),
-                build: (_) => Future.value(bytes),
-                allowSharing: false,
-                allowPrinting: false,
-                initialPageFormat: const PdfPageFormat(80 * PdfPageFormat.mm, 200 * PdfPageFormat.mm),
-                pageFormats: const {},
-              ),
-            ),
-          ],
-        ),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
+      builder:
+          (ctx) => DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: 0.9,
+            maxChildSize: 0.95,
+            builder:
+                (_, ctrl) => Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF1A1A1A),
+                        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ),
+                          const Spacer(),
+                          IconButton(
+                            icon: const Icon(Icons.share, color: Colors.blue),
+                            visualDensity: VisualDensity.compact,
+                            onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
+                          ),
+                          IconButton(
+                            icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
+                            visualDensity: VisualDensity.compact,
+                            onPressed:
+                                () => Printing.layoutPdf(
+                                  onLayout: (_) async => bytes,
+                                  name: fileName,
+                                ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close, color: Colors.white54),
+                            visualDensity: VisualDensity.compact,
+                            onPressed: () => Navigator.pop(ctx),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: PdfPreview(
+                        padding: const EdgeInsets.all(12),
+                        build: (_) => Future.value(bytes),
+                        allowSharing: false,
+                        allowPrinting: false,
+                        initialPageFormat: const PdfPageFormat(
+                          80 * PdfPageFormat.mm,
+                          200 * PdfPageFormat.mm,
+                        ),
+                        pageFormats: const {},
+                      ),
+                    ),
+                  ],
+                ),
+          ),
     );
   }
 
@@ -1335,7 +1918,8 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     required double boldAmount,
   }) async {
     final prefs = PreferencesService();
-    final businessName = prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
+    final businessName =
+        prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
     final primaryColor = PdfColor.fromInt(prefs.primaryColorValue);
 
     pw.MemoryImage? logoImage;
@@ -1349,9 +1933,18 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final dateStr =
         '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}  ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
 
-    final titleStyle = pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12, color: PdfColors.black, letterSpacing: 1);
+    final titleStyle = pw.TextStyle(
+      fontWeight: pw.FontWeight.bold,
+      fontSize: 12,
+      color: PdfColors.black,
+      letterSpacing: 1,
+    );
     final normalStyle = pw.TextStyle(fontSize: 9.5, color: PdfColors.black);
-    final boldStyle = pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10, color: PdfColors.black);
+    final boldStyle = pw.TextStyle(
+      fontWeight: pw.FontWeight.bold,
+      fontSize: 10,
+      color: PdfColors.black,
+    );
     final smallStyle = pw.TextStyle(fontSize: 8, color: PdfColors.grey700);
 
     pdf.addPage(
@@ -1379,7 +1972,12 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
               pw.Divider(color: primaryColor, thickness: 0.8),
               pw.Text('$boldLabel: ${_fmt(boldAmount)}', style: boldStyle),
               pw.SizedBox(height: 10),
-              pw.Center(child: pw.Text('Documento interno / control de caja', style: const pw.TextStyle(fontSize: 7))),
+              pw.Center(
+                child: pw.Text(
+                  'Documento interno / control de caja',
+                  style: const pw.TextStyle(fontSize: 7),
+                ),
+              ),
             ],
           );
         },
@@ -1407,6 +2005,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
             Tab(icon: Icon(Icons.shopping_cart), text: 'Compras'),
             Tab(icon: Icon(Icons.account_balance_wallet), text: 'Caja'),
             Tab(icon: Icon(Icons.inventory_2), text: 'Kardex'),
+            Tab(icon: Icon(Icons.trending_up), text: 'Utilidad'),
           ],
         ),
         actions: [
@@ -1418,17 +2017,19 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
           ),
         ],
       ),
-      body: _isLoading
-          ? Center(child: CircularProgressIndicator(color: primary))
-          : TabBarView(
-              controller: _tabCtrl,
-              children: [
-                _buildSalesTab(primary),
-                _buildPurchasesTab(),
-                _buildCashFlowTab(primary),
-                _buildKardexTab(primary),
-              ],
-            ),
+      body:
+          _isLoading
+              ? Center(child: CircularProgressIndicator(color: primary))
+              : TabBarView(
+                controller: _tabCtrl,
+                children: [
+                  _buildSalesTab(primary),
+                  _buildPurchasesTab(),
+                  _buildCashFlowTab(primary),
+                  _buildKardexTab(primary),
+                  _buildProfitTab(primary),
+                ],
+              ),
     );
   }
 
@@ -1452,33 +2053,64 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     return Column(
       children: [
         _buildDateFilter(),
-        _StatsCard(label: 'Ventas', value: '${_sales.length}', icon: Icons.receipt_long, color: primary),
+        _StatsCard(
+          label: 'Ventas',
+          value: '${_sales.length}',
+          icon: Icons.receipt_long,
+          color: primary,
+        ),
         const SizedBox(height: 12),
-        _StatsCard(label: 'Total', value: '\$${summary.toStringAsFixed(2)}', icon: Icons.attach_money, color: Colors.greenAccent),
+        _StatsCard(
+          label: 'Total',
+          value: '\$${summary.toStringAsFixed(2)}',
+          icon: Icons.attach_money,
+          color: Colors.greenAccent,
+        ),
         const SizedBox(height: 12),
         Expanded(
-          child: _sales.isEmpty
-              ? const Center(child: Text('Sin ventas en el periodo', style: TextStyle(color: Colors.white24)))
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _sales.length,
-                  itemBuilder: (_, i) {
-                    final s = _sales[i];
-                    final date = DateTime.tryParse(s['date'] ?? '') ?? DateTime.now();
-                    final isMesa = (s['type'] as String).contains('Mesa');
-                    final color = isMesa ? const Color(0xFF1E88E5) : primary;
-                    return Card(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      child: ListTile(
-                        leading: Icon(isMesa ? Icons.table_bar : Icons.sell, color: color),
-                        title: Text(s['type'] ?? 'Venta', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                        subtitle: Text('${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')} | ${s['payment_method']}', style: const TextStyle(color: Colors.white38, fontSize: 12)),
-                        trailing: Text('\$${(s['total'] as num).toStringAsFixed(2)}', style: const TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold)),
-                        onTap: () => _showSaleDetail(s, color),
-                      ),
-                    );
-                  },
-                ),
+          child:
+              _sales.isEmpty
+                  ? const Center(
+                    child: Text(
+                      'Sin ventas en el periodo',
+                      style: TextStyle(color: Colors.white24),
+                    ),
+                  )
+                  : ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _sales.length,
+                    itemBuilder: (_, i) {
+                      final s = _sales[i];
+                      final date = DateTime.tryParse(s['date'] ?? '') ?? DateTime.now();
+                      final isMesa = (s['type'] as String).contains('Mesa');
+                      final color = isMesa ? const Color(0xFF1E88E5) : primary;
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          leading: Icon(isMesa ? Icons.table_bar : Icons.sell, color: color),
+                          title: Text(
+                            s['type'] ?? 'Venta',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          subtitle: Text(
+                            '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')} | ${s['payment_method']}',
+                            style: const TextStyle(color: Colors.white38, fontSize: 12),
+                          ),
+                          trailing: Text(
+                            '\$${(s['total'] as num).toStringAsFixed(2)}',
+                            style: const TextStyle(
+                              color: Colors.greenAccent,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          onTap: () => _showSaleDetail(s, color),
+                        ),
+                      );
+                    },
+                  ),
         ),
       ],
     );
@@ -1488,31 +2120,59 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final summary = _purchases.fold<double>(0, (a, p) => a + (p['total'] as num).toDouble());
     return Column(
       children: [
-        _StatsCard(label: 'Compras', value: '${_purchases.length}', icon: Icons.shopping_cart, color: Colors.orangeAccent),
+        _StatsCard(
+          label: 'Compras',
+          value: '${_purchases.length}',
+          icon: Icons.shopping_cart,
+          color: Colors.orangeAccent,
+        ),
         const SizedBox(height: 12),
-        _StatsCard(label: 'Total', value: '\$${summary.toStringAsFixed(2)}', icon: Icons.attach_money, color: Colors.greenAccent),
+        _StatsCard(
+          label: 'Total',
+          value: '\$${summary.toStringAsFixed(2)}',
+          icon: Icons.attach_money,
+          color: Colors.greenAccent,
+        ),
         const SizedBox(height: 12),
         Expanded(
-          child: _purchases.isEmpty
-              ? const Center(child: Text('Sin compras registradas', style: TextStyle(color: Colors.white24)))
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _purchases.length,
-                  itemBuilder: (_, i) {
-                    final p = _purchases[i];
-                    final date = DateTime.tryParse(p['date'] ?? '') ?? DateTime.now();
-                    return Card(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      child: ListTile(
-                        leading: const Icon(Icons.shopping_cart, color: Colors.orangeAccent),
-                        title: Text(p['provider_name'] ?? 'Compra', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                        subtitle: Text('${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}', style: const TextStyle(color: Colors.white38, fontSize: 12)),
-                        trailing: Text('\$${(p['total'] as num).toStringAsFixed(2)}', style: const TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold)),
-                        onTap: () => _showPurchaseDetail(p),
-                      ),
-                    );
-                  },
-                ),
+          child:
+              _purchases.isEmpty
+                  ? const Center(
+                    child: Text('Sin compras registradas', style: TextStyle(color: Colors.white24)),
+                  )
+                  : ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _purchases.length,
+                    itemBuilder: (_, i) {
+                      final p = _purchases[i];
+                      final date = DateTime.tryParse(p['date'] ?? '') ?? DateTime.now();
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          leading: const Icon(Icons.shopping_cart, color: Colors.orangeAccent),
+                          title: Text(
+                            p['provider_name'] ?? 'Compra',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          subtitle: Text(
+                            '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}',
+                            style: const TextStyle(color: Colors.white38, fontSize: 12),
+                          ),
+                          trailing: Text(
+                            '\$${(p['total'] as num).toStringAsFixed(2)}',
+                            style: const TextStyle(
+                              color: Colors.greenAccent,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          onTap: () => _showPurchaseDetail(p),
+                        ),
+                      );
+                    },
+                  ),
         ),
       ],
     );
@@ -1531,27 +2191,64 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
         children: [
           _buildDateFilter(),
           const SizedBox(height: 8),
-          _StatsCard(label: 'Ingresos (ventas)', value: _fmt(sales), icon: Icons.arrow_upward, color: Colors.greenAccent),
+          _StatsCard(
+            label: 'Ingresos (ventas)',
+            value: _fmt(sales),
+            icon: Icons.arrow_upward,
+            color: Colors.greenAccent,
+          ),
           const SizedBox(height: 12),
-          _StatsCard(label: 'Compras', value: _fmt(purchases), icon: Icons.shopping_cart, color: Colors.orangeAccent),
+          _StatsCard(
+            label: 'Compras',
+            value: _fmt(purchases),
+            icon: Icons.shopping_cart,
+            color: Colors.orangeAccent,
+          ),
           const SizedBox(height: 12),
-          _StatsCard(label: 'Retiros/Gastos', value: _fmt(outflows), icon: Icons.arrow_downward, color: Colors.redAccent),
+          _StatsCard(
+            label: 'Retiros/Gastos',
+            value: _fmt(outflows),
+            icon: Icons.arrow_downward,
+            color: Colors.redAccent,
+          ),
           const SizedBox(height: 12),
-          _StatsCard(label: 'Efectivo neto', value: _fmt(net), icon: Icons.account_balance_wallet, color: primary),
+          _StatsCard(
+            label: 'Efectivo neto',
+            value: _fmt(net),
+            icon: Icons.account_balance_wallet,
+            color: primary,
+          ),
           const SizedBox(height: 12),
-          _StatsCard(label: 'Total en caja', value: _fmt(_currentCashTotal()), icon: Icons.payments, color: Colors.tealAccent),
+          _StatsCard(
+            label: 'Total en caja',
+            value: _fmt(_currentCashTotal()),
+            icon: Icons.payments,
+            color: Colors.tealAccent,
+          ),
           const SizedBox(height: 12),
           ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.symmetric(vertical: 14)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              padding: const EdgeInsets.symmetric(vertical: 14),
+            ),
             icon: const Icon(Icons.money_off, color: Colors.white),
-            label: const Text('REGISTRAR RETIRO / GASTO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            label: const Text(
+              'REGISTRAR RETIRO / GASTO',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            ),
             onPressed: _addOutflow,
           ),
           const SizedBox(height: 8),
           ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2A2A2A), padding: const EdgeInsets.symmetric(vertical: 14)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF2A2A2A),
+              padding: const EdgeInsets.symmetric(vertical: 14),
+            ),
             icon: Icon(Icons.category, color: Colors.orangeAccent),
-            label: const Text('CONCEPTOS (catalogo)', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            label: const Text(
+              'CONCEPTOS (catalogo)',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+            ),
             onPressed: _showConceptManager,
           ),
           const Divider(color: Colors.white10, height: 32),
@@ -1564,19 +2261,33 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
             ),
             const SizedBox(height: 8),
             ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(backgroundColor: primary, padding: const EdgeInsets.symmetric(vertical: 14)),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: primary,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+              ),
               icon: const Icon(Icons.play_circle, color: Colors.white),
-              label: const Text('ABRIR TURNO', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              label: const Text(
+                'ABRIR TURNO',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
               onPressed: _openTurn,
             ),
           ] else ...[
             Text(
               'TURNO ABIERTO',
-              style: TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold, letterSpacing: 1),
+              style: TextStyle(
+                color: Colors.greenAccent,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1,
+              ),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 8),
-            _TurnInfoRow(icon: Icons.person, label: 'Abrió', value: (session['created_by'] ?? '?').toString()),
+            _TurnInfoRow(
+              icon: Icons.person,
+              label: 'Abrió',
+              value: (session['created_by'] ?? '?').toString(),
+            ),
             _TurnInfoRow(
               icon: Icons.payments,
               label: 'Monto inicial',
@@ -1587,18 +2298,38 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
               children: [
                 Expanded(
                   child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.orangeAccent, padding: const EdgeInsets.symmetric(vertical: 12)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.orangeAccent,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
                     icon: const Icon(Icons.content_cut, color: Colors.white, size: 18),
-                    label: const Text('CORTE PARCIAL', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                    label: const Text(
+                      'CORTE PARCIAL',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                      ),
+                    ),
                     onPressed: _partialCutoff,
                   ),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.symmetric(vertical: 12)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.redAccent,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
                     icon: const Icon(Icons.stop_circle, color: Colors.white, size: 18),
-                    label: const Text('CORTE TOTAL', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
+                    label: const Text(
+                      'CORTE TOTAL',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                      ),
+                    ),
                     onPressed: _totalCutoff,
                   ),
                 ),
@@ -1622,7 +2353,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
         Padding(
           padding: const EdgeInsets.all(12),
           child: DropdownButtonFormField<int?>(
-            value: _selectedProductId,
+            initialValue: _selectedProductId,
             dropdownColor: const Color(0xFF1A1A1A),
             style: const TextStyle(color: Colors.white),
             decoration: const InputDecoration(
@@ -1631,8 +2362,16 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
               border: OutlineInputBorder(),
             ),
             items: [
-              const DropdownMenuItem(value: null, child: Text('Selecciona...', style: TextStyle(color: Colors.white54))),
-              ..._products.map((p) => DropdownMenuItem(value: p.id, child: Text(p.name, style: const TextStyle(color: Colors.white)))),
+              const DropdownMenuItem(
+                value: null,
+                child: Text('Selecciona...', style: TextStyle(color: Colors.white54)),
+              ),
+              ..._products.map(
+                (p) => DropdownMenuItem(
+                  value: p.id,
+                  child: Text(p.name, style: const TextStyle(color: Colors.white)),
+                ),
+              ),
             ],
             onChanged: (v) async {
               setState(() => _selectedProductId = v);
@@ -1646,33 +2385,51 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
           ),
         ),
         Expanded(
-          child: _movements.isEmpty
-              ? const Center(child: Text('Selecciona un producto para ver su kardex', style: TextStyle(color: Colors.white24)))
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _movements.length,
-                  itemBuilder: (_, i) {
-                    final m = _movements[i];
-                    final type = m['movement_type'] as String;
-                    final qty = (m['quantity'] as num).toDouble();
-                    final isNegative = qty < 0;
-                    return Card(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      child: ListTile(
-                        leading: Icon(
-                          type == 'sale' ? Icons.arrow_downward : Icons.arrow_upward,
-                          color: type == 'sale' ? Colors.redAccent : Colors.greenAccent,
+          child:
+              _movements.isEmpty
+                  ? const Center(
+                    child: Text(
+                      'Selecciona un producto para ver su kardex',
+                      style: TextStyle(color: Colors.white24),
+                    ),
+                  )
+                  : ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _movements.length,
+                    itemBuilder: (_, i) {
+                      final m = _movements[i];
+                      final type = m['movement_type'] as String;
+                      final qty = (m['quantity'] as num).toDouble();
+                      final isNegative = qty < 0;
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        child: ListTile(
+                          leading: Icon(
+                            type == 'sale' ? Icons.arrow_downward : Icons.arrow_upward,
+                            color: type == 'sale' ? Colors.redAccent : Colors.greenAccent,
+                          ),
+                          title: Text(
+                            type.toUpperCase(),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          subtitle: Text(
+                            '${m['created_at']}',
+                            style: const TextStyle(color: Colors.white38, fontSize: 12),
+                          ),
+                          trailing: Text(
+                            '${isNegative ? '' : '+'}${qty.toStringAsFixed(2)}',
+                            style: TextStyle(
+                              color: isNegative ? Colors.redAccent : Colors.greenAccent,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                         ),
-                        title: Text(type.toUpperCase(), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                        subtitle: Text('${m['created_at']}', style: const TextStyle(color: Colors.white38, fontSize: 12)),
-                        trailing: Text(
-                          '${isNegative ? '' : '+'}${qty.toStringAsFixed(2)}',
-                          style: TextStyle(color: isNegative ? Colors.redAccent : Colors.greenAccent, fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                    );
-                  },
-                ),
+                      );
+                    },
+                  ),
         ),
       ],
     );
@@ -1695,7 +2452,10 @@ class _TurnInfoRow extends StatelessWidget {
           const SizedBox(width: 8),
           Text('$label:', style: const TextStyle(color: Colors.white54, fontSize: 13)),
           const Spacer(),
-          Text(value, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+          Text(
+            value,
+            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+          ),
         ],
       ),
     );
@@ -1707,7 +2467,12 @@ class _StatsCard extends StatelessWidget {
   final String value;
   final IconData icon;
   final Color color;
-  const _StatsCard({required this.label, required this.value, required this.icon, required this.color});
+  const _StatsCard({
+    required this.label,
+    required this.value,
+    required this.icon,
+    required this.color,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1720,14 +2485,19 @@ class _StatsCard extends StatelessWidget {
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(20),
         color: solid ? color : (outlined ? const Color(0xFF1A1A1A) : null),
-        gradient: (solid || outlined)
-            ? null
-            : LinearGradient(
-                begin: Alignment.topLeft, end: Alignment.bottomRight,
-                colors: [color.withValues(alpha: 0.18), const Color(0xFF1A1A1A)],
-              ),
+        gradient:
+            (solid || outlined)
+                ? null
+                : LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [color.withValues(alpha: 0.18), const Color(0xFF1A1A1A)],
+                ),
         border: Border.all(
-          color: solid ? Colors.white.withValues(alpha: 0.28) : color.withValues(alpha: outlined ? 1.0 : 0.35),
+          color:
+              solid
+                  ? Colors.white.withValues(alpha: 0.28)
+                  : color.withValues(alpha: outlined ? 1.0 : 0.35),
           width: outlined ? 2 : 1.5,
         ),
       ),
@@ -1746,7 +2516,10 @@ class _StatsCard extends StatelessWidget {
                   letterSpacing: 1,
                 ),
               ),
-              Text(value, style: TextStyle(color: contentColor, fontSize: 28, fontWeight: FontWeight.bold)),
+              Text(
+                value,
+                style: TextStyle(color: contentColor, fontSize: 28, fontWeight: FontWeight.bold),
+              ),
             ],
           ),
         ],

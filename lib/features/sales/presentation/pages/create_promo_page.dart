@@ -222,9 +222,9 @@ class _CreatePromoPageState extends State<CreatePromoPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1A1A1A),
-        title: const Text('ELIMINAR PROMO', style: TextStyle(color: Colors.redAccent)),
+        title: const Text('ARCHIVAR PROMO', style: TextStyle(color: Colors.redAccent)),
         content: Text(
-          '¿Eliminar "${widget.promo!.name}"? Esta acción no se puede deshacer.',
+          '¿Archivar "${widget.promo!.name}"? Dejará de aparecer en ventas y se conservará su historial.',
           style: const TextStyle(color: Colors.white70),
         ),
         actions: [
@@ -235,16 +235,16 @@ class _CreatePromoPageState extends State<CreatePromoPage> {
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('ELIMINAR', style: TextStyle(color: Colors.white)),
+            child: const Text('ARCHIVAR', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
     );
     if (confirm == true) {
-      await _repo.delete(widget.promo!.id!);
+      await _repo.archive(widget.promo!.id!);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Promo eliminada'), backgroundColor: Colors.green),
+          const SnackBar(content: Text('Promo archivada'), backgroundColor: Colors.green),
         );
         Navigator.pop(context, true);
       }

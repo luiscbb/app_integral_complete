@@ -500,7 +500,9 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
                   // Detalle de productos con altura limitada y scroll.
                   Flexible(
                     child: ConstrainedBox(
-                      constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.35),
+                      constraints: BoxConstraints(
+                        maxHeight: MediaQuery.of(context).size.height * 0.35,
+                      ),
                       child: SingleChildScrollView(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -607,7 +609,9 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Anulando sin PIN. Configura un PIN en Configuración para proteger esta acción.'),
+            content: Text(
+              'Anulando sin PIN. Configura un PIN en Configuración para proteger esta acción.',
+            ),
             backgroundColor: Colors.orange,
             duration: Duration(seconds: 3),
           ),
@@ -618,23 +622,30 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
     // 2) Confirmación explícita (la operación devuelve el stock y no se deshace).
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1A1A1A),
-        title: const Text('ANULAR VENTA', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 15)),
-        content: Text(
-          'Se anulará la venta de \$${(sale['total'] as num).toStringAsFixed(2)}.\n\n'
-          'El stock de los productos regresará al inventario y la venta dejará de contar en informes y caja.\n\n¿Continuar?',
-          style: const TextStyle(color: Colors.white70, fontSize: 13),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar', style: TextStyle(color: Colors.white38))),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('ANULAR', style: TextStyle(color: Colors.white)),
+      builder:
+          (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            title: const Text(
+              'ANULAR VENTA',
+              style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 15),
+            ),
+            content: Text(
+              'Se anulará la venta de \$${(sale['total'] as num).toStringAsFixed(2)}.\n\n'
+              'El stock de los productos regresará al inventario y la venta dejará de contar en informes y caja.\n\n¿Continuar?',
+              style: const TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('ANULAR', style: TextStyle(color: Colors.white)),
+              ),
+            ],
           ),
-        ],
-      ),
     );
     if (confirmed != true || !mounted) return;
 
@@ -643,7 +654,9 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(ok ? 'Venta anulada. Stock devuelto al inventario.' : 'No se pudo anular la venta.'),
+        content: Text(
+          ok ? 'Venta anulada. Stock devuelto al inventario.' : 'No se pudo anular la venta.',
+        ),
         backgroundColor: ok ? Colors.green : Colors.red,
       ),
     );
@@ -656,7 +669,8 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
   /// Comprobante de cancelación con el mismo formato de los tickets de caja.
   Future<void> _showCancelPdf(Map<String, dynamic> sale) async {
     final prefs = PreferencesService();
-    final businessName = prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
+    final businessName =
+        prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
     final primaryColor = PdfColor.fromInt(prefs.primaryColorValue);
 
     pw.MemoryImage? logoImage;
@@ -670,9 +684,18 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
     final dateStr =
         '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}  ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
 
-    final titleStyle = pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 12, color: PdfColors.black, letterSpacing: 1);
+    final titleStyle = pw.TextStyle(
+      fontWeight: pw.FontWeight.bold,
+      fontSize: 12,
+      color: PdfColors.black,
+      letterSpacing: 1,
+    );
     final normalStyle = pw.TextStyle(fontSize: 9.5, color: PdfColors.black);
-    final boldStyle = pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10, color: PdfColors.black);
+    final boldStyle = pw.TextStyle(
+      fontWeight: pw.FontWeight.bold,
+      fontSize: 10,
+      color: PdfColors.black,
+    );
     final smallStyle = pw.TextStyle(fontSize: 8, color: PdfColors.grey700);
 
     final total = (sale['total'] as num?)?.toDouble() ?? 0;
@@ -706,7 +729,12 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
               pw.SizedBox(height: 2),
               pw.Text('El stock de los productos fue devuelto al inventario.', style: smallStyle),
               pw.SizedBox(height: 10),
-              pw.Center(child: pw.Text('Documento interno / control de caja', style: const pw.TextStyle(fontSize: 7))),
+              pw.Center(
+                child: pw.Text(
+                  'Documento interno / control de caja',
+                  style: const pw.TextStyle(fontSize: 7),
+                ),
+              ),
             ],
           );
         },
@@ -721,51 +749,69 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
       context: context,
       isScrollControlled: true,
       backgroundColor: const Color(0xFF1A1A1A),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (ctx) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.9,
-        maxChildSize: 0.95,
-        builder: (_, ctrl) => Column(
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: const BoxDecoration(
-                color: Color(0xFF1A1A1A),
-                borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-              ),
-              child: Row(
-                children: [
-                  const Text('VENTA ANULADA', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
-                  const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.share, color: Colors.blue),
-                    onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
-                  ),
-                  IconButton(
-                    icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
-                    onPressed: () => Printing.layoutPdf(onLayout: (_) async => bytes, name: fileName),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white54),
-                    onPressed: () => Navigator.pop(ctx),
-                  ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: PdfPreview(
-                padding: const EdgeInsets.all(12),
-                build: (_) => Future.value(bytes),
-                allowSharing: false,
-                allowPrinting: false,
-                initialPageFormat: const PdfPageFormat(80 * PdfPageFormat.mm, 200 * PdfPageFormat.mm),
-                pageFormats: const {},
-              ),
-            ),
-          ],
-        ),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
+      builder:
+          (ctx) => DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: 0.9,
+            maxChildSize: 0.95,
+            builder:
+                (_, ctrl) => Column(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF1A1A1A),
+                        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Text(
+                            'VENTA ANULADA',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                          const Spacer(),
+                          IconButton(
+                            icon: const Icon(Icons.share, color: Colors.blue),
+                            onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
+                          ),
+                          IconButton(
+                            icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
+                            onPressed:
+                                () => Printing.layoutPdf(
+                                  onLayout: (_) async => bytes,
+                                  name: fileName,
+                                ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close, color: Colors.white54),
+                            onPressed: () => Navigator.pop(ctx),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: PdfPreview(
+                        padding: const EdgeInsets.all(12),
+                        build: (_) => Future.value(bytes),
+                        allowSharing: false,
+                        allowPrinting: false,
+                        initialPageFormat: const PdfPageFormat(
+                          80 * PdfPageFormat.mm,
+                          200 * PdfPageFormat.mm,
+                        ),
+                        pageFormats: const {},
+                      ),
+                    ),
+                  ],
+                ),
+          ),
     );
   }
 
@@ -777,7 +823,7 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
     }
     if (prefs.logoUrl.isNotEmpty) {
       try {
-        final client = HttpClient();
+        final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
         final req = await client.getUrl(Uri.parse(prefs.logoUrl));
         final res = await req.close().timeout(const Duration(seconds: 8));
         if (res.statusCode == 200) {

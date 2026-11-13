@@ -1,6 +1,8 @@
 -- ============================================================
 -- RECUPERACION COMPLETA SUPABASE - Baumar POS
 -- Ejecutar en Supabase SQL Editor (New Query)
+-- Para cuentas, roles y vigencia de jugadores, ejecutar despues
+-- supabase/add_player_registration.sql.
 -- ============================================================
 
 create extension if not exists "uuid-ossp";
@@ -118,6 +120,7 @@ create table if not exists public.products (
     pieces_per_unit integer not null default 1,
     category text default '',
     presentation text default '',
+    is_active boolean not null default true,
     synced integer not null default 0,
     cloud_id text,
     created_at timestamptz default now()
@@ -210,10 +213,14 @@ create table if not exists public.billiard_tables (
     is_occupied int not null default 0,
     start_time timestamptz,
     orders text default '[]',
+    is_deleted integer not null default 0,
     created_at timestamptz default now(),
     updated_at timestamptz default now(),
     primary key (billar_id, id)
 );
+
+alter table public.billiard_tables
+    add column if not exists is_deleted integer not null default 0;
 
 alter table public.billiard_tables enable row level security;
 
@@ -350,7 +357,8 @@ create table if not exists public.pending_sales (
     product text not null,
     quantity int not null,
     price double precision not null,
-    created_at timestamptz default now()
+    created_at timestamptz default now(),
+    client_id uuid unique
 );
 
 alter table public.pending_sales enable row level security;
@@ -371,6 +379,8 @@ create table if not exists public.players (
     name text not null,
     nickname text default '',
     avatar text default '',
+    avatar_url text default '',
+    handicap integer not null default 1,
     wins integer not null default 0,
     losses integer not null default 0,
     draws integer not null default 0,
@@ -385,7 +395,16 @@ create table if not exists public.players (
     updated_at timestamptz default now(),
     local_id integer,
     billar_id text default 'BILLAR_001',
-    cloud_id text
+    cloud_id text,
+    auth_user_id uuid references auth.users(id) on delete set null,
+    email text,
+    player_code text,
+    is_active boolean not null default true,
+    registered_at timestamptz not null default now(),
+    expires_at timestamptz not null default (now() + interval '1 year'),
+    archived_at timestamptz,
+    must_change_password boolean not null default true,
+    client_id text
 );
 
 alter table public.players enable row level security;

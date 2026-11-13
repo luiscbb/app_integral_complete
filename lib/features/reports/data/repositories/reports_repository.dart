@@ -1,9 +1,11 @@
-﻿import 'dart:convert';
+﻿import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../../core/database/database_helper.dart';
+import '../../../../core/services/inventory_movement_sync_service.dart';
 import '../../../../core/storage/preferences_service.dart';
 
 /// Repositorio para el módulo de Informes (Reports).
@@ -100,6 +102,7 @@ class ReportsRepository {
   // ─────────────────────────────────────────────────────────────────
 
   Future<List<Map<String, dynamic>>> getInventoryMovements(int productId, {int limit = 100}) async {
+    await InventoryMovementSyncService.instance.sync();
     final db = await _db.database;
     return db.query(
       'inventory_movements',
@@ -183,19 +186,77 @@ class ReportsRepository {
     final outflows = await getCashOutflows(start, end);
 
     double totalSales = 0;
-    for (final s in sales) totalSales += (s['total'] as num).toDouble();
+    for (final s in sales) {
+      totalSales += (s['total'] as num).toDouble();
+    }
 
     double totalPurchases = 0;
-    for (final p in purchases) totalPurchases += (p['total'] as num).toDouble();
+    for (final p in purchases) {
+      totalPurchases += (p['total'] as num).toDouble();
+    }
 
     double totalOutflows = 0;
-    for (final o in outflows) totalOutflows += (o['amount'] as num).toDouble();
+    for (final o in outflows) {
+      totalOutflows += (o['amount'] as num).toDouble();
+    }
 
     return {
       'sales': totalSales,
       'purchases': totalPurchases,
       'outflows': totalOutflows,
       'netCash': totalSales - totalPurchases - totalOutflows,
+    };
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // UTILIDAD (Etapa 4)
+  // ─────────────────────────────────────────────────────────────────
+
+  /// Informe de utilidad del rango:
+  ///   Ventas − Costo de lo vendido − Retiros/Gastos = UTILIDAD NETA.
+  /// - El costo de lo vendido usa `cost_at_sale` (costo histórico guardado al
+  ///   momento de vender); si la fila no lo trae (ventas viejas), cae a 0.
+  /// - Las compras NO se restan (son inventario/activo), solo se listan fuera.
+  /// - [expensesByConcept] agrupa los retiros/gastos por concepto.
+  Future<Map<String, dynamic>> getProfitSummary(DateTime start, DateTime end) async {
+    final sales = await getSalesByDateRange(start, end);
+    final outflows = await getCashOutflows(start, end);
+
+    final db = await _db.database;
+    double totalSales = 0;
+    double totalCost = 0;
+    for (final s in sales) {
+      totalSales += (s['total'] as num).toDouble();
+      final rows = await db.query(
+        'sale_details',
+        columns: ['quantity', 'cost_at_sale'],
+        where: 'sale_id = ? AND cancelled = 0',
+        whereArgs: [s['id']],
+      );
+      for (final d in rows) {
+        final qty = (d['quantity'] as num?)?.toDouble() ?? 0;
+        final cost = (d['cost_at_sale'] as num?)?.toDouble() ?? 0;
+        totalCost += qty * cost;
+      }
+    }
+
+    double totalOutflows = 0;
+    final Map<String, double> expensesByConcept = {};
+    for (final o in outflows) {
+      final amount = (o['amount'] as num).toDouble();
+      totalOutflows += amount;
+      // El concepto vive en outflow_type (catálogo de conceptos).
+      final concept = (o['outflow_type']?.toString() ?? 'SIN CONCEPTO').trim().toUpperCase();
+      expensesByConcept[concept] = (expensesByConcept[concept] ?? 0) + amount;
+    }
+
+    return {
+      'sales': totalSales,
+      'costOfGoodsSold': totalCost,
+      'expenses': totalOutflows,
+      'profit': totalSales - totalCost - totalOutflows,
+      'salesCount': sales.length.toDouble(),
+      'expensesByConcept': expensesByConcept,
     };
   }
 
@@ -270,10 +331,7 @@ class ReportsRepository {
 
     await db.update(
       'cashier_sessions',
-      {
-        'partial_closures': jsonEncode(partials),
-        'synced': 0,
-      },
+      {'partial_closures': jsonEncode(partials), 'synced': 0},
       where: 'id = ?',
       whereArgs: [sessionId],
     );
@@ -302,9 +360,10 @@ class ReportsRepository {
       debugPrint('[Concepts] addConcept aviso (posible duplicado): $e');
     }
     try {
-      await _supabase
-          .from('cash_outflow_concepts')
-          .upsert({'name': clean, 'billar_id': _billarId}, onConflict: 'billar_id,name');
+      await _supabase.from('cash_outflow_concepts').upsert({
+        'name': clean,
+        'billar_id': _billarId,
+      }, onConflict: 'billar_id,name');
       debugPrint('[Supabase] Concepto sincronizado: $clean');
     } catch (e) {
       debugPrint('[Supabase] addConcept ERROR: $e');
@@ -328,9 +387,10 @@ class ReportsRepository {
       debugPrint('[Concepts] renameConcept local aviso: $e');
     }
     try {
-      await _supabase
-          .from('cash_outflow_concepts')
-          .upsert({'name': newClean, 'billar_id': _billarId}, onConflict: 'billar_id,name');
+      await _supabase.from('cash_outflow_concepts').upsert({
+        'name': newClean,
+        'billar_id': _billarId,
+      }, onConflict: 'billar_id,name');
       await _supabase
           .from('cash_outflow_concepts')
           .delete()
