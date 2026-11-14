@@ -6,7 +6,8 @@ import '../../domain/entities/sale_item_entity.dart';
 /// percepción de stock disponible, sin descontar físicamente del inventario
 /// hasta que la venta se concrete.
 class StockReservationService {
-  static final StockReservationService _instance = StockReservationService._internal();
+  static final StockReservationService _instance =
+      StockReservationService._internal();
   factory StockReservationService() => _instance;
   StockReservationService._internal();
 
@@ -17,7 +18,11 @@ class StockReservationService {
   Future<void> setQuickSaleReservation(List<SaleItemEntity> items) async {
     final db = await _db.database;
     await db.transaction((txn) async {
-      await txn.delete('temp_reservations', where: 'source = ?', whereArgs: ['quick_sale']);
+      await txn.delete(
+        'temp_reservations',
+        where: 'source = ?',
+        whereArgs: ['quick_sale'],
+      );
       for (final item in items) {
         if (item.productId == null || item.quantity <= 0) continue;
         await txn.insert('temp_reservations', {
@@ -34,14 +39,25 @@ class StockReservationService {
   /// Limpia la reserva de venta rápida (por ejemplo al cerrar/cobrar).
   Future<void> clearQuickSaleReservation() async {
     final db = await _db.database;
-    await db.delete('temp_reservations', where: 'source = ?', whereArgs: ['quick_sale']);
+    await db.delete(
+      'temp_reservations',
+      where: 'source = ?',
+      whereArgs: ['quick_sale'],
+    );
   }
 
   /// Guarda las órdenes de una mesa como reservas temporales.
-  Future<void> setTableReservation(int tableId, List<SaleItemEntity> items) async {
+  Future<void> setTableReservation(
+    int tableId,
+    List<SaleItemEntity> items,
+  ) async {
     final db = await _db.database;
     await db.transaction((txn) async {
-      await txn.delete('temp_reservations', where: 'source = ? AND source_id = ?', whereArgs: ['table', tableId]);
+      await txn.delete(
+        'temp_reservations',
+        where: 'source = ? AND source_id = ?',
+        whereArgs: ['table', tableId],
+      );
       for (final item in items) {
         if (item.productId == null || item.quantity <= 0) continue;
         await txn.insert('temp_reservations', {
@@ -58,7 +74,36 @@ class StockReservationService {
   /// Limpia las reservas de una mesa específica.
   Future<void> clearTableReservation(int tableId) async {
     final db = await _db.database;
-    await db.delete('temp_reservations', where: 'source = ? AND source_id = ?', whereArgs: ['table', tableId]);
+    await db.delete(
+      'temp_reservations',
+      where: 'source = ? AND source_id = ?',
+      whereArgs: ['table', tableId],
+    );
+  }
+
+  Future<void> setCustomerReservation(
+    String clientKey,
+    List<SaleItemEntity> items,
+  ) async {
+    final db = await _db.database;
+    await db.transaction((txn) async {
+      await txn.delete(
+        'temp_reservations',
+        where: 'source = ? AND source_key = ?',
+        whereArgs: ['customer', clientKey],
+      );
+      for (final item in items) {
+        if (item.productId == null || item.quantity <= 0) continue;
+        await txn.insert('temp_reservations', {
+          'source': 'customer',
+          'source_id': 0,
+          'source_key': clientKey,
+          'product_id': item.productId,
+          'quantity': item.quantity,
+          'created_at': DateTime.now().toIso8601String(),
+        });
+      }
+    });
   }
 
   /// Suma todas las cantidades reservadas por producto, excluyendo una

@@ -47,32 +47,20 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
               final player =
                   players.where((player) {
                     final matchesCode =
-                        entry.playerCode.isNotEmpty &&
-                        player.playerCode == entry.playerCode;
+                        entry.playerCode.isNotEmpty && player.playerCode == entry.playerCode;
                     final matchesCloudId =
                         entry.registeredPlayerId != null &&
                         player.cloudId == entry.registeredPlayerId;
                     return matchesCode || matchesCloudId;
                   }).firstOrNull;
-              return player == null
-                  ? entry
-                  : entry.copyWith(avatar: player.avatar);
+              return player == null ? entry : entry.copyWith(avatar: player.avatar);
             }).toList(),
       );
-      final tournament = await _repository.ensureSchedule(
-        tournamentWithAvatars,
-      );
+      final tournament = await _repository.ensureSchedule(tournamentWithAvatars);
       if (!mounted) return;
-      setState(
-        () =>
-            _tournament = tournament.copyWith(
-              entries: tournamentWithAvatars.entries,
-            ),
-      );
+      setState(() => _tournament = tournament.copyWith(entries: tournamentWithAvatars.entries));
     } catch (error, stackTrace) {
-      debugPrint(
-        '[TournamentDetailPage] Could not load bracket: $error\n$stackTrace',
-      );
+      debugPrint('[TournamentDetailPage] Could not load bracket: $error\n$stackTrace');
       if (mounted) setState(() => _error = _bracketErrorMessage(error));
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -80,6 +68,9 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
   }
 
   String _bracketErrorMessage(Object error) {
+    if (error is StateError) {
+      return error.message.toString();
+    }
     if (error is PostgrestException &&
         error.code == 'PGRST204' &&
         (error.message.contains("'matches'") ||
@@ -97,10 +88,7 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
     return error.toString();
   }
 
-  Future<void> _recordPoint(
-    TournamentMatch match,
-    TournamentEntry entry,
-  ) async {
+  Future<void> _recordPoint(TournamentMatch match, TournamentEntry entry) async {
     final method = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
@@ -114,8 +102,7 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
                   subtitle: Text('Selecciona cómo se ganó esta partida.'),
                 ),
                 for (final item in _winMethods.entries)
-                  if (item.key != 'early_eight' ||
-                      _tournament.gameType == 'Bola 8')
+                  if (item.key != 'early_eight' || _tournament.gameType == 'Bola 8')
                     ListTile(
                       leading: Icon(item.value.$2),
                       title: Text(item.value.$1),
@@ -138,33 +125,23 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
 
   Future<void> _undoPoint(TournamentMatch match, TournamentEntry entry) async {
     await _runScoreAction(
-      () => _repository.undoPoint(
-        _tournament,
-        matchId: match.id,
-        entryId: entry.id,
-      ),
+      () => _repository.undoPoint(_tournament, matchId: match.id, entryId: entry.id),
     );
   }
 
-  Future<void> _runScoreAction(
-    Future<TournamentEntity> Function() action,
-  ) async {
+  Future<void> _runScoreAction(Future<TournamentEntity> Function() action) async {
     setState(() => _saving = true);
     try {
       final updated = await action();
       if (mounted) {
-        setState(
-          () => _tournament = updated.copyWith(entries: _tournament.entries),
-        );
+        setState(() => _tournament = updated.copyWith(entries: _tournament.entries));
       }
     } catch (error, stackTrace) {
-      debugPrint(
-        '[TournamentDetailPage] Could not update score: $error\n$stackTrace',
-      );
+      debugPrint('[TournamentDetailPage] Could not update score: $error\n$stackTrace');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('No se pudo actualizar el marcador: $error')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('No se pudo actualizar el marcador: $error')));
       }
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -179,11 +156,7 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
     final wins = <String, int>{};
     for (final match in _tournament.matches) {
       if (!match.isBye && match.winnerEntryId != null) {
-        wins.update(
-          match.winnerEntryId!,
-          (value) => value + 1,
-          ifAbsent: () => 1,
-        );
+        wins.update(match.winnerEntryId!, (value) => value + 1, ifAbsent: () => 1);
       }
     }
     return wins;
@@ -193,15 +166,11 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
   Widget build(BuildContext context) {
     final sections = <(String, int?, int), List<TournamentMatch>>{};
     for (final match in _tournament.matches) {
-      sections
-          .putIfAbsent((match.stage, match.groupNumber, match.round), () => [])
-          .add(match);
+      sections.putIfAbsent((match.stage, match.groupNumber, match.round), () => []).add(match);
     }
     final sectionKeys =
         sections.keys.toList()..sort((left, right) {
-          final stageOrder = _stageOrder(
-            left.$1,
-          ).compareTo(_stageOrder(right.$1));
+          final stageOrder = _stageOrder(left.$1).compareTo(_stageOrder(right.$1));
           if (stageOrder != 0) return stageOrder;
           final groupOrder = (left.$2 ?? 0).compareTo(right.$2 ?? 0);
           if (groupOrder != 0) return groupOrder;
@@ -228,8 +197,7 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
               ? _ErrorState(message: _error!, onRetry: _loadBracket)
               : _tournament.entries.length < 2
               ? const _ErrorState(
-                message:
-                    'Inscribe al menos dos jugadores para generar el cuadro.',
+                message: 'Inscribe al menos dos jugadores para generar el cuadro.',
               )
               : Stack(
                 children: [
@@ -242,9 +210,7 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
                           title: Text(
                             '${_formatTitle(_tournament.format)} · ${_tournament.gameType.toUpperCase()}',
                           ),
-                          subtitle: Text(
-                            _formatDescription(_tournament.format),
-                          ),
+                          subtitle: Text(_formatDescription(_tournament.format)),
                         ),
                       ),
                       Card(
@@ -275,10 +241,7 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
                                 const SizedBox(height: 10),
                                 const Text('LUGARES PREMIADOS'),
                                 for (final prize in [..._tournament.prizes]
-                                  ..sort(
-                                    (left, right) =>
-                                        left.place.compareTo(right.place),
-                                  ))
+                                  ..sort((left, right) => left.place.compareTo(right.place)))
                                   Text(
                                     'Lugar ${prize.place}: '
                                     '${prize.type == 'percentage' ? '${prize.value.toStringAsFixed(2)}%' : formatTournamentMoney(prize.value)}'
@@ -289,14 +252,11 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
                           ),
                         ),
                       ),
-                      if (_tournament.format == 'league' ||
-                          _tournament.format == 'liga') ...[
+                      if (_tournament.format == 'league' || _tournament.format == 'liga') ...[
                         _buildStandings(
                           title: 'TABLA DE POSICIONES · ROUND ROBIN',
                           stage: 'league',
-                          entryIds: _tournament.entries.map(
-                            (entry) => entry.id,
-                          ),
+                          entryIds: _tournament.entries.map((entry) => entry.id),
                         ),
                         Padding(
                           padding: const EdgeInsets.only(top: 8),
@@ -311,9 +271,7 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
                         _buildStandings(
                           title: 'TABLA SUIZA',
                           stage: 'swiss',
-                          entryIds: _tournament.entries.map(
-                            (entry) => entry.id,
-                          ),
+                          entryIds: _tournament.entries.map((entry) => entry.id),
                         ),
                       if (_tournament.format == 'groups')
                         for (final group
@@ -331,15 +289,9 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
                           ),
                       if (champion != null)
                         Card(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.primary.withValues(alpha: 0.18),
+                          color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.18),
                           child: ListTile(
-                            leading: const Icon(
-                              Icons.emoji_events,
-                              color: Colors.amber,
-                              size: 32,
-                            ),
+                            leading: const Icon(Icons.emoji_events, color: Colors.amber, size: 32),
                             title: const Text('CAMPEÓN'),
                             subtitle: Text(champion.displayName),
                           ),
@@ -350,9 +302,7 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
                           sections[key]!,
                           _tournament.matches
                               .where(
-                                (match) =>
-                                    match.stage == key.$1 &&
-                                    match.groupNumber == key.$2,
+                                (match) => match.stage == key.$1 && match.groupNumber == key.$2,
                               )
                               .map((match) => match.round)
                               .toSet()
@@ -375,9 +325,7 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
                           child: OutlinedButton.icon(
                             onPressed: _saving ? null : _finishTournament,
                             icon: const Icon(Icons.emoji_events_outlined),
-                            label: const Text(
-                              'FINALIZAR Y GUARDAR EN HISTORIAL',
-                            ),
+                            label: const Text('FINALIZAR Y GUARDAR EN HISTORIAL'),
                           ),
                         ),
                     ],
@@ -401,15 +349,11 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
         _entriesById[_tournament.championEntryId],
       );
     } catch (error, stackTrace) {
-      debugPrint(
-        '[TournamentDetailPage] Could not share champion: $error\n$stackTrace',
-      );
+      debugPrint('[TournamentDetailPage] Could not share champion: $error\n$stackTrace');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('No se pudo compartir el reconocimiento: $error'),
-          ),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('No se pudo compartir el reconocimiento: $error')));
       }
     }
   }
@@ -418,22 +362,16 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
     try {
       final finished = await _repository.archive(_tournament);
       if (!mounted) return;
-      setState(
-        () => _tournament = finished.copyWith(entries: _tournament.entries),
-      );
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Torneo finalizado y agregado al historial.'),
-        ),
-      );
+      setState(() => _tournament = finished.copyWith(entries: _tournament.entries));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Torneo finalizado y agregado al historial.')));
     } catch (error, stackTrace) {
-      debugPrint(
-        '[TournamentDetailPage] Could not finish tournament: $error\n$stackTrace',
-      );
+      debugPrint('[TournamentDetailPage] Could not finish tournament: $error\n$stackTrace');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('No se pudo finalizar el torneo: $error')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('No se pudo finalizar el torneo: $error')));
       }
     }
   }
@@ -441,9 +379,7 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
   Future<void> _openStandingsPdfPreview() async {
     await Navigator.push<void>(
       context,
-      MaterialPageRoute<void>(
-        builder: (_) => TournamentStandingsPdfPage(tournament: _tournament),
-      ),
+      MaterialPageRoute<void>(builder: (_) => TournamentStandingsPdfPage(tournament: _tournament)),
     );
   }
 
@@ -530,10 +466,7 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
                             'Juegos ${standings[index].gamesWon}-${standings[index].gamesLost}  ·  '
                             'Dif. ${standings[index].gameDifference >= 0 ? '+' : ''}${standings[index].gameDifference}',
                             maxLines: 2,
-                            style: const TextStyle(
-                              color: Colors.white60,
-                              fontSize: 11,
-                            ),
+                            style: const TextStyle(color: Colors.white60, fontSize: 11),
                           ),
                         ],
                       ),
@@ -561,10 +494,7 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
           padding: const EdgeInsets.fromLTRB(4, 20, 4, 8),
           child: Text(
             _roundLabel(round, roundCount, stage, groupNumber),
-            style: const TextStyle(
-              fontWeight: FontWeight.bold,
-              letterSpacing: 1.2,
-            ),
+            style: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2),
           ),
         ),
         for (final match in matches)
@@ -582,12 +512,7 @@ class _TournamentDetailPageState extends State<TournamentDetailPage> {
     );
   }
 
-  String _roundLabel(
-    int round,
-    int roundCount,
-    String stage,
-    int? groupNumber,
-  ) {
+  String _roundLabel(int round, int roundCount, String stage, int? groupNumber) {
     if (stage == 'league') return 'SEMANA $round · JORNADA $round';
     if (stage == 'groups') {
       return 'GRUPO ${groupNumber ?? ''} · JORNADA $round';
@@ -672,10 +597,7 @@ class _MatchCard extends StatelessWidget {
                       ? 'MEJOR DE $setsToPlay · A $raceTo'
                       : 'FINALIZADO',
                   style: TextStyle(
-                    color:
-                        match.winnerEntryId == null
-                            ? Colors.white60
-                            : Colors.greenAccent,
+                    color: match.winnerEntryId == null ? Colors.white60 : Colors.greenAccent,
                     fontSize: 11,
                     fontWeight: FontWeight.bold,
                   ),
@@ -686,14 +608,9 @@ class _MatchCard extends StatelessWidget {
               const SizedBox(height: 8),
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 8,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
-                  color: Theme.of(
-                    context,
-                  ).colorScheme.surface.withValues(alpha: 0.7),
+                  color: Theme.of(context).colorScheme.surface.withValues(alpha: 0.7),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Wrap(
@@ -703,10 +620,7 @@ class _MatchCard extends StatelessWidget {
                   children: [
                     Text(
                       'SETS  ${match.sets1} - ${match.sets2}',
-                      style: const TextStyle(
-                        color: Colors.amber,
-                        fontWeight: FontWeight.bold,
-                      ),
+                      style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.bold),
                     ),
                     Text(
                       'JUEGOS  ${match.score1} - ${match.score2}',
@@ -730,9 +644,7 @@ class _MatchCard extends StatelessWidget {
                       ? null
                       : () => onAddPoint(player1),
               onUndoPoint:
-                  player1 == null ||
-                          match.points.isEmpty ||
-                          match.points.last.entryId != player1.id
+                  player1 == null || match.points.isEmpty || match.points.last.entryId != player1.id
                       ? null
                       : () => onUndoPoint(player1),
             ),
@@ -747,9 +659,7 @@ class _MatchCard extends StatelessWidget {
                       ? null
                       : () => onAddPoint(player2),
               onUndoPoint:
-                  player2 == null ||
-                          match.points.isEmpty ||
-                          match.points.last.entryId != player2.id
+                  player2 == null || match.points.isEmpty || match.points.last.entryId != player2.id
                       ? null
                       : () => onUndoPoint(player2),
             ),
@@ -806,11 +716,7 @@ class _PlayerScoreRow extends StatelessWidget {
       return const SizedBox(
         height: 54,
         child: Row(
-          children: [
-            Icon(Icons.hourglass_empty),
-            SizedBox(width: 8),
-            Text('POR DEFINIR'),
-          ],
+          children: [Icon(Icons.hourglass_empty), SizedBox(width: 8), Text('POR DEFINIR')],
         ),
       );
     }
@@ -836,24 +742,14 @@ class _PlayerScoreRow extends StatelessWidget {
                 children: [
                   Text(
                     '★' * player.handicap.clamp(1, 6).toInt(),
-                    style: const TextStyle(
-                      color: Colors.amber,
-                      letterSpacing: 1,
-                    ),
+                    style: const TextStyle(color: Colors.amber, letterSpacing: 1),
                   ),
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(
-                        Icons.emoji_events,
-                        size: 14,
-                        color: Colors.amber.shade300,
-                      ),
+                      Icon(Icons.emoji_events, size: 14, color: Colors.amber.shade300),
                       const SizedBox(width: 3),
-                      Text(
-                        '$tournamentWins victorias',
-                        style: const TextStyle(fontSize: 11),
-                      ),
+                      Text('$tournamentWins victorias', style: const TextStyle(fontSize: 11)),
                     ],
                   ),
                 ],
@@ -877,10 +773,7 @@ class _PlayerScoreRow extends StatelessWidget {
                 fontFeatures: [FontFeature.tabularFigures()],
               ),
             ),
-            const Text(
-              'JUEGOS',
-              style: TextStyle(fontSize: 8, color: Colors.white54),
-            ),
+            const Text('JUEGOS', style: TextStyle(fontSize: 8, color: Colors.white54)),
           ],
         ),
         IconButton(
@@ -902,12 +795,9 @@ class TournamentEntryAvatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final avatar = entry.avatar;
     final uri = Uri.tryParse(avatar);
-    final isNetworkImage =
-        uri != null && (uri.scheme == 'http' || uri.scheme == 'https');
+    final isNetworkImage = uri != null && (uri.scheme == 'http' || uri.scheme == 'https');
     final fallback = CircleAvatar(
-      backgroundColor: Theme.of(
-        context,
-      ).colorScheme.primary.withValues(alpha: 0.2),
+      backgroundColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.2),
       child: Text(entry.displayName.isEmpty ? '?' : entry.displayName[0]),
     );
     if (avatar.isEmpty) return fallback;
@@ -948,8 +838,7 @@ class _ErrorState extends StatelessWidget {
           const Icon(Icons.info_outline, size: 40),
           const SizedBox(height: 12),
           Text(message, textAlign: TextAlign.center),
-          if (onRetry != null)
-            TextButton(onPressed: onRetry, child: const Text('REINTENTAR')),
+          if (onRetry != null) TextButton(onPressed: onRetry, child: const Text('REINTENTAR')),
         ],
       ),
     ),

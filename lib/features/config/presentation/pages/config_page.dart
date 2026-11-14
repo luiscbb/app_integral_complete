@@ -30,6 +30,7 @@ class _ConfigPageState extends State<ConfigPage> {
     (Icons.store, 'Negocio'),
     (Icons.print, 'Impresión'),
     (Icons.table_bar, 'Billar/Comanda'),
+    (Icons.inventory_2, 'Ventas'),
     (Icons.palette, 'Apariencia'),
     (Icons.logout, 'Sesión'),
   ];
@@ -141,6 +142,7 @@ class _ConfigPageState extends State<ConfigPage> {
                                   isWide: isWide,
                                 ),
                                 const _BillarSection(),
+                                const _StockSalesSection(),
                                 const _AparienciaSection(),
                                 const _SesionSection(),
                               ][_selectedSection],
@@ -457,6 +459,7 @@ class _NegocioSectionState extends State<_NegocioSection> {
           businessName: _prefs.businessName,
           tableCount: _prefs.tableCount,
           hourlyRate: _prefs.hourlyRate,
+          allowNegativeStockSales: _prefs.allowNegativeStockSales,
           primaryColor: _prefs.primaryColorValue,
           businessAddress: _prefs.businessAddress,
           businessStreet: _prefs.businessStreet,
@@ -1704,6 +1707,84 @@ class _TableListEditorState extends State<_TableListEditor> {
           ),
         );
       },
+    );
+  }
+}
+
+class _StockSalesSection extends StatefulWidget {
+  const _StockSalesSection();
+
+  @override
+  State<_StockSalesSection> createState() => _StockSalesSectionState();
+}
+
+class _StockSalesSectionState extends State<_StockSalesSection> {
+  final _prefs = PreferencesService();
+  late bool _allowNegativeStock;
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _allowNegativeStock = _prefs.allowNegativeStockSales;
+  }
+
+  Future<void> _save(bool value) async {
+    setState(() {
+      _allowNegativeStock = value;
+      _saving = true;
+    });
+    await _prefs.setAllowNegativeStockSales(value);
+    try {
+      await ConfigRemoteRepository().updateAllowNegativeStockSales(value);
+    } catch (error, stackTrace) {
+      debugPrint(
+        '[ConfigPage] Could not sync stock-sale setting: $error\n$stackTrace',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Se guardó localmente; no se pudo sincronizar.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final primary = context.watch<ThemeProvider>().primaryColor;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SectionHeader(
+          icon: Icons.inventory_2,
+          title: 'VENTAS E INVENTARIO',
+          color: primary,
+        ),
+        const SizedBox(height: 16),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          value: _allowNegativeStock,
+          onChanged: _saving ? null : _save,
+          title: const Text('Permitir vender sin existencias'),
+          subtitle: Text(
+            _allowNegativeStock
+                ? 'La venta puede dejar el inventario en negativo.'
+                : 'No se podrá vender más de lo disponible.',
+            style: const TextStyle(color: Colors.white54),
+          ),
+          activeThumbColor: primary,
+        ),
+        if (_saving)
+          const Padding(
+            padding: EdgeInsets.only(top: 8),
+            child: LinearProgressIndicator(),
+          ),
+      ],
     );
   }
 }

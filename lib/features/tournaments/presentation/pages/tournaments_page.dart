@@ -118,8 +118,8 @@ class _TournamentsPageState extends State<TournamentsPage> {
       return;
     }
     if (_limitedCapacity &&
-        (capacity == null || capacity < 2 || capacity > 256)) {
-      _showMessage('El cupo debe ser de 2 a 256 jugadores.');
+        (capacity == null || capacity < 8 || capacity > 256)) {
+      _showMessage('El cupo debe ser de 8 a 256 jugadores.');
       return;
     }
     if (_format == _TournamentFormat.groups &&
@@ -489,6 +489,44 @@ class _TournamentsPageState extends State<TournamentsPage> {
     if (mounted) await _load();
   }
 
+  Future<void> _cancelTournament(TournamentEntity tournament) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder:
+          (context) => AlertDialog(
+            title: const Text('Cancelar torneo'),
+            content: Text(
+              '¿Cancelar "${tournament.name}"? Se quitará de torneos activos, '
+              'pero se conservará su registro e historial.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('VOLVER'),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('CANCELAR TORNEO'),
+              ),
+            ],
+          ),
+    );
+    if (confirmed != true) return;
+    try {
+      await _repository.cancel(tournament);
+      await _load();
+      if (mounted) {
+        _showMessage('Torneo cancelado y conservado en el historial.');
+      }
+    } catch (error, stackTrace) {
+      debugPrint(
+        '[TournamentsPage] Could not cancel tournament: $error\n$stackTrace',
+      );
+      if (mounted) _showMessage('No se pudo cancelar el torneo: $error');
+    }
+  }
+
   Future<void> _editRaceTo(TournamentEntity tournament) async {
     final controller = TextEditingController(text: '${tournament.raceTo}');
     final setsController = TextEditingController(
@@ -662,12 +700,20 @@ class _TournamentsPageState extends State<TournamentsPage> {
         leading: const Icon(Icons.emoji_events, color: Colors.amber),
         title: Text(tournament.name),
         subtitle: Text(
-          champion == null
+          tournament.isCancelled
+              ? 'CANCELADO · ${tournament.entries.length} jugadores'
+              : champion == null
               ? 'Finalizado'
               : 'CAMPEÓN: ${champion.displayName} · ${tournament.entries.length} jugadores',
         ),
-        trailing: const Icon(Icons.chevron_right),
-        onTap: () => _openTournament(tournament),
+        trailing: Icon(
+          tournament.isCancelled ? Icons.block : Icons.chevron_right,
+          color: tournament.isCancelled ? Colors.redAccent : null,
+        ),
+        onTap:
+            tournament.isCancelled
+                ? null
+                : () => _openTournament(tournament),
       ),
     );
   }
@@ -1013,7 +1059,7 @@ class _TournamentsPageState extends State<TournamentsPage> {
                 inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                 decoration: const InputDecoration(
                   labelText: 'Cupo máximo de jugadores',
-                  helperText: 'El torneo indicará cuántos lugares quedan.',
+                  helperText: 'Se requieren al menos 8 jugadores para iniciar.',
                   prefixIcon: Icon(Icons.people_outline),
                 ),
               ),
@@ -1183,12 +1229,27 @@ class _TournamentsPageState extends State<TournamentsPage> {
                           : null,
                   icon: const Icon(Icons.archive_outlined),
                 ),
+                IconButton(
+                  tooltip: 'Cancelar torneo y conservar historial',
+                  onPressed: () => _cancelTournament(tournament),
+                  icon: const Icon(
+                    Icons.cancel_outlined,
+                    color: Colors.redAccent,
+                  ),
+                ),
               ],
             ),
             Text(
               '${_formatLabel(_TournamentFormat.values.firstWhere((format) => (format.name == 'league' ? 'liga' : format.name) == tournament.format, orElse: () => _TournamentFormat.single))} · ${tournament.gameType.toUpperCase()} · ${tournament.enrollmentLabel} · A ${tournament.raceTo} partidas, mejor de ${tournament.setsToPlay} sets${tournament.playoffQualifiers > 0 ? ' · FINALES TOP ${tournament.playoffQualifiers} + 3ER LUGAR' : ''}',
               style: const TextStyle(color: Colors.white60, fontSize: 12),
             ),
+            if (tournament.entries.length < 8) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Faltan ${8 - tournament.entries.length} jugadores para habilitar el sorteo (mínimo 8).',
+                style: const TextStyle(color: Colors.orangeAccent, fontSize: 12),
+              ),
+            ],
             const SizedBox(height: 4),
             Text(
               'Inscripciones: ${formatTournamentMoney(tournament.entryTotal)} · '

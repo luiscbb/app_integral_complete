@@ -7,6 +7,7 @@ class MatchResult {
   final bool isDraw;
   final bool goldenBreak;
   final bool breakAndRun;
+  final bool opponent8BallFoul;
   final String notes;
   final String date;
   final bool synced;
@@ -20,6 +21,7 @@ class MatchResult {
     this.isDraw = false,
     this.goldenBreak = false,
     this.breakAndRun = false,
+    this.opponent8BallFoul = false,
     this.notes = '',
     this.date = '',
     this.synced = false,
@@ -33,6 +35,7 @@ class MatchResult {
     'is_draw': isDraw ? 1 : 0,
     'golden_break': goldenBreak ? 1 : 0,
     'break_and_run': breakAndRun ? 1 : 0,
+    'opponent_8_ball_foul': opponent8BallFoul ? 1 : 0,
     'notes': notes,
     'date': date.isEmpty ? DateTime.now().toIso8601String() : date,
     'synced': synced ? 1 : 0,

@@ -70,7 +70,8 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
       if (mounted) {
         setState(() {
           _isLoading = false;
-          _loadError = 'No se pudieron cargar las comandas. Intenta actualizar.';
+          _loadError =
+              'No se pudieron cargar las comandas. Intenta actualizar.';
         });
       }
       return;
@@ -97,7 +98,8 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
       debugPrint('[BilliardTablesPage] Error sincronizando mesas: $e\n$st');
       if (mounted) {
         setState(() {
-          _loadError = 'No se pudo actualizar desde la nube. Mostrando datos guardados.';
+          _loadError =
+              'No se pudo actualizar desde la nube. Mostrando datos guardados.';
         });
       }
     } finally {
@@ -120,20 +122,28 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
           table: 'billiard_tables',
           callback: (payload) async {
             final changedRecord =
-                payload.newRecord.isNotEmpty ? payload.newRecord : payload.oldRecord;
+                payload.newRecord.isNotEmpty
+                    ? payload.newRecord
+                    : payload.oldRecord;
             if (changedRecord.isEmpty) return;
             // Filtrar manualmente por billar_id (Realtime no permite filtros simples aquí).
             final recordBillarId = changedRecord['billar_id']?.toString();
             if (recordBillarId != billarId) {
-              debugPrint('[BilliardTablesPage] Cambio descartado (otro billar)');
+              debugPrint(
+                '[BilliardTablesPage] Cambio descartado (otro billar)',
+              );
               return;
             }
-            debugPrint('[BilliardTablesPage] Realtime cambio en billiard_tables: $changedRecord');
+            debugPrint(
+              '[BilliardTablesPage] Realtime cambio en billiard_tables: $changedRecord',
+            );
             await _reloadFromCloud();
           },
         )
         .subscribe((status, [error]) {
-          debugPrint('[BilliardTablesPage] Realtime status: $status error: $error');
+          debugPrint(
+            '[BilliardTablesPage] Realtime status: $status error: $error',
+          );
         });
   }
 
@@ -146,12 +156,16 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
         title: Text(
           isComanda ? 'COMANDAS' : 'MESAS DE BILLAR',
           style: TextStyle(
-            color: isComanda ? const Color(0xFFE91E63) : const Color(0xFF1E88E5),
+            color:
+                isComanda ? const Color(0xFFE91E63) : const Color(0xFF1E88E5),
             fontWeight: FontWeight.bold,
           ),
         ),
         actions: [
-          IconButton(icon: const Icon(Icons.refresh), onPressed: () => _load(refreshCloud: true)),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () => _load(refreshCloud: true),
+          ),
         ],
       ),
       body:
@@ -162,7 +176,10 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
                   if (_loadError != null)
                     MaterialBanner(
                       content: Text(_loadError!),
-                      leading: const Icon(Icons.cloud_off, color: Colors.orange),
+                      leading: const Icon(
+                        Icons.cloud_off,
+                        color: Colors.orange,
+                      ),
                       actions: [
                         TextButton(
                           onPressed: () => _load(refreshCloud: true),
@@ -178,29 +195,40 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
                                   isComanda
                                       ? 'No hay comandas configuradas.\nAgrégalas en Ajustes > Billar/Comanda'
                                       : 'No hay mesas configuradas.\nConfigúralas en Ajustes > Billar',
-                              icon: isComanda ? Icons.restaurant_menu : Icons.table_bar,
+                              icon:
+                                  isComanda
+                                      ? Icons.restaurant_menu
+                                      : Icons.table_bar,
                             )
                             : GridView.builder(
                               padding: const EdgeInsets.all(16),
-                              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                                maxCrossAxisExtent: 200,
-                                mainAxisSpacing: 16,
-                                crossAxisSpacing: 16,
-                                childAspectRatio: 0.88,
-                              ),
+                              gridDelegate:
+                                  const SliverGridDelegateWithMaxCrossAxisExtent(
+                                    maxCrossAxisExtent: 200,
+                                    mainAxisSpacing: 16,
+                                    crossAxisSpacing: 16,
+                                    childAspectRatio: 0.88,
+                                  ),
                               itemCount: _tables.length,
                               itemBuilder: (_, i) {
                                 final t = _tables[i];
-                                final isOccupied = (t['is_occupied'] as num?)?.toInt() == 1;
-                                final rawOrders = t['orders']?.toString() ?? '[]';
+                                final isOccupied =
+                                    (t['is_occupied'] as num?)?.toInt() == 1;
+                                final rawOrders =
+                                    t['orders']?.toString() ?? '[]';
                                 final orders = jsonDecode(rawOrders) as List;
                                 final consumo = orders.fold<double>(
                                   0,
-                                  (acc, e) => acc + ((e['price'] as num) * (e['quantity'] as num)),
+                                  (acc, e) =>
+                                      acc +
+                                      ((e['price'] as num) *
+                                          (e['quantity'] as num)),
                                 );
                                 final startTime =
                                     t['start_time'] != null
-                                        ? DateTime.tryParse(t['start_time'].toString())
+                                        ? DateTime.tryParse(
+                                          t['start_time'].toString(),
+                                        )
                                         : null;
                                 return _TableCard(
                                   name: t['name']?.toString() ?? 'Mesa',
@@ -208,7 +236,8 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
                                   consumo: consumo,
                                   startTime: startTime,
                                   primaryColor: primary,
-                                  style: context.read<ThemeProvider>().cardStyle,
+                                  style:
+                                      context.read<ThemeProvider>().cardStyle,
                                   hasTimer: !isComanda,
                                   onTap: () => _openTable(t),
                                 );
@@ -346,7 +375,8 @@ class _TableCardState extends State<_TableCard> {
 
     final solidWhite = widget.style == CardStyle.solidWhite;
     final outlined = widget.style == CardStyle.outlined;
-    final contentColor = solidWhite ? Colors.white.withValues(alpha: 0.92) : color;
+    final contentColor =
+        solidWhite ? Colors.white.withValues(alpha: 0.92) : color;
 
     return GestureDetector(
       onTap: widget.onTap,
@@ -356,7 +386,10 @@ class _TableCardState extends State<_TableCard> {
                 ? BoxDecoration(
                   borderRadius: BorderRadius.circular(20),
                   color: color,
-                  border: Border.all(color: Colors.white.withValues(alpha: 0.28), width: 1.5),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.28),
+                    width: 1.5,
+                  ),
                 )
                 : outlined
                 ? BoxDecoration(
@@ -369,9 +402,15 @@ class _TableCardState extends State<_TableCard> {
                   gradient: LinearGradient(
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
-                    colors: [color.withValues(alpha: 0.22), const Color(0xFF1A1A1A)],
+                    colors: [
+                      color.withValues(alpha: 0.22),
+                      const Color(0xFF1A1A1A),
+                    ],
                   ),
-                  border: Border.all(color: color.withValues(alpha: 0.5), width: 2),
+                  border: Border.all(
+                    color: color.withValues(alpha: 0.5),
+                    width: 2,
+                  ),
                 ),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -384,7 +423,11 @@ class _TableCardState extends State<_TableCard> {
             const SizedBox(height: 6),
             Text(
               widget.name,
-              style: TextStyle(color: contentColor, fontWeight: FontWeight.bold, fontSize: 14),
+              style: TextStyle(
+                color: contentColor,
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+              ),
             ),
             const SizedBox(height: 4),
             Container(
@@ -398,7 +441,11 @@ class _TableCardState extends State<_TableCard> {
               ),
               child: Text(
                 widget.isOccupied ? 'OCUPADA' : 'LIBRE',
-                style: TextStyle(color: contentColor, fontWeight: FontWeight.bold, fontSize: 11),
+                style: TextStyle(
+                  color: contentColor,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 11,
+                ),
               ),
             ),
             if (widget.isOccupied && widget.hasTimer) ...[
@@ -423,7 +470,10 @@ class _TableCardState extends State<_TableCard> {
                 const SizedBox(height: 2),
                 Text(
                   'Tiempo: \$${timeCost.toStringAsFixed(2)}',
-                  style: const TextStyle(color: Colors.orangeAccent, fontSize: 11),
+                  style: const TextStyle(
+                    color: Colors.orangeAccent,
+                    fontSize: 11,
+                  ),
                 ),
               ],
             ],
@@ -505,13 +555,14 @@ class _TableDetailPageState extends State<_TableDetailPage> {
   void initState() {
     super.initState();
     _init();
-    _productChangesSubscription = ProductRealtimeService.instance.changes.listen((_) {
-      _productRefreshDebounce?.cancel();
-      _productRefreshDebounce = Timer(
-        const Duration(milliseconds: 250),
-        _refreshProductsFromRealtime,
-      );
-    });
+    _productChangesSubscription = ProductRealtimeService.instance.changes
+        .listen((_) {
+          _productRefreshDebounce?.cancel();
+          _productRefreshDebounce = Timer(
+            const Duration(milliseconds: 250),
+            _refreshProductsFromRealtime,
+          );
+        });
     _subscribeToReservationChanges();
   }
 
@@ -595,7 +646,10 @@ class _TableDetailPageState extends State<_TableDetailPage> {
               schema: 'public',
               table: 'billiard_tables',
               callback: (payload) async {
-                final record = payload.newRecord.isNotEmpty ? payload.newRecord : payload.oldRecord;
+                final record =
+                    payload.newRecord.isNotEmpty
+                        ? payload.newRecord
+                        : payload.oldRecord;
                 if (record['billar_id']?.toString() != billarId ||
                     record['id']?.toString() == currentTableId.toString()) {
                   return;
@@ -650,14 +704,19 @@ class _TableDetailPageState extends State<_TableDetailPage> {
       builder:
           (ctx) => AlertDialog(
             backgroundColor: const Color(0xFF1A1A1A),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(20),
+            ),
             title: Row(
               children: [
                 const Icon(Icons.timer, color: Colors.orangeAccent, size: 28),
                 const SizedBox(width: 10),
                 Text(
                   widget.tableData['name'] ?? 'Mesa',
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ],
             ),
@@ -672,11 +731,18 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                 const SizedBox(height: 12),
                 Row(
                   children: [
-                    const Icon(Icons.attach_money, color: Colors.orangeAccent, size: 16),
+                    const Icon(
+                      Icons.attach_money,
+                      color: Colors.orangeAccent,
+                      size: 16,
+                    ),
                     const SizedBox(width: 4),
                     Text(
                       'Tarifa: \$${_prefs.hourlyRate.toStringAsFixed(2)} / hora',
-                      style: const TextStyle(color: Colors.orangeAccent, fontSize: 13),
+                      style: const TextStyle(
+                        color: Colors.orangeAccent,
+                        fontSize: 13,
+                      ),
                     ),
                   ],
                 ),
@@ -696,7 +762,10 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                         fit: BoxFit.scaleDown,
                         child: Text(
                           'CANCELAR',
-                          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
                       onPressed: () => Navigator.pop(ctx, false),
@@ -710,12 +779,19 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                         padding: const EdgeInsets.symmetric(horizontal: 4),
                         visualDensity: VisualDensity.compact,
                       ),
-                      icon: const Icon(Icons.timer, color: Colors.black, size: 18),
+                      icon: const Icon(
+                        Icons.timer,
+                        color: Colors.black,
+                        size: 18,
+                      ),
                       label: const FittedBox(
                         fit: BoxFit.scaleDown,
                         child: Text(
                           'INICIAR TIEMPO',
-                          style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+                          style: TextStyle(
+                            color: Colors.black,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
                       onPressed: () => Navigator.pop(ctx, true),
@@ -791,7 +867,10 @@ class _TableDetailPageState extends State<_TableDetailPage> {
       padding: const EdgeInsets.all(1.5),
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        border: Border.all(color: primaryColor.withValues(alpha: 0.5), width: 1.5),
+        border: Border.all(
+          color: primaryColor.withValues(alpha: 0.5),
+          width: 1.5,
+        ),
       ),
       child: CircleAvatar(
         radius: radius,
@@ -806,7 +885,11 @@ class _TableDetailPageState extends State<_TableDetailPage> {
         child:
             hasLogo
                 ? null
-                : Icon(Icons.sports_bar_outlined, color: primaryColor, size: radius * 0.9),
+                : Icon(
+                  Icons.sports_bar_outlined,
+                  color: primaryColor,
+                  size: radius * 0.9,
+                ),
       ),
     );
   }
@@ -828,11 +911,18 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                   children: [
                     const Text(
                       'CONSUMO',
-                      style: TextStyle(color: Colors.white54, letterSpacing: 2, fontSize: 11),
+                      style: TextStyle(
+                        color: Colors.white54,
+                        letterSpacing: 2,
+                        fontSize: 11,
+                      ),
                     ),
                     Text(
                       '\$${_consumoTotal.toStringAsFixed(2)}',
-                      style: const TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ],
                 ),
@@ -843,7 +933,11 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                     children: [
                       const Text(
                         'TIEMPO',
-                        style: TextStyle(color: Colors.white54, letterSpacing: 2, fontSize: 11),
+                        style: TextStyle(
+                          color: Colors.white54,
+                          letterSpacing: 2,
+                          fontSize: 11,
+                        ),
                       ),
                       Text(
                         '\$${_timeCost.toStringAsFixed(2)}',
@@ -861,7 +955,11 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                   children: [
                     const Text(
                       'TOTAL',
-                      style: TextStyle(color: Colors.white54, letterSpacing: 2, fontSize: 11),
+                      style: TextStyle(
+                        color: Colors.white54,
+                        letterSpacing: 2,
+                        fontSize: 11,
+                      ),
                     ),
                     Text(
                       '\$${_grandTotal.toStringAsFixed(2)}',
@@ -879,7 +977,10 @@ class _TableDetailPageState extends State<_TableDetailPage> {
           Flexible(
             child:
                 _orders.isEmpty
-                    ? const EmptyState(message: 'Sin productos', icon: Icons.receipt_long_outlined)
+                    ? const EmptyState(
+                      message: 'Sin productos',
+                      icon: Icons.receipt_long_outlined,
+                    )
                     : ListView.builder(
                       padding: const EdgeInsets.all(8),
                       itemCount: _orders.length,
@@ -888,18 +989,26 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                             dense: true,
                             title: Text(
                               _orders[i].productName,
-                              style: const TextStyle(color: Colors.white, fontSize: 13),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                              ),
                             ),
                             subtitle: Text(
                               '${_orders[i].qtyLabel} x \$${_orders[i].price.toStringAsFixed(2)}',
-                              style: const TextStyle(color: Colors.white38, fontSize: 11),
+                              style: const TextStyle(
+                                color: Colors.white38,
+                                fontSize: 11,
+                              ),
                             ),
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 Text(
                                   '\$${_orders[i].subtotal.toStringAsFixed(2)}',
-                                  style: const TextStyle(color: Colors.greenAccent),
+                                  style: const TextStyle(
+                                    color: Colors.greenAccent,
+                                  ),
                                 ),
                                 IconButton(
                                   icon: const Icon(
@@ -924,9 +1033,12 @@ class _TableDetailPageState extends State<_TableDetailPage> {
     final currentQty = _quantityInOrder(p.id);
     final reservedElsewhere = _reservedOthers[p.id] ?? 0;
     final availableStock = p.stock - reservedElsewhere;
-    if (availableStock <= currentQty) {
+    if (!_prefs.allowNegativeStockSales && availableStock <= currentQty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Stock insuficiente: ${p.name}'), backgroundColor: Colors.orange),
+        SnackBar(
+          content: Text('Stock insuficiente: ${p.name}'),
+          backgroundColor: Colors.orange,
+        ),
       );
       return;
     }
@@ -936,7 +1048,9 @@ class _TableDetailPageState extends State<_TableDetailPage> {
       if (idx >= 0) {
         _orders[idx].quantity += 1;
       } else {
-        _orders.add(SaleItemEntity(productId: p.id, productName: p.name, price: p.price));
+        _orders.add(
+          SaleItemEntity(productId: p.id, productName: p.name, price: p.price),
+        );
       }
     });
     _save();
@@ -965,7 +1079,9 @@ class _TableDetailPageState extends State<_TableDetailPage> {
   Future<void> _checkout() async {
     if (_isCheckingOut) return; // Evita doble cobro por taps rápidos.
     if (_orders.isEmpty && _timeCost == 0) return;
-    debugPrint('[Checkout] Iniciando checkout para mesa: ${widget.tableData['name']}');
+    debugPrint(
+      '[Checkout] Iniciando checkout para mesa: ${widget.tableData['name']}',
+    );
     String method = 'Efectivo';
     double paid = _grandTotal;
     final ctrl = TextEditingController(text: _grandTotal.toStringAsFixed(2));
@@ -980,7 +1096,10 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                   backgroundColor: const Color(0xFF1A1A1A),
                   title: Text(
                     'COBRAR - ${widget.tableData['name']}',
-                    style: TextStyle(color: primary, fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                      color: primary,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                   content: Column(
                     mainAxisSize: MainAxisSize.min,
@@ -989,7 +1108,10 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            const Text('Tiempo:', style: TextStyle(color: Colors.white54)),
+                            const Text(
+                              'Tiempo:',
+                              style: TextStyle(color: Colors.white54),
+                            ),
                             Text(
                               _elapsedStr,
                               style: const TextStyle(
@@ -1003,10 +1125,15 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              const Text('Costo tiempo:', style: TextStyle(color: Colors.white54)),
+                              const Text(
+                                'Costo tiempo:',
+                                style: TextStyle(color: Colors.white54),
+                              ),
                               Text(
                                 '\$${_timeCost.toStringAsFixed(2)}',
-                                style: const TextStyle(color: Colors.orangeAccent),
+                                style: const TextStyle(
+                                  color: Colors.orangeAccent,
+                                ),
                               ),
                             ],
                           ),
@@ -1014,7 +1141,10 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              const Text('Consumo:', style: TextStyle(color: Colors.white54)),
+                              const Text(
+                                'Consumo:',
+                                style: TextStyle(color: Colors.white54),
+                              ),
                               Text(
                                 '\$${_consumoTotal.toStringAsFixed(2)}',
                                 style: const TextStyle(color: Colors.white54),
@@ -1038,24 +1168,32 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                         style: const TextStyle(color: Colors.white),
                         onChanged: (v) => ss(() => method = v!),
                         items:
-                            [
-                              'Efectivo',
-                              'Tarjeta',
-                              'Transferencia',
-                            ].map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
+                            ['Efectivo', 'Tarjeta', 'Transferencia']
+                                .map(
+                                  (e) => DropdownMenuItem(
+                                    value: e,
+                                    child: Text(e),
+                                  ),
+                                )
+                                .toList(),
                       ),
                       if (method == 'Efectivo') ...[
                         const SizedBox(height: 8),
                         TextField(
                           controller: ctrl,
-                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          keyboardType: const TextInputType.numberWithOptions(
+                            decimal: true,
+                          ),
                           style: const TextStyle(color: Colors.white),
                           decoration: const InputDecoration(
                             labelText: 'Monto recibido',
                             labelStyle: TextStyle(color: Colors.white38),
                           ),
                           onTap: () => ctrl.clear(),
-                          onChanged: (v) => ss(() => paid = double.tryParse(v) ?? _grandTotal),
+                          onChanged:
+                              (v) => ss(
+                                () => paid = double.tryParse(v) ?? _grandTotal,
+                              ),
                         ),
                         const SizedBox(height: 8),
                         Builder(
@@ -1067,7 +1205,10 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                                   ? 'Falta: \$${diff.abs().toStringAsFixed(2)}'
                                   : 'Cambio: \$${diff.toStringAsFixed(2)}',
                               style: TextStyle(
-                                color: isShort ? Colors.redAccent : Colors.greenAccent,
+                                color:
+                                    isShort
+                                        ? Colors.redAccent
+                                        : Colors.greenAccent,
                                 fontWeight: FontWeight.bold,
                               ),
                             );
@@ -1079,12 +1220,18 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.pop(ctx),
-                      child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
+                      child: const Text(
+                        'Cancelar',
+                        style: TextStyle(color: Colors.white38),
+                      ),
                     ),
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(backgroundColor: primary),
                       onPressed: () => Navigator.pop(ctx, (paid, method)),
-                      child: const Text('CONFIRMAR', style: TextStyle(color: Colors.white)),
+                      child: const Text(
+                        'CONFIRMAR',
+                        style: TextStyle(color: Colors.white),
+                      ),
                     ),
                   ],
                 ),
@@ -1104,7 +1251,10 @@ class _TableDetailPageState extends State<_TableDetailPage> {
       allItems.add(_buildTimeItem());
     }
     // Total calculado desde los items finales (evita desincronización con el cronómetro)
-    final finalTotal = allItems.fold<double>(0, (acc, e) => acc + e.price * e.quantity);
+    final finalTotal = allItems.fold<double>(
+      0,
+      (acc, e) => acc + e.price * e.quantity,
+    );
 
     await _salesRepo.saveSale(
       items: allItems,
@@ -1117,7 +1267,12 @@ class _TableDetailPageState extends State<_TableDetailPage> {
     for (final item in _orders) {
       final p = _products.firstWhere(
         (x) => x.id == item.productId,
-        orElse: () => ProductEntity(name: item.productName, price: item.price, stock: 0),
+        orElse:
+            () => ProductEntity(
+              name: item.productName,
+              price: item.price,
+              stock: 0,
+            ),
       );
       await _productRepo.decreaseStock(p, item.quantity.toDouble());
     }
@@ -1166,15 +1321,22 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                   // Comandas no tienen cronómetro; el ticket sigue disponible antes del cobro.
                   Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    color: (_isComanda ? Colors.pinkAccent : Colors.orangeAccent).withValues(
-                      alpha: 0.12,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
                     ),
+                    color: (_isComanda
+                            ? Colors.pinkAccent
+                            : Colors.orangeAccent)
+                        .withValues(alpha: 0.12),
                     child: Row(
                       children: [
                         Icon(
                           _isComanda ? Icons.restaurant_menu : Icons.timer,
-                          color: _isComanda ? Colors.pinkAccent : Colors.orangeAccent,
+                          color:
+                              _isComanda
+                                  ? Colors.pinkAccent
+                                  : Colors.orangeAccent,
                           size: 20,
                         ),
                         const SizedBox(width: 8),
@@ -1199,7 +1361,9 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                                         color: Colors.orangeAccent,
                                         fontWeight: FontWeight.bold,
                                         fontSize: 26,
-                                        fontFeatures: [FontFeature.tabularFigures()],
+                                        fontFeatures: [
+                                          FontFeature.tabularFigures(),
+                                        ],
                                       ),
                                     )
                                     : const Text(
@@ -1211,9 +1375,14 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                                       ),
                                     ),
                           ),
-                        if (!_isComanda && _startTime == null && _prefs.hourlyRate > 0)
+                        if (!_isComanda &&
+                            _startTime == null &&
+                            _prefs.hourlyRate > 0)
                           TextButton.icon(
-                            icon: const Icon(Icons.play_circle, color: Colors.orangeAccent),
+                            icon: const Icon(
+                              Icons.play_circle,
+                              color: Colors.orangeAccent,
+                            ),
                             label: const Text(
                               'INICIAR',
                               style: TextStyle(color: Colors.orangeAccent),
@@ -1222,8 +1391,14 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                           ),
                         if (_orders.isNotEmpty)
                           TextButton.icon(
-                            icon: const Icon(Icons.receipt_long, color: Colors.white),
-                            label: const Text('VER TICKET', style: TextStyle(color: Colors.white)),
+                            icon: const Icon(
+                              Icons.receipt_long,
+                              color: Colors.white,
+                            ),
+                            label: const Text(
+                              'VER TICKET',
+                              style: TextStyle(color: Colors.white),
+                            ),
                             onPressed: () async {
                               if (_isOpeningTicket) {
                                 return;
@@ -1267,43 +1442,61 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                                       builder: (_) {
                                         final visibleProducts =
                                             _products.where((p) {
-                                              final reservedElsewhere = _reservedOthers[p.id] ?? 0;
-                                              final availableStock = p.stock - reservedElsewhere;
-                                              final inThisOrder = _quantityInOrder(p.id);
-                                              return availableStock > inThisOrder ||
+                                              final reservedElsewhere =
+                                                  _reservedOthers[p.id] ?? 0;
+                                              final availableStock =
+                                                  p.stock - reservedElsewhere;
+                                              final inThisOrder =
+                                                  _quantityInOrder(p.id);
+                                              return _prefs
+                                                      .allowNegativeStockSales ||
+                                                  availableStock >
+                                                      inThisOrder ||
                                                   inThisOrder > 0;
                                             }).toList();
                                         return GridView.builder(
                                           padding: const EdgeInsets.all(10),
-                                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                                            crossAxisCount: isWide ? 4 : 2,
-                                            mainAxisSpacing: 10,
-                                            crossAxisSpacing: 10,
-                                            childAspectRatio: isWide ? 0.75 : 0.65,
-                                          ),
+                                          gridDelegate:
+                                              SliverGridDelegateWithFixedCrossAxisCount(
+                                                crossAxisCount: isWide ? 4 : 2,
+                                                mainAxisSpacing: 10,
+                                                crossAxisSpacing: 10,
+                                                childAspectRatio:
+                                                    isWide ? 0.75 : 0.65,
+                                              ),
                                           itemCount: visibleProducts.length,
                                           itemBuilder: (_, i) {
                                             final p = visibleProducts[i];
                                             final q = _quantityInOrder(p.id);
-                                            final reservedElsewhere = _reservedOthers[p.id] ?? 0;
-                                            final displayStock = p.stock - reservedElsewhere - q;
+                                            final reservedElsewhere =
+                                                _reservedOthers[p.id] ?? 0;
+                                            final displayStock =
+                                                p.stock - reservedElsewhere - q;
                                             return GestureDetector(
                                               onTap: () => _addProduct(p),
                                               child: ProductSaleCard(
                                                 product: p.copyWith(
-                                                  stock: displayStock < 0 ? 0 : displayStock,
+                                                  stock:
+                                                      displayStock < 0
+                                                          ? 0
+                                                          : displayStock,
                                                 ),
                                                 quantity: q.toInt(),
                                                 onAdd: () => _addProduct(p),
                                                 onRemove: () {
-                                                  final idx = _orders.indexWhere(
-                                                    (e) => e.productId == p.id,
-                                                  );
+                                                  final idx = _orders
+                                                      .indexWhere(
+                                                        (e) =>
+                                                            e.productId == p.id,
+                                                      );
                                                   if (idx >= 0) {
                                                     _removeItem(idx);
                                                   }
                                                 },
                                                 showButtons: true,
+                                                allowOutOfStock:
+                                                    _prefs
+                                                        .allowNegativeStockSales,
                                               ),
                                             );
                                           },
@@ -1314,8 +1507,10 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                                 ],
                               ),
                             ),
-                            if (isWide) Container(width: 1, color: Colors.white10),
-                            if (isWide) SizedBox(width: 200, child: _buildSidePanel()),
+                            if (isWide)
+                              Container(width: 1, color: Colors.white10),
+                            if (isWide)
+                              SizedBox(width: 200, child: _buildSidePanel()),
                           ],
                         );
                       },
@@ -1338,13 +1533,19 @@ class _TableDetailPageState extends State<_TableDetailPage> {
         child: ElevatedButton(
           style: ElevatedButton.styleFrom(
             backgroundColor: primary,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
             minimumSize: const Size(double.infinity, 52),
           ),
           onPressed: _checkout,
           child: Text(
             '${_isComanda ? 'COBRAR / CERRAR COMANDA' : 'COBRAR'}  \$${_grandTotal.toStringAsFixed(2)}',
-            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 16,
+            ),
           ),
         ),
       ),

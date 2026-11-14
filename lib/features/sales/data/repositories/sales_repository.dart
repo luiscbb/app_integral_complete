@@ -25,6 +25,7 @@ class SalesRepository {
     required double paid,
     required String paymentMethod,
     required String saleType,
+    String? customerKey,
   }) async {
     final db = await _db.database;
     final now = DateTime.now().toIso8601String();
@@ -37,6 +38,7 @@ class SalesRepository {
         'date': now,
         'type': saleType,
         'payment_method': paymentMethod,
+        if (customerKey != null) 'customer_key': customerKey,
         'synced': 0,
       });
       for (final item in items) {
@@ -44,7 +46,8 @@ class SalesRepository {
         // momento de vender (costo histórico real). El tiempo de mesa no es
         // producto, no tiene costo.
         double costAtSale = 0;
-        if (item.productId != null && !item.productName.startsWith('Tiempo de juego')) {
+        if (item.productId != null &&
+            !item.productName.startsWith('Tiempo de juego')) {
           final prodRows = await txn.query(
             'products',
             columns: ['cost'],
@@ -75,7 +78,8 @@ class SalesRepository {
 
     // Registrar movimientos de inventario (kardex) para productos vendidos.
     for (final item in items) {
-      if (item.productId != null && !item.productName.startsWith('Tiempo de juego')) {
+      if (item.productId != null &&
+          !item.productName.startsWith('Tiempo de juego')) {
         await _reports.recordInventoryMovement(
           productId: item.productId!,
           movementType: 'sale',
@@ -102,12 +106,20 @@ class SalesRepository {
   ///  - La venta queda excluida de informes/caja (cancelled = 1).
   Future<bool> cancelSale(int saleId, {String notes = ''}) async {
     final db = await _db.database;
-    final sales = await db.query('sales_history', where: 'id = ?', whereArgs: [saleId]);
+    final sales = await db.query(
+      'sales_history',
+      where: 'id = ?',
+      whereArgs: [saleId],
+    );
     if (sales.isEmpty) return false;
     final sale = sales.first;
     if ((sale['cancelled'] as int? ?? 0) == 1) return true; // ya anulada
 
-    final details = await db.query('sale_details', where: 'sale_id = ?', whereArgs: [saleId]);
+    final details = await db.query(
+      'sale_details',
+      where: 'sale_id = ?',
+      whereArgs: [saleId],
+    );
     final saleType = sale['type']?.toString() ?? '';
 
     // Devolver stock de cada producto vendido (el tiempo de mesa no tiene stock).
@@ -119,7 +131,11 @@ class SalesRepository {
         continue;
       }
 
-      final prodRows = await db.query('products', where: 'id = ?', whereArgs: [productId]);
+      final prodRows = await db.query(
+        'products',
+        where: 'id = ?',
+        whereArgs: [productId],
+      );
       if (prodRows.isEmpty) continue;
       final product = ProductEntity.fromMap(prodRows.first);
       await _productRepo.increaseStock(product, qty);
@@ -142,7 +158,12 @@ class SalesRepository {
       where: 'id = ?',
       whereArgs: [saleId],
     );
-    await db.update('sale_details', {'cancelled': 1}, where: 'sale_id = ?', whereArgs: [saleId]);
+    await db.update(
+      'sale_details',
+      {'cancelled': 1},
+      where: 'sale_id = ?',
+      whereArgs: [saleId],
+    );
 
     // La cola procesa tanto anulaciones nuevas como pendientes y reintenta si
     // falla la red, incluso cuando la venta ya tiene cloud_id.
@@ -158,7 +179,8 @@ class SalesRepository {
     // las ventas hechas desde el otro dispositivo.
     unawaited(_sync.pullSalesFromCloud());
     final start = DateTime(date.year, date.month, date.day).toIso8601String();
-    final end = DateTime(date.year, date.month, date.day, 23, 59, 59).toIso8601String();
+    final end =
+        DateTime(date.year, date.month, date.day, 23, 59, 59).toIso8601String();
     return db.query(
       'sales_history',
       where: 'date >= ? AND date <= ? AND cancelled = 0',
@@ -170,8 +192,17 @@ class SalesRepository {
   Future<List<Map<String, dynamic>>> getTodaySales() async {
     final db = await _db.database;
     final today = DateTime.now();
-    final start = DateTime(today.year, today.month, today.day).toIso8601String();
-    final end = DateTime(today.year, today.month, today.day, 23, 59, 59).toIso8601String();
+    final start =
+        DateTime(today.year, today.month, today.day).toIso8601String();
+    final end =
+        DateTime(
+          today.year,
+          today.month,
+          today.day,
+          23,
+          59,
+          59,
+        ).toIso8601String();
     return db.query(
       'sales_history',
       where: 'date >= ? AND date <= ? AND cancelled = 0',
@@ -185,11 +216,15 @@ class SalesRepository {
     return db.query('sale_details', where: 'sale_id = ?', whereArgs: [saleId]);
   }
 
-  Future<List<Map<String, dynamic>>> getSalesByDateRange(DateTime start, DateTime end) async {
+  Future<List<Map<String, dynamic>>> getSalesByDateRange(
+    DateTime start,
+    DateTime end,
+  ) async {
     final db = await _db.database;
     unawaited(_sync.pullSalesFromCloud());
     final s = DateTime(start.year, start.month, start.day).toIso8601String();
-    final e = DateTime(end.year, end.month, end.day, 23, 59, 59).toIso8601String();
+    final e =
+        DateTime(end.year, end.month, end.day, 23, 59, 59).toIso8601String();
     return db.query(
       'sales_history',
       where: 'date >= ? AND date <= ? AND cancelled = 0',
@@ -198,7 +233,10 @@ class SalesRepository {
     );
   }
 
-  Future<List<Map<String, dynamic>>> getSalesByMonth(int year, int month) async {
+  Future<List<Map<String, dynamic>>> getSalesByMonth(
+    int year,
+    int month,
+  ) async {
     final db = await _db.database;
     final start = DateTime(year, month, 1).toIso8601String();
     final end = DateTime(year, month + 1, 0, 23, 59, 59).toIso8601String();
@@ -271,7 +309,11 @@ class SalesRepository {
       where += ' AND id != ?';
       args.add(excludeTableId);
     }
-    final rows = await db.query('billiard_tables', where: where, whereArgs: args);
+    final rows = await db.query(
+      'billiard_tables',
+      where: where,
+      whereArgs: args,
+    );
     final Map<int, double> reserved = {};
     for (final row in rows) {
       final ordersJson = row['orders'] as String?;
@@ -308,7 +350,11 @@ class SalesRepository {
     // correctamente y el calculo de tiempo coincida entre dispositivos.
     await db.update(
       'billiard_tables',
-      {'is_occupied': 1, 'start_time': DateTime.now().toUtc().toIso8601String(), 'synced': 0},
+      {
+        'is_occupied': 1,
+        'start_time': DateTime.now().toUtc().toIso8601String(),
+        'synced': 0,
+      },
       where: 'id = ?',
       whereArgs: [tableId],
     );
@@ -349,7 +395,9 @@ class SalesRepository {
     }
   }
 
-  Future<List<Map<String, dynamic>>> getTables({String tableType = 'Billar'}) async {
+  Future<List<Map<String, dynamic>>> getTables({
+    String tableType = 'Billar',
+  }) async {
     final db = await _db.database;
     final billarId = _prefs.billarId;
     final localRows = await db.query(
@@ -360,22 +408,34 @@ class SalesRepository {
     );
 
     if (kDebugMode) {
-      debugPrint('[SalesRepository] getTables: billarId=$billarId, local=${localRows.length}');
+      debugPrint(
+        '[SalesRepository] getTables: billarId=$billarId, local=${localRows.length}',
+      );
       for (final r in localRows) {
-        debugPrint('  - id=${r['id']} type=${r['table_type']} name=${r['name']}');
+        debugPrint(
+          '  - id=${r['id']} type=${r['table_type']} name=${r['name']}',
+        );
       }
     }
 
     return localRows.where((row) {
       final type = row['table_type'] as String?;
-      return tableType == 'Comanda' ? type?.trim() == 'Comanda' : _isBillarType(type);
+      return tableType == 'Comanda'
+          ? type?.trim() == 'Comanda'
+          : _isBillarType(type);
     }).toList();
   }
 
-  Future<void> refreshTablesFromCloud() => _sync.pullTablesFromCloud(forceApply: true);
+  Future<void> refreshTablesFromCloud() =>
+      _sync.pullTablesFromCloud(forceApply: true);
 
   bool _isBillarType(String? type) {
-    return const ['Billar', 'Pool', 'Carambola', 'Snooker'].contains(type?.trim() ?? 'Billar');
+    return const [
+      'Billar',
+      'Pool',
+      'Carambola',
+      'Snooker',
+    ].contains(type?.trim() ?? 'Billar');
   }
 
   Future<void> ensureTablesExist(int count) async {

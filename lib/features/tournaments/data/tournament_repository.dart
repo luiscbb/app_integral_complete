@@ -1,5 +1,6 @@
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -20,12 +21,7 @@ class TournamentRepository {
         .eq('is_active', true)
         .order('created_at', ascending: false);
     final tournaments =
-        rows
-            .map(
-              (row) =>
-                  TournamentEntity.fromCloudMap(Map<String, dynamic>.from(row)),
-            )
-            .toList();
+        rows.map((row) => TournamentEntity.fromCloudMap(Map<String, dynamic>.from(row))).toList();
     final db = await _db.database;
     await db.transaction((txn) async {
       for (final tournament in tournaments) {
@@ -47,14 +43,34 @@ class TournamentRepository {
         .eq('is_active', false)
         .order('updated_at', ascending: false);
     final tournaments =
-        rows
-            .map(
-              (row) =>
-                  TournamentEntity.fromCloudMap(Map<String, dynamic>.from(row)),
-            )
-            .toList();
+        rows.map((row) => TournamentEntity.fromCloudMap(Map<String, dynamic>.from(row))).toList();
     await _cacheAll(tournaments);
     return tournaments;
+  }
+
+  Future<List<TournamentEntity>> listAllForStatistics() async {
+    try {
+      final rows = await _supabase
+          .from('billar_tournaments')
+          .select()
+          .eq('billar_id', _prefs.billarId);
+      final tournaments =
+          rows.map((row) => TournamentEntity.fromCloudMap(Map<String, dynamic>.from(row))).toList();
+      await _cacheAll(tournaments);
+      return tournaments;
+    } catch (error, stackTrace) {
+      debugPrint(
+        '[TournamentRepository] Could not load cloud tournament results: '
+        '$error\n$stackTrace',
+      );
+      final db = await _db.database;
+      final rows = await db.query(
+        'tournaments',
+        where: 'billar_id = ?',
+        whereArgs: [_prefs.billarId],
+      );
+      return rows.map(TournamentEntity.fromLocalMap).toList();
+    }
   }
 
   Future<List<TournamentPlayerHistory>> historyForPlayer({
@@ -67,24 +83,15 @@ class TournamentRepository {
         .eq('billar_id', _prefs.billarId)
         .order('created_at', ascending: false);
     final tournaments =
-        rows
-            .map(
-              (row) =>
-                  TournamentEntity.fromCloudMap(Map<String, dynamic>.from(row)),
-            )
-            .toList();
+        rows.map((row) => TournamentEntity.fromCloudMap(Map<String, dynamic>.from(row))).toList();
     await _cacheAll(tournaments);
     final history = <TournamentPlayerHistory>[];
     for (final tournament in tournaments) {
       for (final entry in tournament.entries) {
-        final sameCode =
-            playerCode.isNotEmpty && entry.playerCode == playerCode;
-        final sameCloudId =
-            cloudId != null && entry.registeredPlayerId == cloudId;
+        final sameCode = playerCode.isNotEmpty && entry.playerCode == playerCode;
+        final sameCloudId = cloudId != null && entry.registeredPlayerId == cloudId;
         if (!entry.isGuest && (sameCode || sameCloudId)) {
-          history.add(
-            TournamentPlayerHistory.fromTournament(tournament, entry),
-          );
+          history.add(TournamentPlayerHistory.fromTournament(tournament, entry));
         }
       }
     }
@@ -104,6 +111,9 @@ class TournamentRepository {
     required String gameType,
     required int playoffQualifiers,
   }) async {
+    if (capacity != null && capacity < 8) {
+      throw StateError('El cupo debe ser de al menos ocho jugadores.');
+    }
     if (guaranteedPool < 0 || entryFee < 0 || timeFee < 0) {
       throw StateError('Los importes no pueden ser negativos.');
     }
@@ -123,9 +133,7 @@ class TournamentRepository {
       throw StateError('Selecciona Bola 8, Bola 9 o Bola 10.');
     }
     if (playoffQualifiers != 0 && playoffQualifiers != 8) {
-      throw StateError(
-        'La fase final debe ser por tabla o con los ocho mejores.',
-      );
+      throw StateError('La fase final debe ser por tabla o con los ocho mejores.');
     }
     final now = DateTime.now().toUtc().toIso8601String();
     final row =
@@ -147,47 +155,30 @@ class TournamentRepository {
             })
             .select()
             .single();
-    final tournament = TournamentEntity.fromCloudMap(
-      Map<String, dynamic>.from(row),
-    );
+    final tournament = TournamentEntity.fromCloudMap(Map<String, dynamic>.from(row));
     await _cache(tournament.copyWithTimes(createdAt: now));
     return tournament;
   }
 
-  Future<TournamentEntity> addEntry(
-    TournamentEntity tournament,
-    TournamentEntry entry,
-  ) async {
+  Future<TournamentEntity> addEntry(TournamentEntity tournament, TournamentEntry entry) async {
     if (tournament.matches.isNotEmpty) {
-      throw StateError(
-        'No se pueden cambiar los inscritos después del sorteo del cuadro.',
-      );
+      throw StateError('No se pueden cambiar los inscritos después del sorteo del cuadro.');
     }
     if (tournament.isFull) {
       throw StateError('El torneo ya alcanzó su cupo.');
     }
     if (tournament.entries.any(
-      (existing) =>
-          entry.playerCode.isNotEmpty &&
-          existing.playerCode == entry.playerCode,
+      (existing) => entry.playerCode.isNotEmpty && existing.playerCode == entry.playerCode,
     )) {
       throw StateError('Ese jugador ya está inscrito en el torneo.');
     }
-    final updated = await _updateEntries(tournament, [
-      ...tournament.entries,
-      entry,
-    ]);
+    final updated = await _updateEntries(tournament, [...tournament.entries, entry]);
     return updated;
   }
 
-  Future<TournamentEntity> removeEntry(
-    TournamentEntity tournament,
-    String entryId,
-  ) {
+  Future<TournamentEntity> removeEntry(TournamentEntity tournament, String entryId) {
     if (tournament.matches.isNotEmpty) {
-      throw StateError(
-        'No se pueden quitar inscritos después del sorteo del cuadro.',
-      );
+      throw StateError('No se pueden quitar inscritos después del sorteo del cuadro.');
     }
     return _updateEntries(
       tournament,
@@ -197,10 +188,8 @@ class TournamentRepository {
 
   Future<TournamentEntity> ensureSchedule(TournamentEntity tournament) async {
     if (tournament.matches.isNotEmpty) return tournament;
-    if (tournament.entries.length < 2) {
-      throw StateError(
-        'Inscribe al menos dos jugadores para iniciar el torneo.',
-      );
+    if (tournament.entries.length < 8) {
+      throw StateError('Inscribe al menos ocho jugadores para iniciar el torneo.');
     }
     if ((tournament.format == 'liga' || tournament.format == 'league') &&
         tournament.playoffQualifiers > 0 &&
@@ -211,21 +200,11 @@ class TournamentRepository {
     }
     final matches = switch (tournament.format) {
       'single' => TournamentBracket.create(tournament.entries),
-      'double' => TournamentSchedule.createDoubleRound(
-        tournament.entries,
-        const [],
-        round: 1,
-      ),
-      'liga' ||
-      'league' => TournamentSchedule.createRoundRobin(tournament.entries),
+      'double' => TournamentSchedule.createDoubleRound(tournament.entries, const [], round: 1),
+      'liga' || 'league' => TournamentSchedule.createRoundRobin(tournament.entries),
       'groups' => TournamentSchedule.createGroups(tournament.entries),
-      'swiss' => TournamentSchedule.createSwissRound(
-        tournament.entries,
-        const [],
-        round: 1,
-      ),
-      _ =>
-        throw StateError('Formato de torneo desconocido: ${tournament.format}'),
+      'swiss' => TournamentSchedule.createSwissRound(tournament.entries, const [], round: 1),
+      _ => throw StateError('Formato de torneo desconocido: ${tournament.format}'),
     };
     return _saveMatches(tournament, matches);
   }
@@ -239,14 +218,10 @@ class TournamentRepository {
       throw StateError('La cantidad debe ser de 1 a 99 partidas ganadas.');
     }
     if (setsToPlay < 1 || setsToPlay > 99 || setsToPlay.isEven) {
-      throw StateError(
-        'Los sets deben ser 1, 3, 5 u otro número impar entre 1 y 99.',
-      );
+      throw StateError('Los sets deben ser 1, 3, 5 u otro número impar entre 1 y 99.');
     }
     if (tournament.matches.isNotEmpty) {
-      throw StateError(
-        'No se puede cambiar la duración después de sortear el cuadro.',
-      );
+      throw StateError('No se puede cambiar la duración después de sortear el cuadro.');
     }
     final row =
         await _supabase
@@ -260,9 +235,7 @@ class TournamentRepository {
             .eq('billar_id', _prefs.billarId)
             .select()
             .single();
-    final updated = TournamentEntity.fromCloudMap(
-      Map<String, dynamic>.from(row),
-    );
+    final updated = TournamentEntity.fromCloudMap(Map<String, dynamic>.from(row));
     await _cache(updated);
     return updated;
   }
@@ -290,12 +263,7 @@ class TournamentRepository {
       raceTo: tournament.raceTo,
       setsToPlay: tournament.setsToPlay,
     );
-    _advanceBracketWinner(
-      tournament,
-      updatedMatches,
-      match,
-      updatedMatches[index],
-    );
+    _advanceBracketWinner(tournament, updatedMatches, match, updatedMatches[index]);
     _appendNextStage(tournament, updatedMatches);
     _syncThirdPlaceMatch(tournament, updatedMatches);
     return _saveMatches(tournament, updatedMatches);
@@ -316,11 +284,8 @@ class TournamentRepository {
     if ((tournament.format == 'liga' || tournament.format == 'league') &&
         match.stage == 'playoff') {
       final thirdPlaceMatch =
-          updatedMatches
-              .where((candidate) => candidate.stage == 'third_place')
-              .firstOrNull;
-      if (thirdPlaceMatch?.points.isNotEmpty == true &&
-          match.round < thirdPlaceMatch!.round) {
+          updatedMatches.where((candidate) => candidate.stage == 'third_place').firstOrNull;
+      if (thirdPlaceMatch?.points.isNotEmpty == true && match.round < thirdPlaceMatch!.round) {
         throw StateError(
           'No se puede corregir la semifinal porque el partido por el tercer lugar ya comenzó.',
         );
@@ -333,12 +298,7 @@ class TournamentRepository {
       raceTo: tournament.raceTo,
       setsToPlay: tournament.setsToPlay,
     );
-    _advanceBracketWinner(
-      tournament,
-      updatedMatches,
-      match,
-      updatedMatches[index],
-    );
+    _advanceBracketWinner(tournament, updatedMatches, match, updatedMatches[index]);
     _syncThirdPlaceMatch(tournament, updatedMatches);
     return _saveMatches(tournament, updatedMatches);
   }
@@ -358,16 +318,12 @@ class TournamentRepository {
     }
   }
 
-  void _syncThirdPlaceMatch(
-    TournamentEntity tournament,
-    List<TournamentMatch> matches,
-  ) {
+  void _syncThirdPlaceMatch(TournamentEntity tournament, List<TournamentMatch> matches) {
     if ((tournament.format != 'liga' && tournament.format != 'league') ||
         tournament.playoffQualifiers == 0) {
       return;
     }
-    final playoffMatches =
-        matches.where((match) => match.stage == 'playoff').toList();
+    final playoffMatches = matches.where((match) => match.stage == 'playoff').toList();
     if (playoffMatches.isEmpty) return;
     final finalRound = playoffMatches.fold<int>(
       0,
@@ -375,25 +331,19 @@ class TournamentRepository {
     );
     final semifinalRound = finalRound - 1;
     if (semifinalRound < 1) return;
-    final semifinals =
-        playoffMatches.where((match) => match.round == semifinalRound).toList();
+    final semifinals = playoffMatches.where((match) => match.round == semifinalRound).toList();
     if (semifinals.length != 2) return;
-    final thirdIndex = matches.indexWhere(
-      (match) => match.stage == 'third_place',
-    );
+    final thirdIndex = matches.indexWhere((match) => match.stage == 'third_place');
     if (thirdIndex < 0) return;
     final thirdMatch = matches[thirdIndex];
     String? loserOf(TournamentMatch match) {
       if (!match.isComplete) return null;
-      return match.winnerEntryId == match.player1Id
-          ? match.player2Id
-          : match.player1Id;
+      return match.winnerEntryId == match.player1Id ? match.player2Id : match.player1Id;
     }
 
     final firstLoser = loserOf(semifinals[0]);
     final secondLoser = loserOf(semifinals[1]);
-    if (thirdMatch.player1Id == firstLoser &&
-        thirdMatch.player2Id == secondLoser) {
+    if (thirdMatch.player1Id == firstLoser && thirdMatch.player2Id == secondLoser) {
       return;
     }
     if (thirdMatch.points.isNotEmpty) {
@@ -413,17 +363,12 @@ class TournamentRepository {
     );
   }
 
-  void _appendNextStage(
-    TournamentEntity tournament,
-    List<TournamentMatch> matches,
-  ) {
+  void _appendNextStage(TournamentEntity tournament, List<TournamentMatch> matches) {
     if (tournament.format == 'liga' || tournament.format == 'league') {
-      if (tournament.playoffQualifiers == 0 ||
-          matches.any((match) => match.stage == 'playoff')) {
+      if (tournament.playoffQualifiers == 0 || matches.any((match) => match.stage == 'playoff')) {
         return;
       }
-      final leagueMatches =
-          matches.where((match) => match.stage == 'league').toList();
+      final leagueMatches = matches.where((match) => match.stage == 'league').toList();
       if (leagueMatches.isNotEmpty &&
           leagueMatches.every((match) => match.isBye || match.isComplete)) {
         matches.addAll(
@@ -443,10 +388,7 @@ class TournamentRepository {
       if (!hasPlayoffs &&
           groupMatches.isNotEmpty &&
           groupMatches.every((match) => match.isBye || match.isComplete)) {
-        final qualifiers = TournamentSchedule.groupQualifiers(
-          tournament.entries,
-          matches,
-        );
+        final qualifiers = TournamentSchedule.groupQualifiers(tournament.entries, matches);
         if (qualifiers.length >= 2) {
           matches.addAll(
             TournamentBracket.create(
@@ -464,26 +406,16 @@ class TournamentRepository {
     if (tournament.format == 'double') {
       final latestRound = matches
           .where((match) => match.stage.startsWith('double_'))
-          .fold<int>(
-            0,
-            (round, match) => round > match.round ? round : match.round,
-          );
+          .fold<int>(0, (round, match) => round > match.round ? round : match.round);
       if (latestRound == 0 ||
           matches.any((match) => match.stage == 'double_final') ||
           matches
-              .where(
-                (match) =>
-                    match.round == latestRound && match.stage != 'double_final',
-              )
+              .where((match) => match.round == latestRound && match.stage != 'double_final')
               .any((match) => !match.isBye && !match.isComplete)) {
         return;
       }
       matches.addAll(
-        TournamentSchedule.createDoubleRound(
-          tournament.entries,
-          matches,
-          round: latestRound + 1,
-        ),
+        TournamentSchedule.createDoubleRound(tournament.entries, matches, round: latestRound + 1),
       );
       return;
     }
@@ -491,26 +423,16 @@ class TournamentRepository {
     if (tournament.format == 'swiss') {
       final latestRound = matches
           .where((match) => match.stage == 'swiss')
-          .fold<int>(
-            0,
-            (round, match) => round > match.round ? round : match.round,
-          );
+          .fold<int>(0, (round, match) => round > match.round ? round : match.round);
       if (latestRound == 0 ||
-          latestRound >=
-              TournamentSchedule.swissRoundCount(tournament.entries.length) ||
+          latestRound >= TournamentSchedule.swissRoundCount(tournament.entries.length) ||
           matches
-              .where(
-                (match) => match.stage == 'swiss' && match.round == latestRound,
-              )
+              .where((match) => match.stage == 'swiss' && match.round == latestRound)
               .any((match) => !match.isBye && !match.isComplete)) {
         return;
       }
       matches.addAll(
-        TournamentSchedule.createSwissRound(
-          tournament.entries,
-          matches,
-          round: latestRound + 1,
-        ),
+        TournamentSchedule.createSwissRound(tournament.entries, matches, round: latestRound + 1),
       );
     }
   }
@@ -527,9 +449,7 @@ class TournamentRepository {
     if (!shouldRebuildDynamicRounds) return;
     final laterMatches =
         tournament.format == 'groups' && match.stage == 'groups'
-            ? matches
-                .where((candidate) => candidate.stage == 'playoff')
-                .toList()
+            ? matches.where((candidate) => candidate.stage == 'playoff').toList()
             : matches
                 .where(
                   (candidate) =>
@@ -540,9 +460,7 @@ class TournamentRepository {
                 )
                 .toList();
     if (laterMatches.any((candidate) => candidate.points.isNotEmpty)) {
-      throw StateError(
-        'No se puede corregir este marcador porque una ronda posterior ya comenzó.',
-      );
+      throw StateError('No se puede corregir este marcador porque una ronda posterior ya comenzó.');
     }
     matches.removeWhere((candidate) => laterMatches.contains(candidate));
   }
@@ -562,33 +480,45 @@ class TournamentRepository {
             .eq('billar_id', _prefs.billarId)
             .select()
             .single();
-    final updated = TournamentEntity.fromCloudMap(
-      Map<String, dynamic>.from(row),
-    );
+    final updated = TournamentEntity.fromCloudMap(Map<String, dynamic>.from(row));
     await _cache(updated);
     return updated;
   }
 
   Future<TournamentEntity> archive(TournamentEntity tournament) async {
     if (!tournament.hasChampion) {
-      throw StateError(
-        'El torneo debe terminar su final antes de guardarlo en el historial.',
-      );
+      throw StateError('El torneo debe terminar su final antes de guardarlo en el historial.');
+    }
+    final row =
+        await _supabase
+            .from('billar_tournaments')
+            .update({'is_active': false, 'updated_at': DateTime.now().toUtc().toIso8601String()})
+            .eq('id', tournament.id)
+            .eq('billar_id', _prefs.billarId)
+            .select()
+            .single();
+    final updated = TournamentEntity.fromCloudMap(Map<String, dynamic>.from(row));
+    await _cache(updated);
+    return updated;
+  }
+
+  Future<TournamentEntity> cancel(TournamentEntity tournament) async {
+    if (!tournament.isActive) {
+      throw StateError('Este torneo ya no está activo.');
     }
     final row =
         await _supabase
             .from('billar_tournaments')
             .update({
               'is_active': false,
+              'is_cancelled': true,
               'updated_at': DateTime.now().toUtc().toIso8601String(),
             })
             .eq('id', tournament.id)
             .eq('billar_id', _prefs.billarId)
             .select()
             .single();
-    final updated = TournamentEntity.fromCloudMap(
-      Map<String, dynamic>.from(row),
-    );
+    final updated = TournamentEntity.fromCloudMap(Map<String, dynamic>.from(row));
     await _cache(updated);
     return updated;
   }
@@ -608,9 +538,7 @@ class TournamentRepository {
             .eq('billar_id', _prefs.billarId)
             .select()
             .single();
-    final updated = TournamentEntity.fromCloudMap(
-      Map<String, dynamic>.from(row),
-    );
+    final updated = TournamentEntity.fromCloudMap(Map<String, dynamic>.from(row));
     await _cache(updated);
     return updated;
   }
@@ -642,8 +570,7 @@ class TournamentRepository {
     final bytes = List<int>.generate(16, (_) => random.nextInt(256));
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    final hex =
-        bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
+    final hex = bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
     return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
         '${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
   }
@@ -667,6 +594,7 @@ extension on TournamentEntity {
     prizes: prizes,
     matches: matches,
     isActive: isActive,
+    isCancelled: isCancelled,
     createdAt: createdAt ?? this.createdAt,
     updatedAt: updatedAt,
   );

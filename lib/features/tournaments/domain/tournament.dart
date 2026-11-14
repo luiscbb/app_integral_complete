@@ -335,15 +335,21 @@ class TournamentBracket {
     final matches = <TournamentMatch>[];
     var id = 0;
 
+    final playInMatches = seeded.length - (bracketSize ~/ 2);
     for (var round = 1; round <= roundCount; round++) {
       final matchCount = bracketSize >> round;
       for (var matchNumber = 1; matchNumber <= matchCount; matchNumber++) {
         String? player1Id;
         String? player2Id;
         if (round == 1) {
-          final index = (matchNumber - 1) * 2;
-          player1Id = index < seeded.length ? seeded[index].id : null;
-          player2Id = index + 1 < seeded.length ? seeded[index + 1].id : null;
+          if (matchNumber <= playInMatches) {
+            final index = (matchNumber - 1) * 2;
+            player1Id = seeded[index].id;
+            player2Id = seeded[index + 1].id;
+          } else {
+            final index = 2 * playInMatches + matchNumber - playInMatches - 1;
+            player1Id = seeded[index].id;
+          }
         }
         final winnerId =
             player1Id == null
@@ -942,6 +948,7 @@ class TournamentEntity {
   final List<TournamentPrize> prizes;
   final List<TournamentMatch> matches;
   final bool isActive;
+  final bool isCancelled;
   final String createdAt;
   final String updatedAt;
 
@@ -962,6 +969,7 @@ class TournamentEntity {
     this.prizes = const [],
     this.matches = const [],
     this.isActive = true,
+    this.isCancelled = false,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -1076,6 +1084,7 @@ class TournamentEntity {
     'prizes': prizes.map((prize) => prize.toMap()).toList(),
     'matches': matches.map((match) => match.toMap()).toList(),
     'is_active': isActive,
+    'is_cancelled': isCancelled,
     'updated_at': DateTime.now().toUtc().toIso8601String(),
   };
 
@@ -1096,6 +1105,7 @@ class TournamentEntity {
     'prizes_json': jsonEncode(prizes.map((prize) => prize.toMap()).toList()),
     'matches_json': jsonEncode(matches.map((match) => match.toMap()).toList()),
     'is_active': isActive ? 1 : 0,
+    'is_cancelled': isCancelled ? 1 : 0,
     'created_at': createdAt,
     'updated_at': updatedAt,
   };
@@ -1151,6 +1161,7 @@ class TournamentEntity {
       prizes: prizes,
       matches: matches,
       isActive: map['is_active'] == true || map['is_active'] == 1,
+      isCancelled: map['is_cancelled'] == true || map['is_cancelled'] == 1,
       createdAt: map['created_at']?.toString() ?? '',
       updatedAt: map['updated_at']?.toString() ?? '',
     );
@@ -1207,6 +1218,7 @@ class TournamentEntity {
       prizes: prizes,
       matches: matches,
       isActive: map['is_active'] == 1,
+      isCancelled: map['is_cancelled'] == 1,
       createdAt: map['created_at']?.toString() ?? '',
       updatedAt: map['updated_at']?.toString() ?? '',
     );
@@ -1224,6 +1236,7 @@ class TournamentEntity {
     List<TournamentPrize>? prizes,
     List<TournamentMatch>? matches,
     bool? isActive,
+    bool? isCancelled,
   }) => TournamentEntity(
     id: id,
     billarId: billarId,
@@ -1241,6 +1254,7 @@ class TournamentEntity {
     prizes: prizes ?? this.prizes,
     matches: matches ?? this.matches,
     isActive: isActive ?? this.isActive,
+    isCancelled: isCancelled ?? this.isCancelled,
     createdAt: createdAt,
     updatedAt: updatedAt,
   );

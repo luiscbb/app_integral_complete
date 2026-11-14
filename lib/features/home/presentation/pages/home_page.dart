@@ -52,6 +52,13 @@ class _HomePageState extends State<HomePage> {
       'Ventas',
     ),
     _Module(
+      'CUENTA\nPERSONAL',
+      Icons.person_pin_circle_outlined,
+      Color(0xFF00ACC1),
+      AppRoutes.specialClient,
+      'Ventas',
+    ),
+    _Module(
       'INVENTARIO',
       Icons.inventory_2_rounded,
       Color(0xFF43A047),
@@ -156,6 +163,10 @@ class _HomePageState extends State<HomePage> {
     await _prefs.setTableCount(tableCount);
     await _prefs.setHourlyRate(
       (settings['hourly_rate'] as num?)?.toDouble() ?? _prefs.hourlyRate,
+    );
+    await _prefs.setAllowNegativeStockSales(
+      settings['allow_negative_stock_sales'] as bool? ??
+          _prefs.allowNegativeStockSales,
     );
     await _prefs.setLogoUrl(logoUrl);
     await _prefs.setBusinessAddress(

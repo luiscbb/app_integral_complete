@@ -4,6 +4,7 @@ class PlayerStats {
   final int draws;
   final int breakAndRun;
   final int goldenBreaks;
+  final int opponent8BallFoul;
   final int highRun;
   final int currentStreak;
   final int bestStreak;
@@ -14,6 +15,7 @@ class PlayerStats {
     this.draws = 0,
     this.breakAndRun = 0,
     this.goldenBreaks = 0,
+    this.opponent8BallFoul = 0,
     this.highRun = 0,
     this.currentStreak = 0,
     this.bestStreak = 0,
@@ -29,6 +31,7 @@ class PlayerStats {
     'draws': draws,
     'break_and_run': breakAndRun,
     'golden_breaks': goldenBreaks,
+    'opponent_8_ball_foul': opponent8BallFoul,
     'high_run': highRun,
     'current_streak': currentStreak,
     'best_streak': bestStreak,
@@ -40,6 +43,7 @@ class PlayerStats {
     int? draws,
     int? breakAndRun,
     int? goldenBreaks,
+    int? opponent8BallFoul,
     int? highRun,
     int? currentStreak,
     int? bestStreak,
@@ -50,6 +54,7 @@ class PlayerStats {
       draws: draws ?? this.draws,
       breakAndRun: breakAndRun ?? this.breakAndRun,
       goldenBreaks: goldenBreaks ?? this.goldenBreaks,
+      opponent8BallFoul: opponent8BallFoul ?? this.opponent8BallFoul,
       highRun: highRun ?? this.highRun,
       currentStreak: currentStreak ?? this.currentStreak,
       bestStreak: bestStreak ?? this.bestStreak,
@@ -147,6 +152,7 @@ class PlayerEntity {
     'total_seconds': totalSeconds,
     'break_and_run': stats.breakAndRun,
     'golden_breaks': stats.goldenBreaks,
+    'opponent_8_ball_foul': stats.opponent8BallFoul,
     'high_run': stats.highRun,
     'current_streak': stats.currentStreak,
     'best_streak': stats.bestStreak,
@@ -181,6 +187,7 @@ class PlayerEntity {
       draws: (m['draws'] as num?)?.toInt() ?? 0,
       breakAndRun: (m['break_and_run'] as num?)?.toInt() ?? 0,
       goldenBreaks: (m['golden_breaks'] as num?)?.toInt() ?? 0,
+      opponent8BallFoul: (m['opponent_8_ball_foul'] as num?)?.toInt() ?? 0,
       highRun: (m['high_run'] as num?)?.toInt() ?? 0,
       currentStreak: (m['current_streak'] as num?)?.toInt() ?? 0,
       bestStreak: (m['best_streak'] as num?)?.toInt() ?? 0,

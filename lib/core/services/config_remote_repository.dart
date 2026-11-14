@@ -50,6 +50,7 @@ class ConfigRemoteRepository {
     required String businessName,
     required int tableCount,
     required double hourlyRate,
+    bool? allowNegativeStockSales,
     int? primaryColor,
     String? businessAddress,
     String? businessStreet,
@@ -81,6 +82,8 @@ class ConfigRemoteRepository {
         'business_name': businessName,
         'table_count': tableCount,
         'hourly_rate': hourlyRate,
+        if (allowNegativeStockSales != null)
+          'allow_negative_stock_sales': allowNegativeStockSales,
         // Guardar solo los 3 bytes RGB (sin alpha) para no exceder el rango
         // INTEGER de PostgreSQL (max 2147483647). 0xFFE53935 = 4294967295.
         if (primaryColor != null) 'primary_color': primaryColor & 0x00FFFFFF,
@@ -123,5 +126,14 @@ class ConfigRemoteRepository {
       log('[ConfigRemoteRepository] upsertSettings error: $e', stackTrace: st);
       return null;
     }
+  }
+
+  Future<void> updateAllowNegativeStockSales(bool enabled) async {
+    final user = _client.auth.currentUser;
+    if (user == null) return;
+    await _client
+        .from(_table)
+        .update({'allow_negative_stock_sales': enabled})
+        .eq('user_id', user.id);
   }
 }

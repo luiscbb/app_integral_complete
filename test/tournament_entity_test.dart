@@ -218,7 +218,53 @@ void main() {
       expect(finalMatch.player2Id, isNull);
     });
 
-    test('advances bye players in a bracket with a non-power-of-two field', () {
+    test(
+      'uses preliminary rounds and byes to complete a 10-player bracket',
+      () {
+        final entries = List.generate(
+          10,
+          (index) =>
+              TournamentEntry(id: 'player-$index', name: 'Jugador $index'),
+        );
+
+        final matches = TournamentBracket.create(entries, random: Random(9));
+        final firstRound = matches.where((match) => match.round == 1).toList();
+        final preliminaryMatches =
+            firstRound.where((match) => match.isReady).toList();
+        final automaticAdvances = firstRound.where((match) => match.isBye);
+        final secondRound = matches.where((match) => match.round == 2).toList();
+
+        expect(preliminaryMatches, hasLength(2));
+        expect(automaticAdvances, hasLength(6));
+        expect(
+          automaticAdvances.every((match) => match.winnerEntryId != null),
+          isTrue,
+        );
+        expect(secondRound, hasLength(4));
+        expect(secondRound.where((match) => match.isReady), hasLength(3));
+        expect(secondRound.where((match) => !match.isReady), hasLength(1));
+        for (final match in preliminaryMatches) {
+          final result = match.copyWith(winnerEntryId: match.player1Id);
+          TournamentBracket.advanceWinner(matches, match, result);
+          matches[matches.indexOf(match)] = result;
+        }
+        expect(
+          matches
+              .where((match) => match.round == 2)
+              .every((match) => match.isReady),
+          isTrue,
+        );
+        expect(
+          firstRound
+              .expand((match) => [match.player1Id, match.player2Id])
+              .whereType<String>()
+              .toSet(),
+          entries.map((entry) => entry.id).toSet(),
+        );
+      },
+    );
+
+    test('does not strand entrants in a smaller non-power-of-two bracket', () {
       final entries = List.generate(
         5,
         (index) => TournamentEntry(id: 'player-$index', name: 'Jugador $index'),
@@ -226,19 +272,23 @@ void main() {
 
       final matches = TournamentBracket.create(entries, random: Random(9));
       final firstRound = matches.where((match) => match.round == 1).toList();
-      final automaticAdvances =
-          firstRound.where((match) => match.isBye).toList();
-      final laterRoundByes = matches.where(
-        (match) => match.round == 2 && match.isBye,
-      );
+      final secondRound = matches.where((match) => match.round == 2).toList();
 
-      expect(automaticAdvances, hasLength(1));
+      expect(firstRound.where((match) => match.isReady), hasLength(1));
+      expect(firstRound.where((match) => match.isBye), hasLength(3));
+      expect(secondRound, hasLength(2));
+      expect(secondRound.where((match) => match.isReady), hasLength(1));
+      final preliminary = firstRound.singleWhere((match) => match.isReady);
+      final result = preliminary.copyWith(
+        winnerEntryId: preliminary.player1Id,
+      );
+      TournamentBracket.advanceWinner(matches, preliminary, result);
       expect(
-        automaticAdvances.every((match) => match.winnerEntryId != null),
+        matches
+            .where((match) => match.round == 2)
+            .every((match) => match.isReady),
         isTrue,
       );
-      expect(laterRoundByes, hasLength(1));
-      expect(laterRoundByes.single.winnerEntryId, isNotNull);
     });
 
     test('wins a best-of-three match by winning two sets', () {

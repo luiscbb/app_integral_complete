@@ -9,9 +9,11 @@ import '../../../../core/services/sync_service.dart';
 import '../../../../core/storage/preferences_service.dart';
 import '../../domain/entities/player_stats.dart';
 
-typedef PlayerRegistrationResult = ({PlayerEntity player, String temporaryPassword});
+typedef PlayerRegistrationResult =
+    ({PlayerEntity player, String temporaryPassword});
 
-typedef ManagerRegistrationResult = ({Map<String, dynamic> manager, String temporaryPassword});
+typedef ManagerRegistrationResult =
+    ({Map<String, dynamic> manager, String temporaryPassword});
 
 class PlayerRepository {
   final _db = DatabaseHelper.instance;
@@ -26,7 +28,9 @@ class PlayerRepository {
       try {
         await _invoke('expire_players', {'billar_id': billarId});
       } catch (e, st) {
-        debugPrint('[PlayerRepository] Could not update expired enrollments: $e');
+        debugPrint(
+          '[PlayerRepository] Could not update expired enrollments: $e',
+        );
         debugPrint('$st');
       }
       final remoteRows = await _sup
@@ -39,7 +43,9 @@ class PlayerRepository {
         await _cacheCloudPlayer(Map<String, dynamic>.from(remote));
       }
     } catch (e, st) {
-      debugPrint('[PlayerRepository] Cloud refresh failed; showing local cache: $e');
+      debugPrint(
+        '[PlayerRepository] Cloud refresh failed; showing local cache: $e',
+      );
       debugPrint('$st');
     }
 
@@ -70,7 +76,10 @@ class PlayerRepository {
       'handicap': handicap,
       'avatar_url': avatarUrl,
     });
-    final cloudPlayer = _asMap(response['player'], 'No se recibió el jugador creado.');
+    final cloudPlayer = _asMap(
+      response['player'],
+      'No se recibió el jugador creado.',
+    );
     final player = await _cacheCloudPlayer(cloudPlayer);
     final temporaryPassword = response['temporary_password'] as String?;
     if (temporaryPassword == null || temporaryPassword.isEmpty) {
@@ -79,28 +88,42 @@ class PlayerRepository {
     return (player: player, temporaryPassword: temporaryPassword);
   }
 
-  Future<String?> updateRegistration(PlayerEntity player, {String? newAvatarPath}) async {
+  Future<String?> updateRegistration(
+    PlayerEntity player, {
+    String? newAvatarPath,
+  }) async {
     final cloudId = player.cloudId;
-    final avatarUrl = newAvatarPath == null ? player.avatar : await _uploadAvatar(newAvatarPath);
-    final response =
-        await _invoke(cloudId == null || cloudId.isEmpty ? 'create_player' : 'update_player', {
-          'billar_id': _prefs.billarId,
-          if (cloudId != null && cloudId.isNotEmpty) 'player_id': cloudId,
-          'local_id': player.id,
-          'name': player.name.trim().toUpperCase(),
-          'email': player.email.trim().toLowerCase(),
-          'phone': player.phone.trim(),
-          'nickname': player.nickname.trim().toUpperCase(),
-          'handicap': player.handicap,
-          'avatar_url': avatarUrl,
-        });
-    final cloudPlayer = _asMap(response['player'], 'No se recibió el jugador actualizado.');
+    final avatarUrl =
+        newAvatarPath == null
+            ? player.avatar
+            : await _uploadAvatar(newAvatarPath);
+    final response = await _invoke(
+      cloudId == null || cloudId.isEmpty ? 'create_player' : 'update_player',
+      {
+        'billar_id': _prefs.billarId,
+        if (cloudId != null && cloudId.isNotEmpty) 'player_id': cloudId,
+        'local_id': player.id,
+        'name': player.name.trim().toUpperCase(),
+        'email': player.email.trim().toLowerCase(),
+        'phone': player.phone.trim(),
+        'nickname': player.nickname.trim().toUpperCase(),
+        'handicap': player.handicap,
+        'avatar_url': avatarUrl,
+      },
+    );
+    final cloudPlayer = _asMap(
+      response['player'],
+      'No se recibió el jugador actualizado.',
+    );
     if (cloudId == null || cloudId.isEmpty) {
       final localId = player.id;
       if (localId == null) {
         throw StateError('No se pudo asociar el jugador local con su cuenta.');
       }
-      final linked = PlayerEntity.fromCloudMap(cloudPlayer, localId: localId).copyWith(
+      final linked = PlayerEntity.fromCloudMap(
+        cloudPlayer,
+        localId: localId,
+      ).copyWith(
         id: localId,
         clientId: player.clientId,
         stats: player.stats,
@@ -138,7 +161,9 @@ class PlayerRepository {
       'billar_id': _prefs.billarId,
       'player_id': cloudId,
     });
-    await _cacheCloudPlayer(_asMap(response['player'], 'No se recibió el jugador archivado.'));
+    await _cacheCloudPlayer(
+      _asMap(response['player'], 'No se recibió el jugador archivado.'),
+    );
   }
 
   Future<PlayerEntity> renewPlayer(PlayerEntity player) async {
@@ -150,7 +175,9 @@ class PlayerRepository {
       'billar_id': _prefs.billarId,
       'player_id': cloudId,
     });
-    return _cacheCloudPlayer(_asMap(response['player'], 'No se recibió el jugador renovado.'));
+    return _cacheCloudPlayer(
+      _asMap(response['player'], 'No se recibió el jugador renovado.'),
+    );
   }
 
   Future<String> resetPlayerPassword(PlayerEntity player) async {
@@ -188,7 +215,9 @@ class PlayerRepository {
   Future<List<Map<String, dynamic>>> getManagers() async {
     final rows = await _sup
         .from('business_memberships')
-        .select('user_id, billar_id, email, role, is_active, must_change_password')
+        .select(
+          'user_id, billar_id, email, role, is_active, must_change_password',
+        )
         .eq('billar_id', _prefs.billarId)
         .eq('role', 'manager')
         .order('created_at');
@@ -204,7 +233,10 @@ class PlayerRepository {
       'name': name.trim().toUpperCase(),
       'email': email.trim().toLowerCase(),
     });
-    final manager = _asMap(response['manager'], 'No se recibió el encargado creado.');
+    final manager = _asMap(
+      response['manager'],
+      'No se recibió el encargado creado.',
+    );
     final password = response['temporary_password'] as String?;
     if (password == null || password.isEmpty) {
       throw StateError('El servidor no devolvió la contraseña provisional.');
@@ -238,7 +270,10 @@ class PlayerRepository {
     final localPlayer = player.copyWith(
       clientId: player.clientId.isEmpty ? _newClientId() : player.clientId,
       billarId: _prefs.billarId,
-      registeredAt: player.registeredAt.isEmpty ? now.toIso8601String() : player.registeredAt,
+      registeredAt:
+          player.registeredAt.isEmpty
+              ? now.toIso8601String()
+              : player.registeredAt,
       expiresAt:
           player.expiresAt.isEmpty
               ? DateTime(now.year + 1, now.month, now.day).toIso8601String()
@@ -252,7 +287,12 @@ class PlayerRepository {
   Future<int> update(PlayerEntity player) async {
     final db = await _db.database;
     final map = player.toMap()..['synced'] = 0;
-    final changed = await db.update('players', map, where: 'id = ?', whereArgs: [player.id]);
+    final changed = await db.update(
+      'players',
+      map,
+      where: 'id = ?',
+      whereArgs: [player.id],
+    );
     if (changed > 0) {
       _syncPlayer(player.id!, player.copyWith(synced: false));
     }
@@ -275,14 +315,23 @@ class PlayerRepository {
     bool isDraw = false,
     bool goldenBreak = false,
     bool breakAndRun = false,
+    bool opponent8BallFoul = false,
   }) async {
     final db = await _db.database;
-    final maps = await db.query('players', where: 'id = ?', whereArgs: [playerId], limit: 1);
+    final maps = await db.query(
+      'players',
+      where: 'id = ?',
+      whereArgs: [playerId],
+      limit: 1,
+    );
     if (maps.isEmpty) return;
     final player = PlayerEntity.fromMap(maps.first);
     var stats = player.stats;
     if (won) {
-      stats = stats.copyWith(wins: stats.wins + 1, currentStreak: stats.currentStreak + 1);
+      stats = stats.copyWith(
+        wins: stats.wins + 1,
+        currentStreak: stats.currentStreak + 1,
+      );
     } else if (isDraw) {
       stats = stats.copyWith(draws: stats.draws + 1, currentStreak: 0);
     } else {
@@ -294,8 +343,13 @@ class PlayerRepository {
     if (breakAndRun) {
       stats = stats.copyWith(breakAndRun: stats.breakAndRun + 1);
     }
+    if (opponent8BallFoul) {
+      stats = stats.copyWith(opponent8BallFoul: stats.opponent8BallFoul + 1);
+    }
     final bestStreak =
-        stats.currentStreak > stats.bestStreak ? stats.currentStreak : stats.bestStreak;
+        stats.currentStreak > stats.bestStreak
+            ? stats.currentStreak
+            : stats.bestStreak;
     stats = stats.copyWith(bestStreak: bestStreak);
     await db.update(
       'players',
@@ -313,6 +367,15 @@ class PlayerRepository {
       where: 'id = ?',
       whereArgs: [playerId],
     );
+    final updatedRows = await db.query(
+      'players',
+      where: 'id = ?',
+      whereArgs: [playerId],
+      limit: 1,
+    );
+    if (updatedRows.isNotEmpty) {
+      await _syncPlayer(playerId, PlayerEntity.fromMap(updatedRows.first));
+    }
   }
 
   Future<void> _syncPlayer(int localId, PlayerEntity player) async {
@@ -339,13 +402,21 @@ class PlayerRepository {
     final existing =
         cloudId == null
             ? <Map<String, Object?>>[]
-            : await db.query('players', where: 'cloud_id = ?', whereArgs: [cloudId], limit: 1);
-    final localId = existing.isEmpty ? null : (existing.first['id'] as num).toInt();
+            : await db.query(
+              'players',
+              where: 'cloud_id = ?',
+              whereArgs: [cloudId],
+              limit: 1,
+            );
+    final localId =
+        existing.isEmpty ? null : (existing.first['id'] as num).toInt();
     var player = PlayerEntity.fromCloudMap(row, localId: localId);
     if (player.clientId.isEmpty) {
-      final savedClientId = existing.isEmpty ? null : existing.first['client_id']?.toString();
+      final savedClientId =
+          existing.isEmpty ? null : existing.first['client_id']?.toString();
       player = player.copyWith(
-        clientId: savedClientId?.isNotEmpty == true ? savedClientId : _newClientId(),
+        clientId:
+            savedClientId?.isNotEmpty == true ? savedClientId : _newClientId(),
       );
     }
     final values = player.toMap()..['synced'] = 1;
@@ -362,7 +433,10 @@ class PlayerRepository {
     if (pathOrUrl.isEmpty || pathOrUrl.startsWith('http')) return pathOrUrl;
     final file = File(pathOrUrl);
     if (!await file.exists()) {
-      throw FileSystemException('No se encontró el archivo de la foto.', pathOrUrl);
+      throw FileSystemException(
+        'No se encontró el archivo de la foto.',
+        pathOrUrl,
+      );
     }
     final extension = pathOrUrl.split('.').last.toLowerCase();
     final contentType = switch (extension) {
@@ -374,11 +448,18 @@ class PlayerRepository {
         '${_prefs.billarId}/${DateTime.now().microsecondsSinceEpoch}_${_newClientId()}.$extension';
     await _sup.storage
         .from('player_avatars')
-        .upload(storagePath, file, fileOptions: FileOptions(contentType: contentType));
+        .upload(
+          storagePath,
+          file,
+          fileOptions: FileOptions(contentType: contentType),
+        );
     return _sup.storage.from('player_avatars').getPublicUrl(storagePath);
   }
 
-  Future<Map<String, dynamic>> _invoke(String action, Map<String, dynamic> parameters) async {
+  Future<Map<String, dynamic>> _invoke(
+    String action,
+    Map<String, dynamic> parameters,
+  ) async {
     final response = await _sup.functions.invoke(
       'player-admin',
       body: {'action': action, ...parameters},
@@ -386,7 +467,9 @@ class PlayerRepository {
     final data = response.data;
     if (response.status < 200 || response.status >= 300) {
       final message = data is Map ? data['error']?.toString() : null;
-      throw StateError(message ?? 'No se pudo completar la operación ($action).');
+      throw StateError(
+        message ?? 'No se pudo completar la operación ($action).',
+      );
     }
     if (data is! Map) {
       throw StateError('Respuesta inválida del servidor ($action).');
@@ -404,7 +487,8 @@ class PlayerRepository {
     final bytes = List<int>.generate(16, (_) => random.nextInt(256));
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    final hex = bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
+    final hex =
+        bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
     return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-'
         '${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
   }

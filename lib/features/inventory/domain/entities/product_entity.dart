@@ -1,6 +1,7 @@
 class ProductEntity {
   final int? id;
   final String? barcode;
+  final String? cloudId;
   final String name;
   final String description;
   final double price;
@@ -17,6 +18,7 @@ class ProductEntity {
   const ProductEntity({
     this.id,
     this.barcode,
+    this.cloudId,
     required this.name,
     this.description = '',
     required this.price,
@@ -34,6 +36,7 @@ class ProductEntity {
   ProductEntity copyWith({
     int? id,
     String? barcode,
+    String? cloudId,
     String? name,
     String? description,
     double? price,
@@ -50,6 +53,7 @@ class ProductEntity {
     return ProductEntity(
       id: id ?? this.id,
       barcode: barcode ?? this.barcode,
+      cloudId: cloudId ?? this.cloudId,
       name: name ?? this.name,
       description: description ?? this.description,
       price: price ?? this.price,
@@ -69,6 +73,7 @@ class ProductEntity {
     return ProductEntity(
       id: m['id'] as int?,
       barcode: m['barcode']?.toString(),
+      cloudId: m['cloud_id']?.toString(),
       name: m['name'] ?? 'Sin nombre',
       description: m['description'] ?? '',
       price: (m['price'] as num?)?.toDouble() ?? 0.0,
@@ -80,7 +85,10 @@ class ProductEntity {
       piecesPerUnit: (m['pieces_per_unit'] as int?) ?? 1,
       category: m['category']?.toString() ?? '',
       presentation: m['presentation']?.toString() ?? '',
-      isActive: m['is_active'] == null || m['is_active'] == true || m['is_active'] == 1,
+      isActive:
+          m['is_active'] == null ||
+          m['is_active'] == true ||
+          m['is_active'] == 1,
     );
   }
 
@@ -88,6 +96,7 @@ class ProductEntity {
     return {
       if (id != null) 'id': id,
       'barcode': barcode,
+      if (cloudId != null) 'cloud_id': cloudId,
       'name': name,
       'description': description,
       'price': price,

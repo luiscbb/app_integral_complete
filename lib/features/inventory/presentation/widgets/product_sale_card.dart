@@ -9,6 +9,7 @@ class ProductSaleCard extends StatelessWidget {
   final VoidCallback onRemove;
   final bool showButtons;
   final bool showOutOfStock;
+  final bool allowOutOfStock;
 
   const ProductSaleCard({
     super.key,
@@ -18,6 +19,7 @@ class ProductSaleCard extends StatelessWidget {
     required this.onRemove,
     this.showButtons = false,
     this.showOutOfStock = true,
+    this.allowOutOfStock = false,
   });
 
   Color _stockColor() {
@@ -46,24 +48,29 @@ class ProductSaleCard extends StatelessWidget {
     final primary = Theme.of(context).colorScheme.primary;
     // Cuando el tema primario es rojo, el botón de agregar usa verde para
     // mantener buen contraste y semántica de "añadir".
-    final addColor = primary == const Color(0xFFE53935) ? Colors.greenAccent : primary;
+    final addColor =
+        primary == const Color(0xFFE53935) ? Colors.greenAccent : primary;
     if (_isOutOfStock && !showOutOfStock) {
       return const SizedBox.shrink();
     }
 
     return Container(
       decoration: BoxDecoration(
-        color: _isOutOfStock ? const Color(0xFF2A1A1A) : const Color(0xFF1A1A1A),
+        color:
+            _isOutOfStock ? const Color(0xFF2A1A1A) : const Color(0xFF1A1A1A),
         borderRadius: BorderRadius.circular(15),
         border: Border.all(
-          color: _isOutOfStock
-              ? Colors.red
-              : (quantity > 0 ? primary : _stockColor().withValues(alpha: 0.6)),
+          color:
+              _isOutOfStock
+                  ? Colors.red
+                  : (quantity > 0
+                      ? primary
+                      : _stockColor().withValues(alpha: 0.6)),
           width: 2,
         ),
       ),
       child: Opacity(
-        opacity: _isOutOfStock ? 0.45 : 1.0,
+        opacity: _isOutOfStock && !allowOutOfStock ? 0.45 : 1.0,
         child: Stack(
           children: [
             SizedBox.expand(
@@ -112,7 +119,10 @@ class ProductSaleCard extends StatelessWidget {
                     Text(
                       '\$${product.price.toStringAsFixed(2)}',
                       style: TextStyle(
-                        color: _isOutOfStock ? Colors.red[200] : Colors.greenAccent,
+                        color:
+                            _isOutOfStock
+                                ? Colors.red[200]
+                                : Colors.greenAccent,
                         fontWeight: FontWeight.bold,
                         fontSize: 14,
                       ),
@@ -123,20 +133,33 @@ class ProductSaleCard extends StatelessWidget {
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           IconButton(
-                            icon: const Icon(Icons.remove_circle, color: Colors.redAccent, size: 20),
+                            icon: const Icon(
+                              Icons.remove_circle,
+                              color: Colors.redAccent,
+                              size: 20,
+                            ),
                             onPressed: onRemove,
                           ),
                           Text(
                             '$quantity',
-                            style: const TextStyle(color: Colors.white, fontSize: 16),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                            ),
                           ),
                           IconButton(
                             icon: Icon(
                               Icons.add_circle,
-                              color: _isOutOfStock ? Colors.red : addColor,
+                              color:
+                                  _isOutOfStock && !allowOutOfStock
+                                      ? Colors.red
+                                      : addColor,
                               size: 20,
                             ),
-                            onPressed: _isOutOfStock ? null : onAdd,
+                            onPressed:
+                                _isOutOfStock && !allowOutOfStock
+                                    ? null
+                                    : onAdd,
                           ),
                         ],
                       ),
@@ -153,7 +176,10 @@ class ProductSaleCard extends StatelessWidget {
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
                 decoration: BoxDecoration(
-                  color: _isOutOfStock ? Colors.red : _stockColor().withValues(alpha: 0.85),
+                  color:
+                      _isOutOfStock
+                          ? Colors.red
+                          : _stockColor().withValues(alpha: 0.85),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(
@@ -174,7 +200,10 @@ class ProductSaleCard extends StatelessWidget {
                 top: 6,
                 right: 6,
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.orange.withValues(alpha: 0.9),
                     borderRadius: BorderRadius.circular(6),

@@ -29,9 +29,12 @@ class SyncService {
   bool _syncRequestedWhileRunning = false;
 
   SyncService._internal() {
-    _connectivitySubscription = AppServices.connectivityService.connectionChanges.listen((online) {
-      if (online) schedulePendingSync();
-    });
+    _connectivitySubscription = AppServices
+        .connectivityService
+        .connectionChanges
+        .listen((online) {
+          if (online) schedulePendingSync();
+        });
   }
 
   /// Disparador para sincronizar ventas pendientes.
@@ -78,6 +81,7 @@ class SyncService {
     required String type,
     required String paymentMethod,
     required List<Map<String, dynamic>> items,
+    String? customerKey,
     String? existingCloudId,
     bool cancelled = false,
   }) async {
@@ -103,12 +107,16 @@ class SyncService {
         'payment_method': paymentMethod,
         // Anulación lógica (Etapa 3): la venta anulada se propaga a la nube.
         'cancelled': cancelled,
+        if (customerKey != null) 'customer_key': customerKey,
       };
 
       if (cloudId != null) {
         await _sup.from('sales_history').update(saleMap).eq('id', cloudId);
       } else {
-        final resp = await _sup.from('sales_history').insert(saleMap).select('id');
+        final resp = await _sup
+            .from('sales_history')
+            .insert(saleMap)
+            .select('id');
         cloudId = (resp as List).first['id'].toString();
       }
 
@@ -205,12 +213,18 @@ class SyncService {
       if (cloudId != null) {
         await _sup.from('purchases').update(purchaseMap).eq('id', cloudId);
       } else {
-        final resp = await _sup.from('purchases').insert(purchaseMap).select('id');
+        final resp = await _sup
+            .from('purchases')
+            .insert(purchaseMap)
+            .select('id');
         cloudId = (resp as List).first['id'].toString();
       }
 
       if (existingCloudId != null) {
-        await _sup.from('purchase_details').delete().eq('purchase_id', existingCloudId);
+        await _sup
+            .from('purchase_details')
+            .delete()
+            .eq('purchase_id', existingCloudId);
       }
 
       for (final item in items) {
@@ -231,7 +245,9 @@ class SyncService {
         whereArgs: [localPurchaseId],
       );
 
-      debugPrint('[SyncService] Compra $localPurchaseId sync OK cloudId=$cloudId');
+      debugPrint(
+        '[SyncService] Compra $localPurchaseId sync OK cloudId=$cloudId',
+      );
       return cloudId;
     } catch (e, st) {
       debugPrint('[SyncService] pushPurchaseToCloud ERROR: $e');
@@ -262,9 +278,14 @@ class SyncService {
               .upload(
                 fileName,
                 file,
-                fileOptions: const FileOptions(contentType: 'image/jpeg', upsert: true),
+                fileOptions: const FileOptions(
+                  contentType: 'image/jpeg',
+                  upsert: true,
+                ),
               );
-          avatarUrl = _sup.storage.from('player_avatars').getPublicUrl(fileName);
+          avatarUrl = _sup.storage
+              .from('player_avatars')
+              .getPublicUrl(fileName);
         }
       }
 
@@ -317,12 +338,19 @@ class SyncService {
   // PROVEEDORES
   // ────────────────────────────────────────────────────────────────────
 
-  Future<bool> pushProviderToCloud(Map<String, dynamic> map, int localId) async {
+  Future<bool> pushProviderToCloud(
+    Map<String, dynamic> map,
+    int localId,
+  ) async {
     try {
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) return false;
 
-      await _sup.from('providers').upsert({...map, 'id': localId, 'billar_id': _prefs.billarId});
+      await _sup.from('providers').upsert({
+        ...map,
+        'id': localId,
+        'billar_id': _prefs.billarId,
+      });
       return true;
     } catch (e) {
       debugPrint('[SyncService] pushProvider ERROR: $e');
@@ -344,7 +372,10 @@ class SyncService {
       );
       final productIds = rows.map((r) => r['product_id'] as int).toList();
 
-      await _sup.from('provider_products').delete().eq('provider_id', providerId);
+      await _sup
+          .from('provider_products')
+          .delete()
+          .eq('provider_id', providerId);
       for (final productId in productIds) {
         await _sup.from('provider_products').insert({
           'provider_id': providerId,
@@ -392,7 +423,12 @@ class SyncService {
       await db.transaction((txn) async {
         for (final p in remoteProviders) {
           final id = p['id'] as int;
-          final existing = await txn.query('providers', where: 'id = ?', whereArgs: [id], limit: 1);
+          final existing = await txn.query(
+            'providers',
+            where: 'id = ?',
+            whereArgs: [id],
+            limit: 1,
+          );
           final map = {
             'name': p['name'] ?? '',
             'phone': p['phone'] ?? '',
@@ -406,12 +442,18 @@ class SyncService {
           if (existing.isEmpty) {
             await txn.insert('providers', {'id': id, ...map});
           } else {
-            await txn.update('providers', map, where: 'id = ?', whereArgs: [id]);
+            await txn.update(
+              'providers',
+              map,
+              where: 'id = ?',
+              whereArgs: [id],
+            );
           }
         }
 
         // Sincronizar relaciones (merge simple: borrar locales y reinsertar remotas)
-        final localProviderIds = remoteProviders.map((p) => p['id'] as int).toSet();
+        final localProviderIds =
+            remoteProviders.map((p) => p['id'] as int).toSet();
         await txn.delete(
           'provider_products',
           where: 'provider_id IN (${localProviderIds.join(',')})',
@@ -479,7 +521,11 @@ class SyncService {
 
       for (final sale in pendingSales) {
         final localId = sale['id'] as int;
-        final details = await db.query('sale_details', where: 'sale_id = ?', whereArgs: [localId]);
+        final details = await db.query(
+          'sale_details',
+          where: 'sale_id = ?',
+          whereArgs: [localId],
+        );
 
         final cloudId = await pushSaleToCloud(
           localSaleId: localId,
@@ -492,10 +538,13 @@ class SyncService {
           items: details,
           existingCloudId: sale['cloud_id'] as String?,
           cancelled: (sale['cancelled'] as int? ?? 0) == 1,
+          customerKey: sale['customer_key']?.toString(),
         );
 
         if (cloudId == null) {
-          debugPrint('[SyncService] Falló sync venta $localId, se reintentará luego');
+          debugPrint(
+            '[SyncService] Falló sync venta $localId, se reintentará luego',
+          );
         }
       }
 
@@ -506,7 +555,9 @@ class SyncService {
         whereArgs: [0],
         orderBy: 'date ASC',
       );
-      debugPrint('[SyncService] Compras pendientes: ${pendingPurchases.length}');
+      debugPrint(
+        '[SyncService] Compras pendientes: ${pendingPurchases.length}',
+      );
 
       for (final purchase in pendingPurchases) {
         final localId = purchase['id'] as int;
@@ -531,7 +582,9 @@ class SyncService {
         );
 
         if (cloudId == null) {
-          debugPrint('[SyncService] Falló sync compra $localId, se reintentará luego');
+          debugPrint(
+            '[SyncService] Falló sync compra $localId, se reintentará luego',
+          );
         }
       }
 
@@ -542,7 +595,9 @@ class SyncService {
         whereArgs: [0],
         orderBy: 'created_at ASC',
       );
-      debugPrint('[SyncService] Jugadores pendientes: ${pendingPlayers.length}');
+      debugPrint(
+        '[SyncService] Jugadores pendientes: ${pendingPlayers.length}',
+      );
 
       for (final row in pendingPlayers) {
         final localId = row['id'] as int;
@@ -557,7 +612,9 @@ class SyncService {
           );
           debugPrint('[SyncService] Jugador $localId sync OK cloudId=$cloudId');
         } else {
-          debugPrint('[SyncService] Falló sync jugador $localId, se reintentará luego');
+          debugPrint(
+            '[SyncService] Falló sync jugador $localId, se reintentará luego',
+          );
         }
       }
 
@@ -568,7 +625,9 @@ class SyncService {
         whereArgs: [0],
         orderBy: 'created_at ASC',
       );
-      debugPrint('[SyncService] Retiros/gastos pendientes: ${pendingOutflows.length}');
+      debugPrint(
+        '[SyncService] Retiros/gastos pendientes: ${pendingOutflows.length}',
+      );
 
       for (final row in pendingOutflows) {
         final localId = row['id'] as int;
@@ -591,7 +650,9 @@ class SyncService {
             whereArgs: [localId],
           );
         } else {
-          debugPrint('[SyncService] Falló sync retiro $localId, se reintentará luego');
+          debugPrint(
+            '[SyncService] Falló sync retiro $localId, se reintentará luego',
+          );
         }
       }
 
@@ -600,7 +661,9 @@ class SyncService {
       await QuickSaleRepositoryImpl().syncPendingSales();
 
       if (await _hasPendingUploads(db)) {
-        debugPrint('[SyncService] Quedan registros pendientes; se reintentará en 30 segundos');
+        debugPrint(
+          '[SyncService] Quedan registros pendientes; se reintentará en 30 segundos',
+        );
         _scheduleRetry();
       }
       debugPrint('[SyncService] Ciclo auto-sync completado');
@@ -625,7 +688,9 @@ class SyncService {
       'pending_sales',
       'billiard_tables',
     ]) {
-      final result = await db.rawQuery('SELECT COUNT(*) AS count FROM $table WHERE synced = 0');
+      final result = await db.rawQuery(
+        'SELECT COUNT(*) AS count FROM $table WHERE synced = 0',
+      );
       if ((result.first['count'] as int? ?? 0) > 0) return true;
     }
     return false;
@@ -671,11 +736,17 @@ class SyncService {
             .eq('id', existingCloudId)
             .select('id');
       } else {
-        response = await _sup.from('cash_outflows').insert(payload).select('id');
+        response = await _sup
+            .from('cash_outflows')
+            .insert(payload)
+            .select('id');
       }
 
-      final cloudId = response.isNotEmpty ? response.first['id'].toString() : null;
-      debugPrint('[SyncService] pushOutflowToCloud OK localId=$localOutflowId cloudId=$cloudId');
+      final cloudId =
+          response.isNotEmpty ? response.first['id'].toString() : null;
+      debugPrint(
+        '[SyncService] pushOutflowToCloud OK localId=$localOutflowId cloudId=$cloudId',
+      );
       return cloudId;
     } catch (e) {
       debugPrint('[SyncService] pushOutflowToCloud ERROR: $e');
@@ -696,7 +767,10 @@ class SyncService {
 
       final localRows = await db.query('cash_outflows', columns: ['cloud_id']);
       final localCloudIds =
-          localRows.map((r) => r['cloud_id']?.toString()).whereType<String>().toSet();
+          localRows
+              .map((r) => r['cloud_id']?.toString())
+              .whereType<String>()
+              .toSet();
 
       // Sin filtro de fecha, por la misma razón que ventas/compras: el reloj
       // de otro dispositivo puede ir atrás. Dedupe por cloud_id.
@@ -752,7 +826,10 @@ class SyncService {
       // Obtener cloud_ids locales para evitar duplicados
       final localRows = await db.query('sales_history', columns: ['cloud_id']);
       final localCloudIds =
-          localRows.map((r) => r['cloud_id']?.toString()).whereType<String>().toSet();
+          localRows
+              .map((r) => r['cloud_id']?.toString())
+              .whereType<String>()
+              .toSet();
 
       // Sin filtro de fecha: el reloj de otro dispositivo puede ir atrás del
       // nuestro y el filtro .gte() se saltaba esas ventas. La deduplicación
@@ -771,7 +848,8 @@ class SyncService {
         // Si ya existe localmente, solo propagar el estado cancelled
         // (anulación hecha en otro dispositivo) y saltar la inserción.
         if (localCloudIds.contains(cid)) {
-          final cloudCancelled = (sale['cancelled'] ?? false) == true || sale['cancelled'] == 1;
+          final cloudCancelled =
+              (sale['cancelled'] ?? false) == true || sale['cancelled'] == 1;
           if (cloudCancelled) {
             final local = await db.query(
               'sales_history',
@@ -779,7 +857,8 @@ class SyncService {
               where: 'cloud_id = ?',
               whereArgs: [cid],
             );
-            if (local.isNotEmpty && (local.first['cancelled'] as int? ?? 0) == 0) {
+            if (local.isNotEmpty &&
+                (local.first['cancelled'] as int? ?? 0) == 0) {
               await db.update(
                 'sales_history',
                 {'cancelled': 1},
@@ -792,7 +871,9 @@ class SyncService {
                 where: 'sale_id = ?',
                 whereArgs: [local.first['id']],
               );
-              debugPrint('[SyncService] Venta $cid marcada anulada desde la nube');
+              debugPrint(
+                '[SyncService] Venta $cid marcada anulada desde la nube',
+              );
             }
           }
           continue;
@@ -805,7 +886,11 @@ class SyncService {
           'date': sale['date'],
           'type': sale['type'],
           'payment_method': sale['payment_method'] ?? 'Efectivo',
-          'cancelled': (sale['cancelled'] ?? false) == true || sale['cancelled'] == 1 ? 1 : 0,
+          'customer_key': sale['customer_key']?.toString(),
+          'cancelled':
+              (sale['cancelled'] ?? false) == true || sale['cancelled'] == 1
+                  ? 1
+                  : 0,
           'synced': 1,
           'cloud_id': cid,
         });
@@ -818,8 +903,12 @@ class SyncService {
             'product_name': d['product_name'],
             'quantity': (d['quantity'] as num).toDouble(),
             'price_at_sale': (d['price_at_sale'] as num).toDouble(),
-            'cancelled': (d['cancelled'] ?? false) == true || d['cancelled'] == 1 ? 1 : 0,
-            if (d['cost_at_sale'] != null) 'cost_at_sale': (d['cost_at_sale'] as num).toDouble(),
+            'cancelled':
+                (d['cancelled'] ?? false) == true || d['cancelled'] == 1
+                    ? 1
+                    : 0,
+            if (d['cost_at_sale'] != null)
+              'cost_at_sale': (d['cost_at_sale'] as num).toDouble(),
           });
         }
       }
@@ -842,7 +931,10 @@ class SyncService {
 
       final localRows = await db.query('purchases', columns: ['cloud_id']);
       final localCloudIds =
-          localRows.map((r) => r['cloud_id']?.toString()).whereType<String>().toSet();
+          localRows
+              .map((r) => r['cloud_id']?.toString())
+              .whereType<String>()
+              .toSet();
 
       // Sin filtro de fecha: el reloj de otro dispositivo puede ir atrás y el
       // filtro .gte() se saltaba esas compras. Deduplicación por cloud_id.
@@ -868,7 +960,8 @@ class SyncService {
               where: 'cloud_id = ?',
               whereArgs: [cid],
             );
-            if (local.isNotEmpty && (local.first['cancelled'] as int? ?? 0) == 0) {
+            if (local.isNotEmpty &&
+                (local.first['cancelled'] as int? ?? 0) == 0) {
               await db.update(
                 'purchases',
                 {'cancelled': 1},
@@ -881,7 +974,9 @@ class SyncService {
                 where: 'purchase_id = ?',
                 whereArgs: [local.first['id']],
               );
-              debugPrint('[SyncService] Compra $cid marcada anulada desde la nube');
+              debugPrint(
+                '[SyncService] Compra $cid marcada anulada desde la nube',
+              );
             }
           }
           continue;
@@ -993,7 +1088,8 @@ class SyncService {
           .order('id', ascending: true);
       var tables = response as List<dynamic>;
       final remoteById = {
-        for (final table in tables) (table['id'] as num).toInt(): table as Map<String, dynamic>,
+        for (final table in tables)
+          (table['id'] as num).toInt(): table as Map<String, dynamic>,
       };
       final pendingTables = await db.query(
         'billiard_tables',
@@ -1009,7 +1105,13 @@ class SyncService {
             (table['is_deleted'] as num?)?.toInt() != 1) {
           await db.update(
             'billiard_tables',
-            {'is_deleted': 1, 'is_occupied': 0, 'start_time': null, 'orders': '[]', 'synced': 1},
+            {
+              'is_deleted': 1,
+              'is_occupied': 0,
+              'start_time': null,
+              'orders': '[]',
+              'synced': 1,
+            },
             where: 'id = ? AND billar_id = ?',
             whereArgs: [id, billarId],
           );
@@ -1099,7 +1201,11 @@ class SyncService {
       });
 
       final activeTableCount =
-          tables.where((table) => ((table['is_deleted'] as num?)?.toInt() ?? 0) == 0).length;
+          tables
+              .where(
+                (table) => ((table['is_deleted'] as num?)?.toInt() ?? 0) == 0,
+              )
+              .length;
       await _prefs.setTableCount(activeTableCount);
     } catch (e, st) {
       debugPrint('[SyncService] pullTablesFromCloud ERROR: $e');

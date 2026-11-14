@@ -20,6 +20,7 @@ class _RecordMatchPageState extends State<RecordMatchPage> {
   bool _isDraw = false;
   bool _goldenBreak = false;
   bool _breakAndRun = false;
+  bool _opponent8BallFoul = false;
   final _notesCtrl = TextEditingController();
   final _repo = MatchRepository();
 
@@ -137,6 +138,11 @@ class _RecordMatchPageState extends State<RecordMatchPage> {
                           selected: _breakAndRun,
                           onSelected: (_) => setState(() => _breakAndRun = !_breakAndRun),
                         ),
+                        FilterChip(
+                          label: const Text('Bola 8 del Contrario'),
+                          selected: _opponent8BallFoul,
+                          onSelected: (_) => setState(() => _opponent8BallFoul = !_opponent8BallFoul),
+                        ),
                       ],
                     ),
                   ],
@@ -198,6 +204,7 @@ class _RecordMatchPageState extends State<RecordMatchPage> {
       isDraw: _isDraw,
       goldenBreak: _goldenBreak,
       breakAndRun: _breakAndRun,
+      opponent8BallFoul: _opponent8BallFoul,
       notes: _notesCtrl.text.trim(),
     );
     await _repo.recordHeadToHead(match);

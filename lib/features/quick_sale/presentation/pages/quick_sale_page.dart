@@ -217,13 +217,15 @@ class _QuickSalePageState extends State<QuickSalePage> {
     return avail < 0 ? 0 : avail;
   }
 
+  bool get _allowNegativeStock => _prefs.allowNegativeStockSales;
+
   void _filter() {
     final q = _searchCtrl.text.toLowerCase();
     setState(() {
       _filtered =
           _all.where((p) {
             final matchesSearch = q.isEmpty || p.name.toLowerCase().contains(q);
-            final hasStock = _availableStock(p) > 0;
+            final hasStock = _allowNegativeStock || _availableStock(p) > 0;
             return matchesSearch && hasStock;
           }).toList();
       // Ordenar: promos primero, luego el resto
@@ -255,7 +257,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
       }).toList();
 
   void _add(ProductEntity p) {
-    if (_availableStock(p) <= 0) {
+    if (!_allowNegativeStock && _availableStock(p) <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Stock insuficiente: ${p.name}'),
@@ -390,7 +392,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
                                   size: 20,
                                 ),
                                 onPressed:
-                                    p.stock <= qty
+                                    (!_allowNegativeStock && p.stock <= qty)
                                         ? null
                                         : () {
                                           ss(() => _cart[p.id!] = qty + 1);
@@ -688,7 +690,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
                   final p = _filtered[i];
                   final q = _cart[p.id] ?? 0;
                   final stockRestante = _availableStock(p);
-                  final isBlocked = stockRestante <= 0;
+                  final isBlocked = !_allowNegativeStock && stockRestante <= 0;
                   return GestureDetector(
                     onTap: isBlocked ? null : () => _add(p),
                     child: Opacity(
@@ -699,6 +701,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
                         onAdd: isBlocked ? () {} : () => _add(p),
                         onRemove: () => _remove(p.id!),
                         showButtons: true,
+                        allowOutOfStock: _allowNegativeStock,
                       ),
                     ),
                   );
@@ -711,7 +714,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
                   final p = _filtered[i];
                   final q = _cart[p.id] ?? 0;
                   final avail = _availableStock(p);
-                  final isBlocked = avail <= 0;
+                  final isBlocked = !_allowNegativeStock && avail <= 0;
                   final stockColor =
                       avail <= 0
                           ? Colors.red

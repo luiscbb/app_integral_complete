@@ -30,10 +30,22 @@ class MatchRepository {
       await _playerRepo.recordMatch(match.player1Id, won: false, isDraw: true);
       await _playerRepo.recordMatch(match.player2Id, won: false, isDraw: true);
     } else if (match.winnerId == match.player1Id) {
-      await _playerRepo.recordMatch(match.player1Id, won: true, goldenBreak: match.goldenBreak, breakAndRun: match.breakAndRun);
+      await _playerRepo.recordMatch(
+        match.player1Id,
+        won: true,
+        goldenBreak: match.goldenBreak,
+        breakAndRun: match.breakAndRun,
+        opponent8BallFoul: match.opponent8BallFoul,
+      );
       await _playerRepo.recordMatch(match.player2Id, won: false);
     } else if (match.winnerId == match.player2Id) {
-      await _playerRepo.recordMatch(match.player2Id, won: true, goldenBreak: match.goldenBreak, breakAndRun: match.breakAndRun);
+      await _playerRepo.recordMatch(
+        match.player2Id,
+        won: true,
+        goldenBreak: match.goldenBreak,
+        breakAndRun: match.breakAndRun,
+        opponent8BallFoul: match.opponent8BallFoul,
+      );
       await _playerRepo.recordMatch(match.player1Id, won: false);
     }
   }

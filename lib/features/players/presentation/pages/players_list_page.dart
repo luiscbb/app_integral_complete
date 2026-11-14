@@ -15,7 +15,10 @@ class PlayersListPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(create: (_) => PlayersProvider(), child: const _Content());
+    return ChangeNotifierProvider(
+      create: (_) => PlayersProvider(),
+      child: const _Content(),
+    );
   }
 }
 
@@ -44,7 +47,9 @@ class _Content extends StatelessWidget {
                           onPressed:
                               () => Navigator.push(
                                 context,
-                                MaterialPageRoute(builder: (_) => const BusinessManagersPage()),
+                                MaterialPageRoute(
+                                  builder: (_) => const BusinessManagersPage(),
+                                ),
                               ),
                         )
                         : const SizedBox.shrink(),
@@ -72,6 +77,7 @@ class _Content extends StatelessWidget {
                     children: [
                       PlayerCard(
                         player: player,
+                        winRate: state.winRateFor(player),
                         showActions: false,
                         onTap:
                             () => Navigator.pushNamed(
@@ -83,7 +89,8 @@ class _Content extends StatelessWidget {
                       _PlayerRegistrationActions(
                         player: player,
                         provider: provider,
-                        onEdit: () => _openForm(context, provider, player: player),
+                        onEdit:
+                            () => _openForm(context, provider, player: player),
                       ),
                     ],
                   ),
@@ -102,10 +109,17 @@ class _Content extends StatelessWidget {
     );
   }
 
-  void _openForm(BuildContext context, PlayersProvider provider, {PlayerEntity? player}) {
+  void _openForm(
+    BuildContext context,
+    PlayersProvider provider, {
+    PlayerEntity? player,
+  }) {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (_) => AddPlayerPage(playersProvider: provider, player: player)),
+      MaterialPageRoute(
+        builder:
+            (_) => AddPlayerPage(playersProvider: provider, player: player),
+      ),
     );
   }
 }
@@ -179,7 +193,10 @@ class _PlayerRegistrationActions extends StatelessWidget {
     ];
     try {
       await SharePlus.instance.share(
-        ShareParams(text: details.join('\n'), subject: 'Ficha de jugador: ${player.displayName}'),
+        ShareParams(
+          text: details.join('\n'),
+          subject: 'Ficha de jugador: ${player.displayName}',
+        ),
       );
     } catch (e, st) {
       debugPrint('[PlayersListPage] Could not share player: $e\n$st');
@@ -194,20 +211,27 @@ class _PlayerRegistrationActions extends StatelessWidget {
     }
   }
 
-  Future<void> _run(BuildContext context, Future<void> Function() action) async {
+  Future<void> _run(
+    BuildContext context,
+    Future<void> Function() action,
+  ) async {
     try {
       await action();
     } catch (e, st) {
       debugPrint('[PlayersListPage] Player action failed: $e\n$st');
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: Colors.red));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.toString()), backgroundColor: Colors.red),
+        );
       }
     }
   }
 
-  Future<void> _showPassword(BuildContext context, String email, String password) async {
+  Future<void> _showPassword(
+    BuildContext context,
+    String email,
+    String password,
+  ) async {
     var copied = false;
     await showDialog<void>(
       context: context,
@@ -225,7 +249,9 @@ class _PlayerRegistrationActions extends StatelessWidget {
                     TextButton.icon(
                       onPressed: () async {
                         await Clipboard.setData(
-                          ClipboardData(text: 'Correo: $email\nContraseña: $password'),
+                          ClipboardData(
+                            text: 'Correo: $email\nContraseña: $password',
+                          ),
                         );
                         setDialogState(() => copied = true);
                       },
@@ -285,10 +311,19 @@ class _PlayerRegistrationActions extends StatelessWidget {
             },
             itemBuilder:
                 (_) => [
-                  const PopupMenuItem(value: 'edit', child: Text('Editar ficha')),
-                  const PopupMenuItem(value: 'share', child: Text('Compartir ficha')),
+                  const PopupMenuItem(
+                    value: 'edit',
+                    child: Text('Editar ficha'),
+                  ),
+                  const PopupMenuItem(
+                    value: 'share',
+                    child: Text('Compartir ficha'),
+                  ),
                   if (player.authUserId != null && player.isActive)
-                    const PopupMenuItem(value: 'reset', child: Text('Restablecer contraseña')),
+                    const PopupMenuItem(
+                      value: 'reset',
+                      child: Text('Restablecer contraseña'),
+                    ),
                   PopupMenuItem(
                     value: 'renew',
                     child: Text(
@@ -298,7 +333,10 @@ class _PlayerRegistrationActions extends StatelessWidget {
                     ),
                   ),
                   if (player.isActive && player.archivedAt == null)
-                    const PopupMenuItem(value: 'archive', child: Text('Archivar jugador')),
+                    const PopupMenuItem(
+                      value: 'archive',
+                      child: Text('Archivar jugador'),
+                    ),
                 ],
           ),
         ],
@@ -317,11 +355,18 @@ class _EmptyState extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.group_outlined, size: 64, color: Colors.white.withValues(alpha: 0.06)),
+          Icon(
+            Icons.group_outlined,
+            size: 64,
+            color: Colors.white.withValues(alpha: 0.06),
+          ),
           const SizedBox(height: 16),
           Text(
             'No hay jugadores registrados',
-            style: TextStyle(color: Colors.white.withValues(alpha: 0.2), fontSize: 15),
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.2),
+              fontSize: 15,
+            ),
           ),
           const SizedBox(height: 12),
           ElevatedButton.icon(

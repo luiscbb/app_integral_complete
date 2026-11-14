@@ -11,6 +11,7 @@ class PlayerCard extends StatelessWidget {
   final VoidCallback? onRecordWin;
   final VoidCallback? onRecordLoss;
   final bool showActions;
+  final double? winRate;
 
   const PlayerCard({
     super.key,
@@ -19,6 +20,7 @@ class PlayerCard extends StatelessWidget {
     this.onRecordWin,
     this.onRecordLoss,
     this.showActions = false,
+    this.winRate,
   });
 
   @override
@@ -26,23 +28,34 @@ class PlayerCard extends StatelessWidget {
     final style = context.watch<ThemeProvider>().cardStyle;
     final solid = style == CardStyle.solidWhite;
     final outlined = style == CardStyle.outlined;
-    final contentColor = solid ? Colors.white.withValues(alpha: 0.92) : _levelColor;
+    final contentColor =
+        solid ? Colors.white.withValues(alpha: 0.92) : _levelColor;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(20),
       child: Container(
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(20),
-          color: solid ? _levelColor : (outlined ? Theme.of(context).colorScheme.surface : null),
-          gradient: (solid || outlined)
-              ? null
-              : LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [_levelColor.withValues(alpha: 0.15), Theme.of(context).colorScheme.surface],
-                ),
+          color:
+              solid
+                  ? _levelColor
+                  : (outlined ? Theme.of(context).colorScheme.surface : null),
+          gradient:
+              (solid || outlined)
+                  ? null
+                  : LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      _levelColor.withValues(alpha: 0.15),
+                      Theme.of(context).colorScheme.surface,
+                    ],
+                  ),
           border: Border.all(
-            color: solid ? Colors.white.withValues(alpha: 0.28) : _levelColor.withValues(alpha: outlined ? 1.0 : 0.3),
+            color:
+                solid
+                    ? Colors.white.withValues(alpha: 0.28)
+                    : _levelColor.withValues(alpha: outlined ? 1.0 : 0.3),
             width: outlined ? 2 : 1.0,
           ),
         ),
@@ -61,7 +74,10 @@ class PlayerCard extends StatelessWidget {
                       Text(
                         player.displayName,
                         style: TextStyle(
-                          color: solid ? Colors.white.withValues(alpha: 0.92) : Colors.white,
+                          color:
+                              solid
+                                  ? Colors.white.withValues(alpha: 0.92)
+                                  : Colors.white,
                           fontWeight: FontWeight.bold,
                           fontSize: 15,
                         ),
@@ -84,9 +100,10 @@ class PlayerCard extends StatelessWidget {
                               index < player.level
                                   ? Icons.star_rounded
                                   : Icons.star_border_rounded,
-                              color: index < player.level
-                                  ? Colors.amber
-                                  : contentColor.withValues(alpha: 0.35),
+                              color:
+                                  index < player.level
+                                      ? Colors.amber
+                                      : contentColor.withValues(alpha: 0.35),
                               size: 14,
                             ),
                           ),
@@ -96,29 +113,51 @@ class PlayerCard extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  player.stats.formattedWinRate,
-                  style: TextStyle(color: contentColor, fontWeight: FontWeight.bold, fontSize: 18),
+                  '${(winRate ?? player.stats.winRate).toStringAsFixed(1)}%',
+                  style: TextStyle(
+                    color: contentColor,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
                 ),
               ],
             ),
             const SizedBox(height: 12),
             Row(
               children: [
-                _StatBadge(Icons.emoji_events, '${player.stats.wins}', Colors.greenAccent),
+                _StatBadge(
+                  Icons.emoji_events,
+                  '${player.stats.wins}',
+                  Colors.greenAccent,
+                ),
                 const SizedBox(width: 8),
-                _StatBadge(Icons.close, '${player.stats.losses}', Colors.redAccent),
+                _StatBadge(
+                  Icons.close,
+                  '${player.stats.losses}',
+                  Colors.redAccent,
+                ),
                 const SizedBox(width: 8),
-                _StatBadge(Icons.schedule, player.formattedTime, Colors.white54),
+                _StatBadge(
+                  Icons.schedule,
+                  player.formattedTime,
+                  Colors.white54,
+                ),
                 const Spacer(),
                 if (showActions) ...[
                   IconButton(
-                    icon: const Icon(Icons.add_circle, color: Colors.greenAccent),
+                    icon: const Icon(
+                      Icons.add_circle,
+                      color: Colors.greenAccent,
+                    ),
                     onPressed: onRecordWin,
                     tooltip: 'Victoria',
                     iconSize: 28,
                   ),
                   IconButton(
-                    icon: const Icon(Icons.remove_circle, color: Colors.redAccent),
+                    icon: const Icon(
+                      Icons.remove_circle,
+                      color: Colors.redAccent,
+                    ),
                     onPressed: onRecordLoss,
                     tooltip: 'Derrota',
                     iconSize: 28,
@@ -131,7 +170,11 @@ class PlayerCard extends StatelessWidget {
                 padding: const EdgeInsets.only(top: 8),
                 child: Row(
                   children: [
-                    Icon(Icons.local_fire_department, color: Colors.orangeAccent, size: 16),
+                    Icon(
+                      Icons.local_fire_department,
+                      color: Colors.orangeAccent,
+                      size: 16,
+                    ),
                     const SizedBox(width: 4),
                     Text(
                       'Racha de ${player.stats.currentStreak}',
@@ -171,7 +214,8 @@ class _Avatar extends StatelessWidget {
 
     if (avatarPath.isNotEmpty) {
       final uri = Uri.tryParse(avatarPath);
-      final isWebUrl = uri != null && (uri.scheme == 'http' || uri.scheme == 'https');
+      final isWebUrl =
+          uri != null && (uri.scheme == 'http' || uri.scheme == 'https');
 
       if (isWebUrl) {
         return ClipOval(
@@ -182,7 +226,8 @@ class _Avatar extends StatelessWidget {
             cacheWidth: 128,
             cacheHeight: 128,
             fit: BoxFit.cover,
-            errorBuilder: (context, error, stackTrace) => _FallbackAvatar(player: player),
+            errorBuilder:
+                (context, error, stackTrace) => _FallbackAvatar(player: player),
           ),
         );
       }
@@ -195,7 +240,8 @@ class _Avatar extends StatelessWidget {
           cacheWidth: 128,
           cacheHeight: 128,
           fit: BoxFit.cover,
-          errorBuilder: (context, error, stackTrace) => _FallbackAvatar(player: player),
+          errorBuilder:
+              (context, error, stackTrace) => _FallbackAvatar(player: player),
         ),
       );
     }
