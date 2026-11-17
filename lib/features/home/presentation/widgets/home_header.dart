@@ -1,7 +1,7 @@
 import 'dart:developer';
 import 'dart:io';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import '../../../../core/utils/scoped_remote_image.dart';
 
 class HomeHeader extends StatelessWidget {
   final String businessName;
@@ -35,10 +35,6 @@ class HomeHeader extends StatelessWidget {
 
   ImageProvider? _buildLogoImage() {
     log('[HomeHeader] logoUrl: "$logoUrl", logoPath: "$logoPath", hasLogo: $_hasLogo');
-    if (logoUrl.isNotEmpty) {
-      log('[HomeHeader] Usando CachedNetworkImageProvider con URL: $logoUrl');
-      return CachedNetworkImageProvider(logoUrl);
-    }
     if (logoPath.isNotEmpty && File(logoPath).existsSync()) {
       log('[HomeHeader] Usando FileImage con path: $logoPath');
       return FileImage(File(logoPath));
@@ -61,16 +57,11 @@ class HomeHeader extends StatelessWidget {
           height: radius * 2,
           child:
               logoUrl.isNotEmpty
-                  ? CachedNetworkImage(
-                    imageUrl: logoUrl,
+                  ? ScopedRemoteImage(
+                    url: logoUrl,
                     fit: BoxFit.cover,
-                    memCacheWidth: 128,
-                    memCacheHeight: 128,
-                    placeholder: (_, _) => _logoPlaceholder(radius),
-                    errorWidget: (_, url, error) {
-                      log('[HomeHeader] Error cargando imagen de logo ($url): $error');
-                      return _logoPlaceholder(radius);
-                    },
+                    placeholder: _logoPlaceholder(radius),
+                    error: _logoPlaceholder(radius),
                   )
                   : image != null
                   ? Image(
@@ -181,7 +172,13 @@ class HomeHeader extends StatelessWidget {
                   children: [
                     Icon(Icons.person, size: 12, color: primaryColor),
                     const SizedBox(width: 5),
-                    Text(userName, style: TextStyle(color: Colors.grey[400], fontSize: 13)),
+                    Flexible(
+                      child: Text(
+                        userName,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: Colors.grey[400], fontSize: 13),
+                      ),
+                    ),
                   ],
                 ),
               ],

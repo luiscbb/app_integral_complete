@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../../core/database/database_helper.dart';
 import '../../../../core/services/sync_service.dart';
+import '../../../../core/services/sync_session.dart';
 import '../../../../core/storage/preferences_service.dart';
 import '../../domain/entities/player_stats.dart';
 
@@ -220,6 +221,7 @@ class PlayerRepository {
         )
         .eq('billar_id', _prefs.billarId)
         .eq('role', 'manager')
+        .isFilter('username', null)
         .order('created_at');
     return rows.map((row) => Map<String, dynamic>.from(row)).toList();
   }
@@ -431,6 +433,8 @@ class PlayerRepository {
 
   Future<String> _uploadAvatar(String pathOrUrl) async {
     if (pathOrUrl.isEmpty || pathOrUrl.startsWith('http')) return pathOrUrl;
+    final guard = SyncSessionGuard(_sup, _prefs);
+    final session = guard.capture();
     final file = File(pathOrUrl);
     if (!await file.exists()) {
       throw FileSystemException(
@@ -445,14 +449,17 @@ class PlayerRepository {
       _ => 'image/jpeg',
     };
     final storagePath =
-        '${_prefs.billarId}/${DateTime.now().microsecondsSinceEpoch}_${_newClientId()}.$extension';
+        '${session.billarId}/${DateTime.now().microsecondsSinceEpoch}_${_newClientId()}.$extension';
+    guard.require(session);
     await _sup.storage
         .from('player_avatars')
+        .setHeader('Authorization', 'Bearer ${session.token}')
         .upload(
           storagePath,
           file,
           fileOptions: FileOptions(contentType: contentType),
         );
+    guard.require(session);
     return _sup.storage.from('player_avatars').getPublicUrl(storagePath);
   }
 

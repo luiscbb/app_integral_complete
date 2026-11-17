@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
 
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -18,6 +17,7 @@ import '../../../../core/widgets/empty_state.dart';
 import '../../../../core/storage/preferences_service.dart';
 import '../../../../core/services/product_realtime_service.dart';
 import '../../../../core/theme/theme_provider.dart';
+import '../../../../core/utils/scoped_remote_image.dart';
 
 class BilliardTablesPage extends StatefulWidget {
   final String tableType;
@@ -857,11 +857,25 @@ class _TableDetailPageState extends State<_TableDetailPage> {
     final logoPath = _prefs.logoPath;
     final hasLogo = logoUrl.isNotEmpty || logoPath.isNotEmpty;
     final primaryColor = Theme.of(context).colorScheme.primary;
-    ImageProvider? image;
+    Widget? image;
     if (logoUrl.isNotEmpty) {
-      image = CachedNetworkImageProvider(logoUrl);
+      image = ScopedRemoteImage(
+        url: logoUrl,
+        width: radius * 2,
+        height: radius * 2,
+        error: Icon(Icons.image_not_supported_outlined, color: primaryColor),
+      );
     } else if (logoPath.isNotEmpty && File(logoPath).existsSync()) {
-      image = FileImage(File(logoPath));
+      image = Image.file(
+        File(logoPath),
+        width: radius * 2,
+        height: radius * 2,
+        fit: BoxFit.cover,
+        errorBuilder: (_, error, stackTrace) {
+          log('[TableHeader] Error cargando logo: $error');
+          return Icon(Icons.image_not_supported_outlined, color: primaryColor);
+        },
+      );
     }
     return Container(
       padding: const EdgeInsets.all(1.5),
@@ -875,16 +889,9 @@ class _TableDetailPageState extends State<_TableDetailPage> {
       child: CircleAvatar(
         radius: radius,
         backgroundColor: const Color(0xFF1A1A1A),
-        backgroundImage: image,
-        onBackgroundImageError:
-            image != null
-                ? (exception, stackTrace) {
-                  log('[TableHeader] Error cargando logo: $exception');
-                }
-                : null,
         child:
             hasLogo
-                ? null
+                ? (image == null ? null : ClipOval(child: image))
                 : Icon(
                   Icons.sports_bar_outlined,
                   color: primaryColor,
@@ -1256,13 +1263,24 @@ class _TableDetailPageState extends State<_TableDetailPage> {
       (acc, e) => acc + e.price * e.quantity,
     );
 
-    await _salesRepo.saveSale(
-      items: allItems,
-      total: finalTotal,
-      paid: finalPaid,
-      paymentMethod: finalMethod,
-      saleType: _tableSaleType,
-    );
+    try {
+      await _salesRepo.saveSale(
+        items: allItems,
+        total: finalTotal,
+        paid: finalPaid,
+        paymentMethod: finalMethod,
+        saleType: _tableSaleType,
+        origin: _isComanda ? SaleOrigin.dineIn : SaleOrigin.billiardTables,
+      );
+    } on SaleScopeException catch (error) {
+      _isCheckingOut = false;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(error.message), backgroundColor: Colors.red),
+        );
+      }
+      return;
+    }
     if (!mounted) return;
     for (final item in _orders) {
       final p = _products.firstWhere(

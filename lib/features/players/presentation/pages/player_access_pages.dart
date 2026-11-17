@@ -2,11 +2,19 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../../core/routes/app_routes.dart';
+import '../../../../core/utils/scoped_remote_image.dart';
 import '../../../auth/data/auth_access_repository.dart';
+import '../../../auth/presentation/pages/managed_account_sign_out.dart';
 import '../../domain/entities/player_stats.dart';
+import 'player_detail_page.dart';
 
 class ChangeTemporaryPasswordPage extends StatefulWidget {
-  const ChangeTemporaryPasswordPage({super.key});
+  const ChangeTemporaryPasswordPage({
+    super.key,
+    this.enableStaffForIntegration = false,
+  });
+
+  final bool enableStaffForIntegration;
 
   @override
   State<ChangeTemporaryPasswordPage> createState() =>
@@ -18,7 +26,9 @@ class _ChangeTemporaryPasswordPageState
   final _formKey = GlobalKey<FormState>();
   final _password = TextEditingController();
   final _confirm = TextEditingController();
-  final _access = AuthAccessRepository();
+  late final _access = AuthAccessRepository(
+    enableStaffForIntegration: widget.enableStaffForIntegration,
+  );
   bool _saving = false;
   bool _obscure = true;
 
@@ -33,14 +43,28 @@ class _ChangeTemporaryPasswordPageState
     if (!_formKey.currentState!.validate()) return;
     setState(() => _saving = true);
     try {
+      final session = Supabase.instance.client.auth.currentSession;
+      if (session == null) throw StateError('La sesión ya no está disponible.');
       await _access.finishPasswordChange(_password.text);
+      if (!identical(Supabase.instance.client.auth.currentSession, session)) {
+        throw StateError('La sesión cambió durante el cambio de contraseña.');
+      }
       final account = await _access.resolveCurrentAccount();
+      if (!identical(Supabase.instance.client.auth.currentSession, session) ||
+          account.mustChangePassword ||
+          account.kind == AccountKind.blocked ||
+          account.kind == AccountKind.unavailable ||
+          (session.user.appMetadata['account_type'] == 'staff' &&
+              account.kind != AccountKind.staff)) {
+        throw StateError('No se pudo confirmar el acceso después del cambio.');
+      }
       if (!mounted) return;
       final route = switch (account.kind) {
         AccountKind.player => AppRoutes.playerPortal,
         AccountKind.manager => AppRoutes.managerPortal,
         AccountKind.owner => AppRoutes.home,
-        AccountKind.unavailable => AppRoutes.login,
+        AccountKind.staff => AppRoutes.staffPortal,
+        AccountKind.unavailable || AccountKind.blocked => AppRoutes.login,
       };
       Navigator.of(
         context,
@@ -71,64 +95,77 @@ class _ChangeTemporaryPasswordPageState
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('CAMBIAR CONTRASEÑA')),
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 480),
-          child: Form(
-            key: _formKey,
-            child: ListView(
-              padding: const EdgeInsets.all(24),
-              shrinkWrap: true,
-              children: [
-                const Icon(Icons.lock_reset, size: 56, color: Colors.amber),
-                const SizedBox(height: 16),
-                const Text(
-                  'Por seguridad, crea una contraseña personal para continuar.',
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 24),
-                TextFormField(
-                  controller: _password,
-                  obscureText: _obscure,
-                  decoration: InputDecoration(
-                    labelText: 'Nueva contraseña',
-                    suffixIcon: IconButton(
-                      onPressed: () => setState(() => _obscure = !_obscure),
-                      icon: Icon(
-                        _obscure ? Icons.visibility : Icons.visibility_off,
+    return PopScope(
+      canPop: false,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('CAMBIAR CONTRASEÑA'),
+          automaticallyImplyLeading: false,
+          actions: [
+            IconButton(
+              tooltip: 'Cerrar sesión',
+              onPressed: _saving ? null : () => signOutManagedAccount(context),
+              icon: const Icon(Icons.logout),
+            ),
+          ],
+        ),
+        body: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 480),
+            child: Form(
+              key: _formKey,
+              child: ListView(
+                padding: const EdgeInsets.all(24),
+                shrinkWrap: true,
+                children: [
+                  const Icon(Icons.lock_reset, size: 56, color: Colors.amber),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Por seguridad, crea una contraseña personal para continuar.',
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 24),
+                  TextFormField(
+                    controller: _password,
+                    obscureText: _obscure,
+                    decoration: InputDecoration(
+                      labelText: 'Nueva contraseña',
+                      suffixIcon: IconButton(
+                        onPressed: () => setState(() => _obscure = !_obscure),
+                        icon: Icon(
+                          _obscure ? Icons.visibility : Icons.visibility_off,
+                        ),
                       ),
                     ),
+                    validator:
+                        (value) =>
+                            (value?.length ?? 0) < 8
+                                ? 'Usa al menos 8 caracteres'
+                                : null,
                   ),
-                  validator:
-                      (value) =>
-                          (value?.length ?? 0) < 8
-                              ? 'Usa al menos 8 caracteres'
-                              : null,
-                ),
-                const SizedBox(height: 16),
-                TextFormField(
-                  controller: _confirm,
-                  obscureText: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Confirmar contraseña',
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: _confirm,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Confirmar contraseña',
+                    ),
+                    validator:
+                        (value) =>
+                            value != _password.text
+                                ? 'Las contraseñas no coinciden'
+                                : null,
                   ),
-                  validator:
-                      (value) =>
-                          value != _password.text
-                              ? 'Las contraseñas no coinciden'
-                              : null,
-                ),
-                const SizedBox(height: 24),
-                ElevatedButton(
-                  onPressed: _saving ? null : _save,
-                  child:
-                      _saving
-                          ? const CircularProgressIndicator()
-                          : const Text('GUARDAR Y CONTINUAR'),
-                ),
-              ],
+                  const SizedBox(height: 24),
+                  ElevatedButton(
+                    onPressed: _saving ? null : _save,
+                    child:
+                        _saving
+                            ? const CircularProgressIndicator()
+                            : const Text('GUARDAR Y CONTINUAR'),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -143,12 +180,7 @@ class PlayerPortalPage extends StatelessWidget {
   const PlayerPortalPage({super.key, required this.player});
 
   Future<void> _signOut(BuildContext context) async {
-    await Supabase.instance.client.auth.signOut();
-    if (context.mounted) {
-      Navigator.of(
-        context,
-      ).pushNamedAndRemoveUntil(AppRoutes.login, (_) => false);
-    }
+    await signOutManagedAccount(context);
   }
 
   @override
@@ -183,14 +215,17 @@ class PlayerPortalPage extends StatelessWidget {
             children: [
               CircleAvatar(
                 radius: 48,
-                backgroundImage:
-                    player.avatar.startsWith('http')
-                        ? NetworkImage(player.avatar)
-                        : null,
                 child:
-                    player.avatar.isEmpty
-                        ? const Icon(Icons.person, size: 48)
-                        : null,
+                    player.avatar.startsWith('http')
+                        ? ClipOval(
+                          child: ScopedRemoteImage(
+                            url: player.avatar,
+                            width: 96,
+                            height: 96,
+                            error: const Icon(Icons.person, size: 48),
+                          ),
+                        )
+                        : const Icon(Icons.person, size: 48),
               ),
               const SizedBox(height: 20),
               Text(
@@ -235,17 +270,16 @@ class PlayerPortalPage extends StatelessWidget {
               ),
               const SizedBox(height: 16),
               OutlinedButton.icon(
-                onPressed: () => Navigator.pushNamed(context, AppRoutes.games),
-                icon: const Icon(Icons.sports_bar),
-                label: const Text('RETAS / TRAINING'),
-              ),
-              const SizedBox(height: 10),
-              OutlinedButton.icon(
                 onPressed:
-                    () => Navigator.pushNamed(
+                    () => Navigator.push(
                       context,
-                      AppRoutes.playerDetail,
-                      arguments: player,
+                      MaterialPageRoute<void>(
+                        builder:
+                            (_) => PlayerDetailPage(
+                              player: player,
+                              readOnly: true,
+                            ),
+                      ),
                     ),
                 icon: const Icon(Icons.trending_up),
                 label: const Text('MIS ESTADÍSTICAS'),
@@ -262,12 +296,7 @@ class ManagerPortalPage extends StatelessWidget {
   const ManagerPortalPage({super.key});
 
   Future<void> _signOut(BuildContext context) async {
-    await Supabase.instance.client.auth.signOut();
-    if (context.mounted) {
-      Navigator.of(
-        context,
-      ).pushNamedAndRemoveUntil(AppRoutes.login, (_) => false);
-    }
+    await signOutManagedAccount(context);
   }
 
   @override

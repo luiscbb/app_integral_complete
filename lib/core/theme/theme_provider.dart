@@ -38,6 +38,11 @@ class ThemeProvider extends ChangeNotifier {
     _primaryColor = Color(prefs.primaryColorValue);
   }
 
+  void reloadFromPreferences() {
+    init();
+    notifyListeners();
+  }
+
   ThemeData get currentTheme => _buildTheme();
 
   ThemeData _buildTheme() {

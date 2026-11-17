@@ -1,6 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:cached_network_image/cached_network_image.dart';
+import 'scoped_remote_image.dart';
 
 class SmartImage extends StatelessWidget {
   final String? imagePath;
@@ -43,19 +43,17 @@ class SmartImage extends StatelessWidget {
       return Icon(placeholderIcon, color: Colors.white24, size: (size ?? 40) * 0.6);
     }
     if (imagePath!.startsWith('http')) {
-      return CachedNetworkImage(
-        imageUrl: imagePath!,
+      return ScopedRemoteImage(
+        url: imagePath!,
         fit: fit,
-        memCacheWidth: 300,
-        fadeInDuration: const Duration(milliseconds: 150),
-        placeholder: (_, _) => const Center(
+        placeholder: const Center(
           child: SizedBox(
             width: 18,
             height: 18,
             child: CircularProgressIndicator(strokeWidth: 2, color: Colors.red),
           ),
         ),
-        errorWidget: (_, _, _) => _error(),
+        error: _error(),
       );
     }
     return Image.file(

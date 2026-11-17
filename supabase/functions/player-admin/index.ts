@@ -1,4 +1,11 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
+import { canManagePlayers, resolveBusinessRole } from './permissions.ts';
+import { parseStaffDraft, parseStaffUpdate } from './staff_identity.ts';
+import { deriveStaffCreationCredential, normalizeStaffRequestId } from './staff_creation_key.ts';
+import { createStaffWithRetry, StaffCreationError } from './staff_creation_workflow.ts';
+import { finishTemporaryPasswordChange, PasswordChangeError } from './password_change_workflow.ts';
+
+const staffAccountCreationEnabled = Deno.env.get('STAFF_PILOT_ENABLED') === 'true';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -70,45 +77,42 @@ Deno.serve(async (request) => {
     const action = body.action as string | undefined;
 
     if (action === 'finish_password_change') {
-      const password = body.password;
-      if (typeof password !== 'string' || password.length < 8) {
-        return json({ error: 'La contraseña debe tener al menos 8 caracteres.' }, 400);
-      }
-
-      const { data: player } = await serviceClient
-        .from('players')
-        .select('id, must_change_password')
-        .eq('auth_user_id', caller.id)
-        .maybeSingle();
-      const { data: membership } = await serviceClient
-        .from('business_memberships')
-        .select('billar_id, must_change_password, is_active')
-        .eq('user_id', caller.id)
-        .eq('is_active', true)
-        .maybeSingle();
-
-      if (!player && !membership) {
-        return json({ error: 'La cuenta no pertenece a un jugador o encargado activo.' }, 403);
-      }
-      const needsChange = player?.must_change_password ??
-        membership?.must_change_password ?? false;
-      if (!needsChange) {
-        return json({ error: 'La cuenta no requiere cambio de contraseña.' }, 409);
-      }
-
-      const { error: updateError } = await serviceClient.auth.admin
-        .updateUserById(caller.id, { password });
-      if (updateError) throw updateError;
-
-      const result = player
-        ? await serviceClient.from('players')
-          .update({ must_change_password: false })
-          .eq('id', player.id)
-        : await serviceClient.from('business_memberships')
-          .update({ must_change_password: false })
-          .eq('user_id', caller.id)
-          .eq('billar_id', membership!.billar_id);
-      if (result.error) throw result.error;
+      await finishTemporaryPasswordChange(
+        caller.app_metadata?.account_type,
+        caller.app_metadata?.billar_id,
+        body.password,
+        {
+          findPlayer: async () => await serviceClient.from('players')
+            .select('id, must_change_password').eq('auth_user_id', caller.id).maybeSingle(),
+          findMembership: async (billarId) => {
+            let query = serviceClient.from('business_memberships')
+              .select(caller.app_metadata?.account_type === 'staff'
+                ? 'billar_id, role, username, full_name, job_title, allowed_modules, staff_revision, must_change_password, is_active'
+                : 'billar_id, role, username, must_change_password, is_active')
+              .eq('user_id', caller.id).eq('is_active', true);
+            if (billarId !== null) query = query.eq('billar_id', billarId);
+            return await query.maybeSingle();
+          },
+          stopStaffRecovery: async () => await serviceClient.rpc('stop_staff_password_recovery', {
+            p_user_id: caller.id,
+          }),
+          updatePassword: async (password) =>
+            await serviceClient.auth.admin.updateUserById(caller.id, { password }),
+          completeStaff: async (billarId, revision) =>
+            await serviceClient.rpc('complete_staff_password_change', {
+              p_user_id: caller.id, p_billar_id: billarId, p_expected_revision: revision,
+            }),
+          completePlayer: async (playerId) => await serviceClient.from('players')
+            .update({ must_change_password: false }).eq('id', playerId)
+            .eq('auth_user_id', caller.id).eq('must_change_password', true)
+            .select('id').maybeSingle(),
+          completeLegacyMembership: async (billarId) => await serviceClient.from('business_memberships')
+            .update({ must_change_password: false }).eq('user_id', caller.id)
+            .eq('billar_id', billarId).eq('is_active', true)
+            .eq('must_change_password', true).is('username', null)
+            .select('user_id').maybeSingle(),
+        },
+      );
       return json({ ok: true });
     }
 
@@ -136,10 +140,10 @@ Deno.serve(async (request) => {
       return json({ error: 'Falta el identificador del billar.' }, 400);
     }
 
-    const [{ data: membership }, { data: settings }] = await Promise.all([
+    const [membershipResult, settingsResult] = await Promise.all([
       serviceClient
         .from('business_memberships')
-        .select('role, is_active')
+        .select('role, is_active, username, allowed_modules, must_change_password')
         .eq('user_id', caller.id)
         .eq('billar_id', billarId)
         .maybeSingle(),
@@ -150,20 +154,25 @@ Deno.serve(async (request) => {
         .eq('billar_id', billarId)
         .maybeSingle(),
     ]);
+    if (membershipResult.error) throw membershipResult.error;
+    if (settingsResult.error) throw settingsResult.error;
+    const membership = membershipResult.data;
+    const settings = settingsResult.data;
     const isOwner = settings != null;
-    const callerRole = isOwner
-      ? 'admin'
-      : membership?.is_active
-      ? membership.role
-      : null;
+    const callerRole = resolveBusinessRole(membership, isOwner);
     if (!callerRole) {
       return json({ error: 'No tienes acceso a este billar.' }, 403);
     }
 
     const requireStaff = () => {
-      if (!['admin', 'manager'].includes(callerRole)) {
+      if (!canManagePlayers(
+        callerRole,
+        membership?.username,
+        membership?.allowed_modules,
+        membership?.must_change_password,
+      )) {
         throw new HttpError(
-          'Solo el administrador o encargado puede gestionar jugadores.',
+          'No tienes permiso para gestionar jugadores.',
           403,
         );
       }
@@ -171,6 +180,16 @@ Deno.serve(async (request) => {
     const requireAdmin = () => {
       if (callerRole !== 'admin') {
         throw new HttpError('Solo el administrador puede gestionar encargados.', 403);
+      }
+    };
+    const requireStaffAdmin = () => {
+      requireAdmin();
+      if (!staffAccountCreationEnabled) {
+        throw new HttpError('La gestión de personal aún no está habilitada.', 503);
+      }
+      if (!membership?.is_active || membership.role !== 'admin' ||
+          membership.must_change_password !== false) {
+        throw new HttpError('Se requiere una cuenta administradora activa.', 403);
       }
     };
 
@@ -418,6 +437,132 @@ Deno.serve(async (request) => {
       return json({ player: updated });
     }
 
+    if (action === 'create_staff') {
+      requireStaffAdmin();
+      let draft: ReturnType<typeof parseStaffDraft>;
+      let requestId: string;
+      try {
+        draft = parseStaffDraft(body);
+        requestId = normalizeStaffRequestId(body.request_id);
+      } catch (error) {
+        if (error instanceof TypeError) throw new HttpError(error.message, 400);
+        throw error;
+      }
+      let credential: Awaited<ReturnType<typeof deriveStaffCreationCredential>>;
+      try {
+        credential = await deriveStaffCreationCredential(
+          Deno.env.get('STAFF_CREATION_HMAC_KEY') ?? '',
+          requestId,
+          caller.id,
+          billarId,
+        );
+      } catch {
+        throw new HttpError('La creación de personal no está configurada en el servidor.', 503);
+      }
+      const result = await createStaffWithRetry({
+        reserve: async () => await serviceClient.rpc('reserve_staff_account', {
+          p_request_id: requestId,
+          p_actor_id: caller.id,
+          p_billar_id: billarId,
+          p_username: draft.username,
+          p_full_name: draft.fullName,
+          p_job_title: draft.jobTitle,
+          p_modules: draft.modules,
+          p_email: draft.authEmail,
+          p_key_fingerprint: credential.keyFingerprint,
+        }),
+        findAuthUser: async () => await serviceClient.rpc('find_staff_creation_auth_user', {
+          p_request_id: requestId,
+          p_actor_id: caller.id,
+          p_billar_id: billarId,
+        }),
+        createAuthUser: async () => {
+          const { data, error } = await serviceClient.auth.admin.createUser({
+            email: draft.authEmail,
+            password: credential.temporaryPassword,
+            email_confirm: true,
+            user_metadata: { full_name: draft.fullName },
+            app_metadata: {
+              account_type: 'staff',
+              billar_id: billarId,
+              creation_request_id: requestId,
+            },
+          });
+          return { data: data.user?.id ?? null, error };
+        },
+        finalize: async (userId) => await serviceClient.rpc('finalize_staff_account', {
+          p_request_id: requestId,
+          p_actor_id: caller.id,
+          p_billar_id: billarId,
+          p_user_id: userId,
+        }),
+      }, credential.temporaryPassword);
+      const response = json(result);
+      response.headers.set('Cache-Control', 'no-store');
+      return response;
+    }
+
+    if (action === 'list_staff') {
+      requireStaffAdmin();
+      const { data, error } = await callerClient.rpc('list_staff_accounts', {
+        p_billar_id: billarId,
+      });
+      if (error?.code === '42501') {
+        throw new HttpError('Ya no tienes permiso para consultar personal.', 403);
+      }
+      if (error) {
+        console.error('[player-admin] Staff list failed:', error.code);
+        throw new HttpError('No se pudo consultar el personal. Inténtalo nuevamente.', 503);
+      }
+      if (!Array.isArray(data)) {
+        throw new HttpError('La respuesta de personal no es válida.', 503);
+      }
+      return json({ staff: data });
+    }
+
+    if (action === 'update_staff') {
+      requireStaffAdmin();
+      let update: ReturnType<typeof parseStaffUpdate>;
+      try {
+        update = parseStaffUpdate(body);
+      } catch (error) {
+        if (error instanceof TypeError) throw new HttpError(error.message, 400);
+        throw error;
+      }
+      const { data, error } = await serviceClient.rpc('update_staff_account', {
+        p_actor_id: caller.id,
+        p_billar_id: billarId,
+        p_user_id: update.userId,
+        p_full_name: update.fullName,
+        p_job_title: update.jobTitle,
+        p_modules: update.modules,
+        p_is_active: update.isActive,
+        p_expected_revision: update.expectedRevision,
+      });
+      if (error?.code === '40001') {
+        throw new HttpError('La cuenta cambió. Actualiza la información antes de modificarla.', 409);
+      }
+      if (error?.code === '42501') {
+        throw new HttpError('No tienes permiso o la cuenta no está disponible.', 403);
+      }
+      if (error?.code === '22023') {
+        throw new HttpError('Los datos del personal no son válidos.', 400);
+      }
+      if (error) {
+        console.error('[player-admin] Staff update failed:', error.code);
+        throw new HttpError('No se pudo actualizar el personal. Inténtalo nuevamente.', 503);
+      }
+      const staff: unknown = data;
+      if (!staff || typeof staff !== 'object' || Array.isArray(staff) ||
+          !('user_id' in staff) || staff.user_id !== update.userId ||
+          !('billar_id' in staff) || staff.billar_id !== billarId ||
+          !('staff_revision' in staff) || typeof staff.staff_revision !== 'number' ||
+          !Number.isSafeInteger(staff.staff_revision)) {
+        throw new HttpError('La respuesta de actualización no es válida.', 503);
+      }
+      return json({ staff });
+    }
+
     if (action === 'create_manager') {
       requireAdmin();
       if (!validEmail(body.email)) {
@@ -482,6 +627,7 @@ Deno.serve(async (request) => {
         .eq('user_id', managerId)
         .eq('billar_id', billarId)
         .eq('role', 'manager')
+        .is('username', null)
         .maybeSingle();
       if (error) throw error;
       if (!manager) return json({ error: 'No se encontró el encargado.' }, 404);
@@ -510,6 +656,7 @@ Deno.serve(async (request) => {
         .eq('user_id', managerId)
         .eq('billar_id', billarId)
         .eq('role', 'manager')
+        .is('username', null)
         .select('user_id, billar_id, email, role, is_active')
         .maybeSingle();
       if (error) throw error;
@@ -522,6 +669,7 @@ Deno.serve(async (request) => {
     console.error('[player-admin] request failed:', error);
     return json({
       error: error instanceof Error ? error.message : 'Error interno al procesar la solicitud.',
-    }, error instanceof HttpError ? error.status : 500);
+    }, error instanceof HttpError || error instanceof StaffCreationError ||
+        error instanceof PasswordChangeError ? error.status : 500);
   }
 });

@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:convert';
 
@@ -6,15 +5,244 @@ class PreferencesService {
   static final PreferencesService _instance = PreferencesService._internal();
   factory PreferencesService() => _instance;
   PreferencesService._internal();
+  PreferencesService._scoped(this._prefs);
 
-  SharedPreferences? _prefs;
+  _PreferencesView? _prefs;
+  int _scopeGeneration = 0;
+  int get scopeGeneration => _scopeGeneration;
+  static const _legacySnapshotKey = 'legacy_settings_snapshot_v1';
+  static const _settingsKeys = {
+    'business_name',
+    'user_name',
+    'billar_id',
+    'logo_path',
+    'logo_url',
+    'print_width',
+    'is_dark_theme',
+    'table_count',
+    'allow_negative_stock_sales',
+    'hourly_rate',
+    'primary_color',
+    'business_address',
+    'business_street',
+    'business_ext_number',
+    'business_int_number',
+    'business_colony',
+    'business_zip_code',
+    'business_city',
+    'business_state',
+    'business_phone',
+    'business_whatsapp',
+    'business_slogan',
+    'business_website',
+    'ticket_farewell',
+    'ticket_counter',
+    'business_socials',
+    'default_table_type',
+    'is_first_run',
+    'is_solid_theme',
+    'card_style_index',
+  };
 
   Future<void> init() async {
-    try {
-      _prefs = await SharedPreferences.getInstance();
-    } catch (e) {
-      if (kDebugMode) debugPrint('[PreferencesService] Error: $e');
+    final prefs = await SharedPreferences.getInstance();
+    await _ensureLegacySnapshot(prefs);
+    _scopeGeneration++;
+    _prefs = _PreferencesView(prefs);
+  }
+
+  PreferencesService forScope({
+    required String actorId,
+    required String billarId,
+    required bool Function() isCurrentScope,
+  }) {
+    if (actorId.trim().isEmpty || billarId.trim().isEmpty) {
+      throw ArgumentError('La cuenta y el billar son obligatorios.');
     }
+    final prefs = _prefs;
+    if (prefs == null) {
+      throw StateError('Las preferencias no están inicializadas.');
+    }
+    if (prefs.prefix.isNotEmpty) {
+      throw StateError('El ámbito de preferencias ya está seleccionado.');
+    }
+    String encode(String value) =>
+        base64Url.encode(utf8.encode(value)).replaceAll('=', '');
+    return PreferencesService._scoped(
+      _PreferencesView(
+        prefs.raw,
+        prefix: 'account_scope_v1.${encode(actorId)}.${encode(billarId)}.',
+        actorId: actorId,
+        billarId: billarId,
+        isCurrentScope: isCurrentScope,
+      ),
+    );
+  }
+
+  void activateScope(PreferencesService scoped) {
+    final current = _prefs;
+    final next = scoped._prefs;
+    if (current == null || current.prefix.isNotEmpty ||
+        next == null || next.prefix.isEmpty ||
+        !identical(current.raw, next.raw)) {
+      throw StateError('No se puede activar el ámbito de preferencias.');
+    }
+    next._key('billar_id');
+    _prefs = next;
+    _scopeGeneration++;
+  }
+
+  String _verifiedOwnerKey(String actorId) {
+    if (actorId.trim().isEmpty) throw ArgumentError('La cuenta es obligatoria.');
+    return 'verified_owner_scope_v1.${base64Url.encode(utf8.encode(actorId)).replaceAll('=', '')}';
+  }
+
+  String? verifiedOwnerBillar(String actorId) {
+    final prefs = _prefs;
+    if (prefs == null || prefs.prefix.isNotEmpty) {
+      throw StateError('La verificación local solo se consulta antes de seleccionar cuenta.');
+    }
+    return prefs.raw.getString(_verifiedOwnerKey(actorId));
+  }
+
+  Future<void> recordVerifiedOwner(String actorId, String billarId) async {
+    final prefs = _prefs;
+    if (prefs == null || prefs.prefix.isNotEmpty || billarId.trim().isEmpty) {
+      throw StateError('No se pudo registrar la verificación local.');
+    }
+    if (!await prefs.raw.setString(_verifiedOwnerKey(actorId), billarId)) {
+      throw StateError('No se pudo guardar la verificación local.');
+    }
+  }
+
+  Future<void> ensureLegacyPreferencesSnapshot() async {
+    final prefs = _prefs;
+    if (prefs == null) {
+      throw StateError('Las preferencias no están inicializadas.');
+    }
+    if (prefs.prefix.isNotEmpty) {
+      throw StateError(
+        'La copia anterior solo se consulta antes de seleccionar cuenta.',
+      );
+    }
+    await _ensureLegacySnapshot(prefs.raw);
+  }
+
+  Future<void> _ensureLegacySnapshot(SharedPreferences prefs) async {
+    if (!prefs.containsKey(_legacySnapshotKey)) {
+      final snapshot = <String, Object>{};
+      for (final key in _settingsKeys) {
+        final value = prefs.get(key);
+        if (value != null) snapshot[key] = value;
+      }
+      if (snapshot.isNotEmpty &&
+          !await prefs.setString(_legacySnapshotKey, jsonEncode(snapshot))) {
+        throw StateError(
+          'No se pudo conservar la configuración local anterior.',
+        );
+      }
+    }
+  }
+
+  Map<String, Object?>? get legacyPreferencesSnapshot {
+    if (_prefs?.prefix.isNotEmpty ?? false) {
+      throw StateError(
+        'La copia anterior solo se consulta antes de seleccionar cuenta.',
+      );
+    }
+    final raw = _prefs?.raw.getString(_legacySnapshotKey);
+    if (raw == null) return null;
+    final decoded = jsonDecode(raw);
+    if (decoded is! Map<String, dynamic>) {
+      throw StateError('La configuración local anterior no es válida.');
+    }
+
+    return Map.unmodifiable(decoded);
+  }
+
+  Future<void> importVerifiedLegacySettings({
+    required PreferencesService source,
+    required String expectedActorId,
+    required String expectedBillarId,
+    required void Function() requireOwner,
+  }) async {
+    final target = _prefs;
+    final legacy = source._prefs;
+    if (target == null ||
+        target.prefix.isEmpty ||
+        target.actorId != expectedActorId ||
+        target.billarId != expectedBillarId ||
+        legacy == null ||
+        legacy.prefix.isNotEmpty ||
+        !identical(target.raw, legacy.raw)) {
+      throw StateError('El ámbito de preferencias para migrar no es válido.');
+    }
+    requireOwner();
+    target.getString('billar_id');
+    final savedBillar = source.legacyPreferencesSnapshot?['billar_id'];
+    if (savedBillar != expectedBillarId ||
+        legacy.getString('billar_id') != expectedBillarId) {
+      throw StateError('La configuración anterior pertenece a otro billar.');
+    }
+    final completedKey = target._key('legacy_import_completed_v1');
+    if (target.raw.getBool(completedKey) == true) return;
+    const boolKeys = {
+      'is_dark_theme',
+      'allow_negative_stock_sales',
+      'is_first_run',
+      'is_solid_theme',
+    };
+    const intKeys = {
+      'table_count',
+      'primary_color',
+      'ticket_counter',
+      'card_style_index',
+    };
+    final values = <String, Object>{};
+    for (final key in {..._settingsKeys, 'admin_pin'}) {
+      requireOwner();
+      target._key(key);
+      final value = legacy.raw.get(key);
+      if (value == null) continue;
+      final valid =
+          boolKeys.contains(key)
+              ? value is bool
+              : intKeys.contains(key)
+              ? value is int
+              : key == 'hourly_rate'
+              ? value is double
+              : value is String;
+      if (!valid) {
+        throw StateError(
+          'La preferencia anterior $key no tiene un tipo válido.',
+        );
+      }
+      values[key] = value;
+    }
+    for (final entry in values.entries) {
+      requireOwner();
+      final key = entry.key;
+      final scopedKey = target._key(key);
+      if (target.raw.containsKey(scopedKey)) continue;
+      final value = entry.value;
+      if (value is String) {
+        await target.setString(key, value);
+      } else if (value is bool) {
+        await target.setBool(key, value);
+      } else if (value is int) {
+        await target.setInt(key, value);
+      } else if (value is double) {
+        await target.setDouble(key, value);
+      } else {
+        throw StateError(
+          'La preferencia anterior $key no tiene un tipo válido.',
+        );
+      }
+      requireOwner();
+    }
+    requireOwner();
+    await target.setBool('legacy_import_completed_v1', true);
+    requireOwner();
   }
 
   String get businessName => _prefs?.getString('business_name') ?? 'MI BILLAR';
@@ -24,7 +252,7 @@ class PreferencesService {
   set userName(String v) => _prefs?.setString('user_name', v);
 
   String get billarId => _prefs?.getString('billar_id') ?? 'BILLAR_001';
-  set billarId(String v) => _prefs?.setString('billar_id', v);
+  set billarId(String v) => setBillarId(v);
 
   String get logoPath => _prefs?.getString('logo_path') ?? '';
   set logoPath(String v) => _prefs?.setString('logo_path', v);
@@ -122,7 +350,12 @@ class PreferencesService {
       _prefs?.setString('business_name', v);
   Future<void> setUserName(String v) async => _prefs?.setString('user_name', v);
   Future<void> setAdminPin(String v) async => _prefs?.setString('admin_pin', v);
-  Future<void> setBillarId(String v) async => _prefs?.setString('billar_id', v);
+  Future<void> setBillarId(String v) async {
+    final prefs = _prefs;
+    if (prefs == null) return;
+    if (billarId != v) _scopeGeneration++;
+    await prefs.setString('billar_id', v);
+  }
   Future<void> setLogoPath(String v) async => _prefs?.setString('logo_path', v);
   Future<void> setLogoUrl(String v) async => _prefs?.setString('logo_url', v);
   Future<void> setPrintWidth(String v) async =>
@@ -191,6 +424,70 @@ class PreferencesService {
   /// Limpia solo los datos de sesión del usuario. No toca la base de datos
   /// ni la configuración del negocio (mesas, tarifas, colores, etc.).
   Future<void> clearSession() async {
+    if (_prefs?.prefix.isEmpty ?? true) {
+      await ensureLegacyPreferencesSnapshot();
+    }
     await _prefs?.remove('user_name');
   }
+}
+
+class _PreferencesView {
+  _PreferencesView(
+    this.raw, {
+    this.prefix = '',
+    this.actorId,
+    this.billarId,
+    this.isCurrentScope,
+  });
+
+  final SharedPreferences raw;
+  final String prefix;
+  final String? actorId;
+  final String? billarId;
+  final bool Function()? isCurrentScope;
+
+  String _key(String key) {
+    if (isCurrentScope != null && !isCurrentScope!()) {
+      throw StateError('La cuenta o el billar de las preferencias cambió.');
+    }
+    return '$prefix$key';
+  }
+
+  String? getString(String key) {
+    final value = raw.getString(_key(key));
+    if (key == 'billar_id' && billarId != null) {
+      if (value != null && value != billarId) {
+        throw StateError('El billar guardado no coincide con el ámbito local.');
+      }
+      return billarId;
+    }
+    return value;
+  }
+
+  bool? getBool(String key) => raw.getBool(_key(key));
+  int? getInt(String key) => raw.getInt(_key(key));
+  double? getDouble(String key) => raw.getDouble(_key(key));
+
+  Future<void> setString(String key, String value) {
+    final scopedKey = _key(key);
+    if (key == 'billar_id' && billarId != null && value != billarId) {
+      throw StateError('No se puede cambiar el billar del ámbito local.');
+    }
+    return _write(key, raw.setString(scopedKey, value));
+  }
+
+  Future<void> _write(String key, Future<bool> result) async {
+    if (!await result) {
+      throw StateError('No se pudo guardar la preferencia local: $key.');
+    }
+    _key(key);
+  }
+
+  Future<void> setBool(String key, bool value) =>
+      _write(key, raw.setBool(_key(key), value));
+  Future<void> setInt(String key, int value) =>
+      _write(key, raw.setInt(_key(key), value));
+  Future<void> setDouble(String key, double value) =>
+      _write(key, raw.setDouble(_key(key), value));
+  Future<void> remove(String key) => _write(key, raw.remove(_key(key)));
 }

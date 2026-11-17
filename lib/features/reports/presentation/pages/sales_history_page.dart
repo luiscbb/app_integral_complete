@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -12,6 +11,7 @@ import '../../../sales/domain/entities/sale_item_entity.dart';
 import '../../../../core/theme/theme_provider.dart';
 import '../../../../core/widgets/admin_pin_dialog.dart';
 import '../../../../core/storage/preferences_service.dart';
+import '../../../../core/services/business_logo_loader.dart';
 
 enum _DateFilter { day, range, month }
 
@@ -650,7 +650,17 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
     if (confirmed != true || !mounted) return;
 
     // 3) Anulación (devuelve stock, marca cancelled y sincroniza).
-    final ok = await _repo.cancelSale(saleId);
+    final bool ok;
+    try {
+      ok = await _repo.cancelSale(saleId);
+    } on StateError catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(error.message), backgroundColor: Colors.red),
+        );
+      }
+      return;
+    }
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -815,30 +825,7 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
     );
   }
 
-  Future<Uint8List?> _loadLogoBytes() async {
-    final prefs = PreferencesService();
-    if (prefs.logoPath.isNotEmpty) {
-      final file = File(prefs.logoPath);
-      if (await file.exists()) return file.readAsBytes();
-    }
-    if (prefs.logoUrl.isNotEmpty) {
-      try {
-        final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
-        final req = await client.getUrl(Uri.parse(prefs.logoUrl));
-        final res = await req.close().timeout(const Duration(seconds: 8));
-        if (res.statusCode == 200) {
-          final bytes = <int>[];
-          await for (final chunk in res) {
-            bytes.addAll(chunk);
-          }
-          client.close();
-          return Uint8List.fromList(bytes);
-        }
-        client.close();
-      } catch (_) {}
-    }
-    return null;
-  }
+  Future<Uint8List?> _loadLogoBytes() => loadBusinessLogo(PreferencesService());
 }
 
 class _PayBadge extends StatelessWidget {

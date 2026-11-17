@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'dart:io';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
@@ -16,6 +15,7 @@ import '../../../sales/presentation/services/ticket_service.dart';
 import '../../data/repositories/reports_repository.dart';
 import '../../../../core/routes/app_routes.dart';
 import '../../../../core/services/sync_service.dart';
+import '../../../../core/services/business_logo_loader.dart';
 import '../../../../core/theme/theme_provider.dart';
 import '../../../../core/storage/preferences_service.dart';
 import '../../../../core/widgets/admin_pin_dialog.dart';
@@ -347,7 +347,17 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     );
     if (confirmed != true || !mounted) return;
 
-    final ok = await _salesRepo.cancelSale(sale['id'] as int);
+    final bool ok;
+    try {
+      ok = await _salesRepo.cancelSale(sale['id'] as int);
+    } on StateError catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(error.message), backgroundColor: Colors.red),
+        );
+      }
+      return;
+    }
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -1636,35 +1646,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     );
   }
 
-  Future<Uint8List?> _loadLogoBytes() async {
-    final prefs = PreferencesService();
-    if (prefs.logoPath.isNotEmpty) {
-      final file = File(prefs.logoPath);
-      if (await file.exists()) return file.readAsBytes();
-    }
-    if (prefs.logoUrl.isNotEmpty) {
-      try {
-        final client =
-            HttpClient()
-              // Sin conexión, la conexión/DNS puede quedar bloqueada indefinidamente
-              // y "congelar" la generación del PDF. Timeout corto: si no hay logo,
-              // el PDF se genera igual sin logo.
-              ..connectionTimeout = const Duration(seconds: 4);
-        final req = await client.getUrl(Uri.parse(prefs.logoUrl));
-        final res = await req.close().timeout(const Duration(seconds: 8));
-        if (res.statusCode == 200) {
-          final bytes = <int>[];
-          await for (final chunk in res) {
-            bytes.addAll(chunk);
-          }
-          client.close();
-          return Uint8List.fromList(bytes);
-        }
-        client.close();
-      } catch (_) {}
-    }
-    return null;
-  }
+  Future<Uint8List?> _loadLogoBytes() => loadBusinessLogo(PreferencesService());
 
   // ─────────────────────────────────────────────────────────────
   // ETAPA 4 — Pestaña UTILIDAD
@@ -1672,11 +1654,13 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
 
   Widget _buildProfitTab(Color primary) {
     final sales = _profit['sales'] ?? 0;
-    final cost = _profit['costOfGoodsSold'] ?? 0;
+    final costsAvailable = _profit['costsAvailable'] == true;
+    final cost = _profit['costOfGoodsSold'];
     final expenses = _profit['expenses'] ?? 0;
-    final profit = _profit['profit'] ?? 0;
+    final profit = _profit['profit'];
     final salesCount = (_profit['salesCount'] ?? 0).toInt();
-    final profitColor = profit >= 0 ? Colors.greenAccent : Colors.redAccent;
+    final profitColor =
+        !costsAvailable ? Colors.white38 : profit >= 0 ? Colors.greenAccent : Colors.redAccent;
 
     return Column(
       children: [
@@ -1697,7 +1681,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                 const SizedBox(height: 12),
                 _StatsCard(
                   label: 'Costo de lo vendido',
-                  value: '-${_fmt(cost)}',
+                  value: costsAvailable ? '-${_fmt(cost)}' : 'No disponible',
                   icon: Icons.inventory,
                   color: Colors.orangeAccent,
                 ),
@@ -1711,10 +1695,18 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                 const SizedBox(height: 12),
                 _StatsCard(
                   label: 'UTILIDAD NETA',
-                  value: _fmt(profit),
+                  value: costsAvailable ? _fmt(profit) : 'No disponible',
                   icon: Icons.trending_up,
                   color: profitColor,
                 ),
+                if (!costsAvailable)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text(
+                      'Faltan costos de una o más ventas. Actualiza la información antes de consultar la utilidad.',
+                      style: TextStyle(color: Colors.orangeAccent),
+                    ),
+                  ),
                 const SizedBox(height: 20),
                 Text(
                   'DESGLOSE DE GASTOS POR CONCEPTO',
@@ -1763,7 +1755,7 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                   ),
                   icon: const Icon(Icons.picture_as_pdf),
                   label: const Text('TICKET DE UTILIDAD'),
-                  onPressed: _showProfitPdf,
+                  onPressed: costsAvailable ? _showProfitPdf : null,
                 ),
               ],
             ),
@@ -1775,6 +1767,9 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
 
   /// Ticket (vista previa en app) del informe de utilidad del periodo.
   Future<void> _showProfitPdf() async {
+    if (_profit['costsAvailable'] != true) {
+      throw StateError('No se puede generar utilidad sin costos completos.');
+    }
     final sales = _profit['sales'] ?? 0;
     final cost = _profit['costOfGoodsSold'] ?? 0;
     final expenses = _profit['expenses'] ?? 0;

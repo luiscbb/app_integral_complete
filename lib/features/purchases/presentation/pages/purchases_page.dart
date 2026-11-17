@@ -5,8 +5,9 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'dart:io';
 
+import '../../../../core/services/business_logo_loader.dart';
+import '../../../../core/services/sync_service.dart';
 import '../../../../core/storage/preferences_service.dart';
 import '../../../inventory/data/repositories/product_repository.dart';
 import '../../../inventory/domain/entities/product_entity.dart';
@@ -14,6 +15,8 @@ import '../../../inventory/presentation/pages/inventory_page.dart';
 import '../../data/repositories/purchases_repository.dart';
 import '../../domain/entities/provider_entity.dart';
 import '../../domain/entities/purchase_entity.dart';
+import '../../domain/entities/purchase_payment_terms.dart';
+import '../widgets/purchase_payment_dialog.dart';
 import '../../../../core/widgets/app_text_field.dart';
 import '../../../../core/widgets/empty_state.dart';
 import '../../../../core/widgets/admin_pin_dialog.dart';
@@ -170,7 +173,6 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab>
   ProviderEntity? _provider;
   final List<_CartItem> _cart = [];
   bool _saving = false;
-  String _cashSource = CashSource.caja;
 
   // Mantiene vivo el carrito mientras se permanezca dentro del apartado de
   // compras (al cambiar de pestana NUEVA COMPRA/PROVEEDORES/HISTORIAL).
@@ -201,6 +203,7 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab>
   double _calcTotal() => _cart.fold(0, (a, c) => a + c.subtotal);
 
   Future<void> _save() async {
+    if (_saving) return;
     if (_cart.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -212,69 +215,97 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab>
     }
     setState(() => _saving = true);
     try {
-      final purchase = PurchaseEntity(
-        providerId: _provider?.id,
-        reference: _refCtrl.text.toUpperCase(),
-        cashSource: _cashSource,
-        items:
-            _cart
-                .map(
-                  (c) => PurchaseItemEntity(
-                    productId: c.product.id!,
-                    productName: c.product.name,
-                    quantity: c.quantity,
-                    costPerUnit: c.cost,
-                  ),
-                )
-                .toList(),
+      final session = SyncService().captureProviderSession();
+      final provider = _provider == null ? null : widget.providers
+          .where((provider) => provider.id == _provider!.id).firstOrNull;
+      if (_provider != null && provider == null) {
+        throw StateError('El proveedor ya no está disponible; vuelve a seleccionarlo.');
+      }
+      final reference = _refCtrl.text.toUpperCase();
+      final items = List<PurchaseItemEntity>.unmodifiable(
+        _cart.map((c) => PurchaseItemEntity(
+          productId: c.product.id!,
+          productName: c.product.name,
+          quantity: c.quantity,
+          costPerUnit: c.cost,
+        )),
       );
-      final purchaseId = await _repo.savePurchase(purchase: purchase);
+      final total = items.fold<double>(0, (sum, item) => sum + item.subtotal);
+      final payment = await showDialog<PurchasePaymentTerms>(
+        context: context,
+        builder: (_) => PurchasePaymentDialog(provider: provider, total: total),
+      );
+      if (payment == null || !mounted) return;
+      SyncService().requireProviderSession(session);
+      final purchase = PurchaseEntity(
+        providerId: provider?.id,
+        reference: reference,
+        cashSource: payment.legacyCashSource,
+        paymentTerms: payment,
+        items: items,
+      );
+      final purchaseId = await _repo.savePurchase(
+        purchase: purchase, expectedSession: session,
+      );
       if (!mounted) return;
 
-      final itemsForPdf = _cart
+      final itemsForPdf = items
           .map(
             (c) => _PurchasePdfItem(
-              name: c.product.name,
+              name: c.productName,
               quantity: c.quantity,
-              cost: c.cost,
+              cost: c.costPerUnit,
               subtotal: c.subtotal,
             ),
           )
           .toList();
-      final total = _calcTotal();
-      final providerName = _provider?.name ?? 'SIN PROVEEDOR';
-      final reference = _refCtrl.text.toUpperCase();
-
-      await _showPurchasePdf(
-        context: context,
-        purchaseId: purchaseId,
-        providerName: providerName,
-        reference: reference,
-        items: itemsForPdf,
-        total: total,
-        cashSource: _cashSource,
-      );
-
-      _refCtrl.clear();
-      _provider = null;
-      _cashSource = CashSource.caja;
-      for (final c in _qtyControllers) {
-        c.dispose();
-      }
-      for (final c in _costControllers) {
-        c.dispose();
-      }
-      _qtyControllers.clear();
-      _costControllers.clear();
-      _cart.clear();
+      setState(() {
+        _refCtrl.clear();
+        _provider = null;
+        for (final c in _qtyControllers) {
+          c.dispose();
+        }
+        for (final c in _costControllers) {
+          c.dispose();
+        }
+        _qtyControllers.clear();
+        _costControllers.clear();
+        _cart.clear();
+      });
       widget.onSaved();
-      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Compra registrada y stock actualizado'),
+          content: Text('Compra guardada localmente y stock actualizado. La sincronización queda pendiente.'),
           backgroundColor: Colors.green,
         ),
       );
+      try {
+        final header = await _repo.getPurchaseHeader(purchaseId, session: session);
+        if (!mounted) return;
+        await _showPurchasePdf(
+          context: context,
+          purchaseId: purchaseId,
+          providerName: provider?.name ?? 'SIN PROVEEDOR',
+          reference: reference,
+          items: itemsForPdf,
+          total: total,
+          paymentDescription: _purchasePaymentDescription(header),
+        );
+      } catch (error, stackTrace) {
+        debugPrint('[Compras] Comprobante de compra guardada no disponible: $error\n$stackTrace');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('La compra se guardó. No se pudo mostrar el comprobante; puedes reimprimirlo desde el historial.')),
+          );
+        }
+      }
+    } catch (error, stackTrace) {
+      debugPrint('[Compras] No se pudo confirmar la compra: $error\n$stackTrace');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo registrar la compra: $error'), backgroundColor: Colors.red),
+        );
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -575,42 +606,9 @@ class _NewPurchaseTabState extends State<_NewPurchaseTab>
                 ],
               ),
               const SizedBox(height: 10),
-              Row(
-                children: [
-                  const Text(
-                    'ORIGEN DEL DINERO:',
-                    style: TextStyle(
-                      color: Colors.white38,
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Wrap(
-                      spacing: 6,
-                      runSpacing: 6,
-                      children: CashSource.values.map((v) {
-                        final selected = _cashSource == v;
-                        return ChoiceChip(
-                          label: Text(
-                            CashSource.label(v),
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: selected ? Colors.white : Colors.white70,
-                              fontWeight: selected ? FontWeight.bold : FontWeight.normal,
-                            ),
-                          ),
-                          selected: selected,
-                          selectedColor: primary,
-                          backgroundColor: Colors.white.withValues(alpha: 0.05),
-                          onSelected: (_) => setState(() => _cashSource = v),
-                        );
-                      }).toList(),
-                    ),
-                  ),
-                ],
+              const Text(
+                'La forma de pago y el origen del efectivo se eligen al confirmar la compra.',
+                style: TextStyle(color: Colors.white38, fontSize: 12),
               ),
             ],
           ),
@@ -1039,10 +1037,19 @@ class _ProvidersTabState extends State<_ProvidersTab> {
                               onPressed: () => _editProvider(context, p),
                             ),
                             IconButton(
-                              icon: const Icon(Icons.delete, color: Colors.red),
+                              tooltip: 'Archivar proveedor',
+                              icon: const Icon(Icons.archive_outlined, color: Colors.red),
                               onPressed: () async {
-                                await widget.repo.deleteProvider(p.id!);
-                                widget.onChanged();
+                                try {
+                                  await widget.repo.deleteProvider(p.id!);
+                                  widget.onChanged();
+                                } catch (error) {
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(content: Text(error.toString()), backgroundColor: Colors.red),
+                                    );
+                                  }
+                                }
                               },
                             ),
                           ],
@@ -1063,11 +1070,14 @@ class _ProvidersTabState extends State<_ProvidersTab> {
     final contactCtrl = TextEditingController(text: existing?.contactName ?? '');
     final notesCtrl = TextEditingController(text: existing?.notes ?? '');
     final categoryCtrl = TextEditingController(text: existing?.category ?? 'General');
+    var preferredPaymentMethod = existing?.preferredPaymentMethod;
+    String? creditDaysError;
     final List<String> days = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
     final selectedDays = List<String>.from(existing?.visitDays ?? []);
     final selectedProductIds = List<int>.from(await widget.repo.getProviderProductIds(existing?.id ?? -1));
 
     if (!context.mounted) return;
+    final creditDaysCtrl = TextEditingController(text: existing?.creditDays?.toString() ?? '');
     await showDialog(
       context: context,
       builder:
@@ -1120,6 +1130,38 @@ class _ProvidersTabState extends State<_ProvidersTab> {
                           maxLines: 2,
                           textCapitalization: TextCapitalization.characters,
                           inputFormatters: [_UpperCaseFormatter()],
+                        ),
+                        TextField(
+                          controller: creditDaysCtrl,
+                          keyboardType: TextInputType.number,
+                          decoration: InputDecoration(
+                            labelText: 'Días de crédito',
+                            helperText: 'Vacío: sin definir. 0: vence el mismo día.',
+                            errorText: creditDaysError,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        DropdownButtonFormField<String>(
+                          initialValue: preferredPaymentMethod,
+                          decoration: const InputDecoration(labelText: 'Pago preferido del proveedor'),
+                          items: [
+                            const DropdownMenuItem<String>(
+                              value: null,
+                              child: Text('Sin definir'),
+                            ),
+                            ...PurchasePaymentOption.values.map(
+                              (value) => DropdownMenuItem(
+                                value: value,
+                                child: Text(PurchasePaymentOption.label(value)),
+                              ),
+                            ),
+                          ],
+                          onChanged: (value) => ss(() => preferredPaymentMethod = value),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Son preferencias para la próxima compra; no cambian compras anteriores ni registran pagos.',
+                          style: TextStyle(color: Colors.white38, fontSize: 12),
                         ),
                         const SizedBox(height: 12),
                         const Align(
@@ -1193,6 +1235,14 @@ class _ProvidersTabState extends State<_ProvidersTab> {
                       style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFB8C00)),
                       onPressed: () async {
                         if (nameCtrl.text.isEmpty) return;
+                        final rawCreditDays = creditDaysCtrl.text.trim();
+                        final creditDays = int.tryParse(rawCreditDays);
+                        if (rawCreditDays.isNotEmpty &&
+                            (creditDays == null || creditDays < 0 || creditDays > 2147483647)) {
+                          ss(() => creditDaysError = 'Ingresa un número entero de días entre 0 y 2147483647.');
+                          return;
+                        }
+                        ss(() => creditDaysError = null);
                         final provider = ProviderEntity(
                           id: existing?.id,
                           name: nameCtrl.text.trim(),
@@ -1203,17 +1253,20 @@ class _ProvidersTabState extends State<_ProvidersTab> {
                           notes: notesCtrl.text.trim(),
                           category: categoryCtrl.text.trim().isEmpty ? 'General' : categoryCtrl.text.trim(),
                           visitDays: selectedDays,
+                          creditDays: creditDays,
+                          preferredPaymentMethod: preferredPaymentMethod,
                         );
-                        int providerId;
-                        if (existing == null) {
-                          providerId = await widget.repo.insertProvider(provider);
-                        } else {
-                          providerId = existing.id!;
-                          await widget.repo.updateProvider(provider);
+                        try {
+                          await widget.repo.saveProvider(provider, selectedProductIds);
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          widget.onChanged();
+                        } catch (error) {
+                          if (ctx.mounted) {
+                            ScaffoldMessenger.of(ctx).showSnackBar(
+                              SnackBar(content: Text(error.toString()), backgroundColor: Colors.red),
+                            );
+                          }
                         }
-                        await widget.repo.setProviderProducts(providerId, selectedProductIds);
-                        if (ctx.mounted) Navigator.pop(ctx);
-                        widget.onChanged();
                       },
                       child: const Text('GUARDAR', style: TextStyle(color: Colors.white)),
                     ),
@@ -1221,6 +1274,7 @@ class _ProvidersTabState extends State<_ProvidersTab> {
                 ),
           ),
     );
+    creditDaysCtrl.dispose();
   }
 }
 
@@ -1316,6 +1370,7 @@ Future<void> _showPurchasePdf({
   required double total,
   String createdBy = '',
   String cashSource = CashSource.caja,
+  String? paymentDescription,
 }) async {
   final prefs = PreferencesService();
   final businessName = prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
@@ -1409,7 +1464,7 @@ Future<void> _showPurchasePdf({
             pw.Center(child: pw.Text('Folio: C-$purchaseId  |  $dateStr', style: smallStyle)),
             if (atendio.isNotEmpty)
               pw.Center(child: pw.Text('Atendio: $atendio', style: smallStyle)),
-            pw.Center(child: pw.Text('Origen: ${CashSource.label(cashSource)}', style: smallStyle)),
+            pw.Center(child: pw.Text(paymentDescription ?? 'Origen: ${CashSource.label(cashSource)}', style: smallStyle)),
             pw.SizedBox(height: 2),
             pw.Divider(color: primaryColor, thickness: 0.8),
             pw.Text('Proveedor:', style: boldStyle),
@@ -1511,30 +1566,7 @@ Future<void> _showPurchasePdf({
   );
 }
 
-Future<Uint8List?> _loadLogoBytes() async {
-  final prefs = PreferencesService();
-  if (prefs.logoPath.isNotEmpty) {
-    final file = File(prefs.logoPath);
-    if (await file.exists()) return file.readAsBytes();
-  }
-  if (prefs.logoUrl.isNotEmpty) {
-    try {
-      final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
-      final req = await client.getUrl(Uri.parse(prefs.logoUrl));
-      final res = await req.close().timeout(const Duration(seconds: 8));
-      if (res.statusCode == 200) {
-        final bytes = <int>[];
-        await for (final chunk in res) {
-          bytes.addAll(chunk);
-        }
-        client.close();
-        return Uint8List.fromList(bytes);
-      }
-      client.close();
-    } catch (_) {}
-  }
-  return null;
-}
+Future<Uint8List?> _loadLogoBytes() => loadBusinessLogo(PreferencesService());
 
 class _HistoryTab extends StatelessWidget {
   final List<Map<String, dynamic>> history;
@@ -1578,7 +1610,7 @@ class _HistoryTab extends StatelessWidget {
                     Padding(
                       padding: const EdgeInsets.only(top: 4),
                       child: Text(
-                        'Origen: ${CashSource.label((h['cash_source'] ?? 'caja').toString())}',
+                        _purchasePaymentDescription(h),
                         style: const TextStyle(color: Colors.white54, fontSize: 12),
                       ),
                     ),
@@ -1665,6 +1697,7 @@ class _HistoryTab extends StatelessWidget {
                     total: total,
                     createdBy: (h['created_by'] ?? '').toString(),
                     cashSource: (h['cash_source'] ?? 'caja').toString(),
+                    paymentDescription: _purchasePaymentDescription(h),
                   );
                 },
                 style: TextButton.styleFrom(foregroundColor: const Color(0xFFFB8C00)),
@@ -1855,30 +1888,7 @@ class _HistoryTab extends StatelessWidget {
     );
   }
 
-  Future<Uint8List?> _loadLogoBytes() async {
-    final prefs = PreferencesService();
-    if (prefs.logoPath.isNotEmpty) {
-      final file = File(prefs.logoPath);
-      if (await file.exists()) return file.readAsBytes();
-    }
-    if (prefs.logoUrl.isNotEmpty) {
-      try {
-        final client = HttpClient()..connectionTimeout = const Duration(seconds: 4);
-        final req = await client.getUrl(Uri.parse(prefs.logoUrl));
-        final res = await req.close().timeout(const Duration(seconds: 8));
-        if (res.statusCode == 200) {
-          final bytes = <int>[];
-          await for (final chunk in res) {
-            bytes.addAll(chunk);
-          }
-          client.close();
-          return Uint8List.fromList(bytes);
-        }
-        client.close();
-      } catch (_) {}
-    }
-    return null;
-  }
+  Future<Uint8List?> _loadLogoBytes() => loadBusinessLogo(PreferencesService());
 
   @override
   Widget build(BuildContext context) {
@@ -1892,7 +1902,10 @@ class _HistoryTab extends StatelessWidget {
         final date = DateTime.tryParse(h['date'] ?? '') ?? DateTime.now();
         final cashSource = (h['cash_source'] ?? 'caja').toString();
         return ListTile(
-          leading: Icon(_cashSourceIcon(cashSource), color: _cashSourceColor(cashSource)),
+          leading: Icon(
+            h['payment_condition'] == 'credito' ? Icons.schedule : _cashSourceIcon(cashSource),
+            color: h['payment_condition'] == 'credito' ? Colors.amber : _cashSourceColor(cashSource),
+          ),
           title: Text(
             h['provider_name'] ?? 'Sin proveedor',
             style: const TextStyle(color: Colors.white),
@@ -1910,6 +1923,20 @@ class _HistoryTab extends StatelessWidget {
       },
     );
   }
+}
+
+String _purchasePaymentDescription(Map<String, dynamic> purchase) {
+  if (purchase['payment_condition'] == 'credito') {
+    final balance = purchase['balance_due'] as num?;
+    final due = purchase['due_date'] as String?;
+    return 'Crédito | Vence: ${due ?? 'sin fecha registrada'} | '
+        'Saldo: ${balance == null ? 'no disponible' : '\$${balance.toStringAsFixed(2)}'}';
+  }
+  if (purchase['payment_condition'] == 'contado') {
+    final method = purchase['payment_method'] as String?;
+    return method == null ? 'Forma de pago no disponible' : 'Pago: ${PurchasePaymentOption.label(method)}';
+  }
+  return 'Origen: ${CashSource.label((purchase['cash_source'] ?? 'caja').toString())}';
 }
 
 /// Icono/color según el origen del dinero, para distinguir a simple vista

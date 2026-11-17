@@ -8,15 +8,19 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../core/routes/app_routes.dart';
 import '../../../../core/services/config_remote_repository.dart';
 import '../../../../core/storage/preferences_service.dart';
+import '../../../../core/storage/account_storage.dart';
 import '../../../../core/theme/theme_provider.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
 import '../../../../core/services/sync_service.dart';
 import '../../../../features/sales/data/repositories/sales_repository.dart';
 import '../../data/auth_access_repository.dart';
+import '../../domain/staff_access.dart';
 
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key});
+  const LoginPage({super.key, this.enableStaffForIntegration = false});
+
+  final bool enableStaffForIntegration;
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -30,21 +34,63 @@ class _LoginPageState extends State<LoginPage> {
   bool _obscurePass = true;
 
   Future<void> _login() async {
+    if (AccountStorage.instance.requiresRestart) {
+      _showError('Cierra y vuelve a abrir la aplicación para cambiar de cuenta.');
+      return;
+    }
     if (_emailCtrl.text.isEmpty || _passCtrl.text.isEmpty) return;
     setState(() => _loading = true);
     try {
+      await _prefs.ensureLegacyPreferencesSnapshot();
+      final identifier = _emailCtrl.text.trim();
+      if (!identifier.contains('@') && !isValidStaffUsername(identifier)) {
+        throw const AuthException('El usuario no tiene un formato válido.');
+      }
+      final email = identifier.contains('@')
+          ? identifier
+          : staffUsernameToAuthEmail(identifier);
       final res = await Supabase.instance.client.auth
-          .signInWithPassword(email: _emailCtrl.text.trim(), password: _passCtrl.text.trim())
+          .signInWithPassword(email: email, password: _passCtrl.text)
           .timeout(const Duration(seconds: 12));
 
       if (res.user != null) {
-        await _prefs.setUserName(res.user!.userMetadata?['full_name'] ?? 'Administrador');
-        await _prefs.setBusinessName(res.user!.userMetadata?['business_name'] ?? 'Baumar Billar');
-        await _prefs.setBillarId(res.user!.userMetadata?['billar_id'] ?? 'BILLAR_001');
+        final session = res.session;
+        if (session == null) {
+          throw const AuthException('No se pudo confirmar la sesión.');
+        }
+        void requireLoginSession() {
+          final current = Supabase.instance.client.auth.currentSession;
+          if (current?.user.id != session.user.id ||
+              current?.accessToken != session.accessToken) {
+            throw StateError('La sesión cambió durante el inicio.');
+          }
+        }
 
-        final account = await AuthAccessRepository().resolveCurrentAccount();
+        requireLoginSession();
+        final account = await AuthAccessRepository(
+          enableStaffForIntegration: widget.enableStaffForIntegration,
+        ).resolveCurrentAccount();
+        requireLoginSession();
+        if (account.kind == AccountKind.blocked ||
+            (account.kind == AccountKind.staff && !widget.enableStaffForIntegration) ||
+            (account.kind == AccountKind.unavailable &&
+                requiresManagedAccountAccess(res.user!))) {
+          await Supabase.instance.client.auth.signOut();
+          throw const AuthException(
+            'La cuenta está inactiva o no está vinculada al billar.',
+          );
+        }
         if (account.kind == AccountKind.player ||
-            account.kind == AccountKind.manager) {
+            account.kind == AccountKind.manager ||
+            account.kind == AccountKind.staff) {
+          await AccountStorage.instance.activate(
+            billarId: account.billarId,
+            migrateLegacyOwner: false,
+          );
+          requireLoginSession();
+          if (mounted) context.read<ThemeProvider>().reloadFromPreferences();
+          await _prefs.setUserName(res.user!.userMetadata?['full_name'] ?? 'Administrador');
+          await _prefs.setBusinessName(res.user!.userMetadata?['business_name'] ?? 'Baumar Billar');
           if (account.billarId.isNotEmpty) {
             await _prefs.setBillarId(account.billarId);
           }
@@ -52,6 +98,8 @@ class _LoginPageState extends State<LoginPage> {
               ? AppRoutes.changeTemporaryPassword
               : account.kind == AccountKind.player
               ? AppRoutes.playerPortal
+              : account.kind == AccountKind.staff
+              ? AppRoutes.staffPortal
               : AppRoutes.managerPortal;
           if (mounted) {
             Navigator.pushNamedAndRemoveUntil(
@@ -63,26 +111,47 @@ class _LoginPageState extends State<LoginPage> {
           }
           return;
         }
-        if (account.kind == AccountKind.unavailable &&
-            (res.user!.appMetadata['account_type'] == 'player' ||
-                res.user!.appMetadata['account_type'] == 'manager')) {
-          await Supabase.instance.client.auth.signOut();
-          throw const AuthException(
-            'La cuenta está inactiva o no está vinculada al billar.',
-          );
-        }
-        if (account.billarId.isNotEmpty) {
-          await _prefs.setBillarId(account.billarId);
-        }
-
         // Descargar configuracion remota si existe
         final remote = ConfigRemoteRepository();
         final remoteSettings = await remote.fetchSettings();
-        if (remoteSettings != null) {
+        requireLoginSession();
+        if (account.kind != AccountKind.owner) {
+          if (remoteSettings != null) {
+            throw StateError('No se pudo verificar al administrador del negocio.');
+          }
+          if (mounted) {
+            Navigator.pushReplacementNamed(context, AppRoutes.initialSetup);
+          }
+          return;
+        }
+        if (remoteSettings == null || account.mustChangePassword ||
+            remoteSettings['billar_id'] != account.billarId) {
+          throw StateError('No se pudo verificar la configuración del administrador.');
+        }
+        await AccountStorage.instance.activate(
+          billarId: account.billarId,
+          migrateLegacyOwner: true,
+        );
+        requireLoginSession();
+        if (mounted) context.read<ThemeProvider>().reloadFromPreferences();
+        await _prefs.setUserName(res.user!.userMetadata?['full_name'] ?? 'Administrador');
+        await _prefs.setBusinessName(res.user!.userMetadata?['business_name'] ?? 'Baumar Billar');
+        await _prefs.setBillarId(
+          account.billarId.isNotEmpty
+              ? account.billarId
+              : res.user!.userMetadata?['billar_id'] ?? 'BILLAR_001',
+        );
+        {
           await _prefs.setBusinessName(
             remoteSettings['business_name']?.toString() ?? _prefs.businessName,
           );
           await _prefs.setBillarId(remoteSettings['billar_id']?.toString() ?? _prefs.billarId);
+          final remoteLogoUrl = ConfigRemoteRepository.normalizeLogoUrl(
+            remoteSettings['logo_url']?.toString(),
+          );
+          await _prefs.setLogoUrl(
+            remoteLogoUrl.isNotEmpty ? remoteLogoUrl : _prefs.logoUrl,
+          );
           await _prefs.setBusinessAddress(
             remoteSettings['business_address']?.toString() ?? _prefs.businessAddress,
           );
@@ -161,13 +230,6 @@ class _LoginPageState extends State<LoginPage> {
           if (mounted) {
             Navigator.pushReplacementNamed(context, AppRoutes.home);
           }
-        } else {
-          // No hay config remota: es primera vez con este usuario
-          // Mantener isFirstRun = true para forzar el setup
-          await _prefs.setIsFirstRun(true);
-          if (mounted) {
-            Navigator.pushReplacementNamed(context, AppRoutes.initialSetup);
-          }
         }
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -217,6 +279,10 @@ class _LoginPageState extends State<LoginPage> {
     final email = _emailCtrl.text.trim();
     if (email.isEmpty) {
       _showError('Ingresa tu correo electrónico para enviarte el código');
+      return;
+    }
+    if (!email.contains('@')) {
+      _showError('Solicita al administrador que restablezca tu contraseña.');
       return;
     }
     final emailRegex = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+');
@@ -473,9 +539,17 @@ class _LoginPageState extends State<LoginPage> {
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 32),
+                  if (AccountStorage.instance.requiresRestart) ...[
+                    const Text(
+                      'Cierra y vuelve a abrir la aplicación para cambiar de cuenta.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.orangeAccent),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
                   AppTextField(
                     controller: _emailCtrl,
-                    label: 'Email',
+                    label: 'Correo o usuario',
                     icon: Icons.email_outlined,
                     selectAllOnTap: true,
                   ),

@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:cached_network_image/cached_network_image.dart';
+import '../../../../core/utils/scoped_remote_image.dart';
 import '../../../inventory/data/repositories/product_repository.dart';
 import '../../../inventory/domain/entities/product_entity.dart';
 import '../../../../core/widgets/app_button.dart';
@@ -289,7 +289,11 @@ class _CreatePromoPageState extends State<CreatePromoPage> {
                             ? ClipRRect(
                                 borderRadius: BorderRadius.circular(12),
                                 child: _imagePath!.startsWith('http')
-                                    ? CachedNetworkImage(imageUrl: _imagePath!, fit: BoxFit.cover)
+                                    ? ScopedRemoteImage(
+                                        url: _imagePath!,
+                                        fit: BoxFit.cover,
+                                        error: const Icon(Icons.broken_image),
+                                      )
                                     : Image.file(File(_imagePath!), fit: BoxFit.cover),
                               )
                             : const Icon(Icons.add_a_photo, color: Colors.white38, size: 28),

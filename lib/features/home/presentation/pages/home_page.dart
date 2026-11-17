@@ -8,11 +8,14 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../core/routes/app_routes.dart';
 import '../../../../core/services/config_remote_repository.dart';
 import '../../../../core/services/product_realtime_service.dart';
+import '../../../../core/storage/account_storage.dart';
 import '../../../../core/storage/preferences_service.dart';
 import '../../../../core/theme/theme_provider.dart';
 import '../../../../core/widgets/module_card.dart';
+import '../../../inventory/data/repositories/product_repository.dart';
 import '../../../../features/home/presentation/widgets/home_header.dart';
 import '../../../../features/home/presentation/widgets/home_layout.dart';
+import '../widgets/home_modules.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -28,88 +31,40 @@ class _HomePageState extends State<HomePage> {
   final TextEditingController _searchCtrl = TextEditingController();
   bool _isSearching = false;
   RealtimeChannel? _settingsChannel;
+  int _stockConflictCount = 0;
+  bool get _hasRetiredScope =>
+      AccountStorage.instance.requiresRestart &&
+      !AccountStorage.instance.isActive;
 
-  static final _modules = [
-    _Module(
-      'VENTA\nRÁPIDA',
-      Icons.flash_on_rounded,
-      Color(0xFFE53935),
-      AppRoutes.quickSale,
-      'Ventas',
-    ),
-    _Module(
-      'MESAS\nBILLAR',
-      Icons.table_bar_rounded,
-      Color(0xFF1E88E5),
-      AppRoutes.billiardTables,
-      'Ventas',
-    ),
-    _Module(
-      'COMANDAS',
-      Icons.restaurant_rounded,
-      Color(0xFFE91E63),
-      AppRoutes.dineIn,
-      'Ventas',
-    ),
-    _Module(
-      'CUENTA\nPERSONAL',
-      Icons.person_pin_circle_outlined,
-      Color(0xFF00ACC1),
-      AppRoutes.specialClient,
-      'Ventas',
-    ),
-    _Module(
-      'INVENTARIO',
-      Icons.inventory_2_rounded,
-      Color(0xFF43A047),
-      AppRoutes.inventory,
-      'Admin',
-    ),
-    _Module(
-      'COMPRAS',
-      Icons.shopping_cart_rounded,
-      Color(0xFFFB8C00),
-      AppRoutes.purchases,
-      'Admin',
-    ),
-    _Module(
-      'INFORMES',
-      Icons.bar_chart_rounded,
-      Color(0xFF8E24AA),
-      AppRoutes.reports,
-      'Admin',
-    ),
-    _Module(
-      'JUGADORES',
-      Icons.sports_esports_rounded,
-      Color(0xFF00ACC1),
-      AppRoutes.playersHub,
-      'Juego',
-    ),
-    _Module(
-      'CONFIGURACIÓN',
-      Icons.settings_suggest_rounded,
-      Color(0xFF78909C),
-      AppRoutes.config,
-      'Admin',
-    ),
-  ];
+  static const _modules = homeModules;
 
   @override
   void initState() {
     super.initState();
+    if (_hasRetiredScope) return;
     _subscribeToSettingsChanges();
     ProductRealtimeService.instance.start();
+    ProductRepository.conflictChanges.addListener(_loadStockConflictCount);
+    _loadStockConflictCount();
   }
 
   @override
   void dispose() {
     _settingsChannel?.unsubscribe();
     ProductRealtimeService.instance.stop();
+    ProductRepository.conflictChanges.removeListener(_loadStockConflictCount);
     _searchCtrl.dispose();
     super.dispose();
   }
 
+  Future<void> _loadStockConflictCount() async {
+    try {
+      final conflicts = await ProductRepository().getStockConflicts();
+      if (mounted) setState(() => _stockConflictCount = conflicts.length);
+    } catch (e) {
+      debugPrint('[HomePage] Error consultando conflictos de inventario: $e');
+    }
+  }
   void _subscribeToSettingsChanges() {
     final user = Supabase.instance.client.auth.currentUser;
     debugPrint('[HomePage] subscribeSettings user=${user?.id}');
@@ -123,16 +78,12 @@ class _HomePageState extends State<HomePage> {
           table: 'billar_settings',
           callback: (payload) async {
             final newRecord = payload.newRecord;
-            debugPrint(
-              '[HomePage] Realtime cambio en billar_settings: $newRecord',
-            );
+            debugPrint('[HomePage] Realtime cambio en billar_settings: $newRecord');
             if (newRecord.isEmpty) return;
             // Filtrar manualmente por user_id para evitar restricciones de filtros en Realtime.
             final recordUserId = newRecord['user_id']?.toString();
             if (recordUserId != user.id) {
-              debugPrint(
-                '[HomePage] Cambio descartado, no pertenece al usuario actual',
-              );
+              debugPrint('[HomePage] Cambio descartado, no pertenece al usuario actual');
               return;
             }
             await _applyRemoteSettings(newRecord);
@@ -144,29 +95,19 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _applyRemoteSettings(Map<String, dynamic> settings) async {
-    final tableCount =
-        (settings['table_count'] as num?)?.toInt() ?? _prefs.tableCount;
+    final tableCount = (settings['table_count'] as num?)?.toInt() ?? _prefs.tableCount;
     final primaryColor = (settings['primary_color'] as num?)?.toInt();
-    final remoteLogoUrl = ConfigRemoteRepository.normalizeLogoUrl(
-      settings['logo_url']?.toString(),
-    );
+    final remoteLogoUrl = ConfigRemoteRepository.normalizeLogoUrl(settings['logo_url']?.toString());
     final logoUrl = remoteLogoUrl.isNotEmpty ? remoteLogoUrl : _prefs.logoUrl;
 
     debugPrint('[HomePage] Aplicando settings. logoUrl: "$logoUrl"');
 
-    await _prefs.setBusinessName(
-      settings['business_name']?.toString() ?? _prefs.businessName,
-    );
-    await _prefs.setBillarId(
-      settings['billar_id']?.toString() ?? _prefs.billarId,
-    );
+    await _prefs.setBusinessName(settings['business_name']?.toString() ?? _prefs.businessName);
+    await _prefs.setBillarId(settings['billar_id']?.toString() ?? _prefs.billarId);
     await _prefs.setTableCount(tableCount);
-    await _prefs.setHourlyRate(
-      (settings['hourly_rate'] as num?)?.toDouble() ?? _prefs.hourlyRate,
-    );
+    await _prefs.setHourlyRate((settings['hourly_rate'] as num?)?.toDouble() ?? _prefs.hourlyRate);
     await _prefs.setAllowNegativeStockSales(
-      settings['allow_negative_stock_sales'] as bool? ??
-          _prefs.allowNegativeStockSales,
+      settings['allow_negative_stock_sales'] as bool? ?? _prefs.allowNegativeStockSales,
     );
     await _prefs.setLogoUrl(logoUrl);
     await _prefs.setBusinessAddress(
@@ -187,15 +128,9 @@ class _HomePageState extends State<HomePage> {
     await _prefs.setBusinessZipCode(
       settings['business_zip_code']?.toString() ?? _prefs.businessZipCode,
     );
-    await _prefs.setBusinessCity(
-      settings['business_city']?.toString() ?? _prefs.businessCity,
-    );
-    await _prefs.setBusinessState(
-      settings['business_state']?.toString() ?? _prefs.businessState,
-    );
-    await _prefs.setBusinessPhone(
-      settings['business_phone']?.toString() ?? _prefs.businessPhone,
-    );
+    await _prefs.setBusinessCity(settings['business_city']?.toString() ?? _prefs.businessCity);
+    await _prefs.setBusinessState(settings['business_state']?.toString() ?? _prefs.businessState);
+    await _prefs.setBusinessPhone(settings['business_phone']?.toString() ?? _prefs.businessPhone);
     await _prefs.setBusinessWhatsapp(
       settings['business_whatsapp']?.toString() ?? _prefs.businessWhatsapp,
     );
@@ -219,15 +154,11 @@ class _HomePageState extends State<HomePage> {
         final decoded = jsonDecode(socials);
         if (decoded is Map) {
           await _prefs.setSocialNetworks(
-            decoded.map(
-              (key, value) => MapEntry(key.toString(), value.toString()),
-            ),
+            decoded.map((key, value) => MapEntry(key.toString(), value.toString())),
           );
         }
       } on FormatException catch (e) {
-        debugPrint(
-          '[HomePage] social_networks inválido en configuración remota: $e',
-        );
+        debugPrint('[HomePage] social_networks inválido en configuración remota: $e');
       }
     }
 
@@ -248,27 +179,27 @@ class _HomePageState extends State<HomePage> {
     if (mounted && _modules[index].route == AppRoutes.config) setState(() {});
   }
 
-  List<_Module> get _filteredModules {
+  List<HomeModule> get _filteredModules {
     final query = _searchCtrl.text.trim().toLowerCase();
     return _modules.where((m) {
-      final matchesCategory =
-          _selectedCategory == 'Todos' || m.category == _selectedCategory;
+      final matchesCategory = _selectedCategory == 'Todos' || m.category == _selectedCategory;
       final matchesSearch =
-          query.isEmpty ||
-          m.label.replaceAll('\n', ' ').toLowerCase().contains(query);
+          query.isEmpty || m.label.replaceAll('\n', ' ').toLowerCase().contains(query);
       return matchesCategory && matchesSearch;
     }).toList();
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_hasRetiredScope) {
+      return const SizedBox.shrink();
+    }
     final theme = Theme.of(context);
     final primary = theme.colorScheme.primary;
     final size = MediaQuery.of(context).size;
     final isDesktop = size.width > 900;
 
-    final categories =
-        ['Todos'] + _modules.map((m) => m.category).toSet().toList();
+    final categories = ['Todos'] + _modules.map((m) => m.category).toSet().toList();
 
     return HomeLayout(
       isDesktop: isDesktop,
@@ -300,11 +231,7 @@ class _HomePageState extends State<HomePage> {
               const SizedBox(height: 6),
               Text(
                 'BAUMAR POS',
-                style: TextStyle(
-                  color: primary,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 12,
-                ),
+                style: TextStyle(color: primary, fontWeight: FontWeight.bold, fontSize: 12),
               ),
             ],
           ],
@@ -322,8 +249,7 @@ class _HomePageState extends State<HomePage> {
               isDesktop: isDesktop,
               searchController: _searchCtrl,
               isSearching: _isSearching,
-              onSearchToggle:
-                  () => setState(() => _isSearching = !_isSearching),
+              onSearchToggle: () => setState(() => _isSearching = !_isSearching),
               onSearchChanged: (_) => setState(() {}),
               onSearchClear:
                   () => setState(() {
@@ -331,12 +257,16 @@ class _HomePageState extends State<HomePage> {
                     _isSearching = false;
                   }),
             ),
-            const Divider(
-              color: Colors.white10,
-              thickness: 1,
-              indent: 20,
-              endIndent: 20,
-            ),
+            const Divider(color: Colors.white10, thickness: 1, indent: 20, endIndent: 20),
+            if (_stockConflictCount > 0)
+              ListTile(
+                leading: const Icon(Icons.warning_amber_rounded, color: Colors.orange),
+                title: Text('$_stockConflictCount productos requieren revisión de inventario'),
+                trailing: TextButton(
+                  onPressed: () => Navigator.pushNamed(context, AppRoutes.inventory),
+                  child: const Text('Revisar'),
+                ),
+              ),
             if (!_isSearching) ...[
               SizedBox(
                 height: 40,
@@ -351,10 +281,7 @@ class _HomePageState extends State<HomePage> {
                       child: FilterChip(
                         label: Text(categories[i]),
                         selected: sel,
-                        onSelected:
-                            (_) => setState(
-                              () => _selectedCategory = categories[i],
-                            ),
+                        onSelected: (_) => setState(() => _selectedCategory = categories[i]),
                         selectedColor: primary.withValues(alpha: 0.2),
                         checkmarkColor: primary,
                         side: BorderSide(color: sel ? primary : Colors.white12),
@@ -396,13 +323,4 @@ class _HomePageState extends State<HomePage> {
       ),
     );
   }
-}
-
-class _Module {
-  final String label;
-  final IconData icon;
-  final Color color;
-  final String route;
-  final String category;
-  const _Module(this.label, this.icon, this.color, this.route, this.category);
 }

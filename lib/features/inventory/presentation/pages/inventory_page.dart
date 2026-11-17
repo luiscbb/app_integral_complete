@@ -17,6 +17,7 @@ import '../../../../core/storage/preferences_service.dart';
 import '../../data/repositories/product_repository.dart';
 import '../../domain/entities/product_entity.dart';
 import '../widgets/product_sale_card.dart';
+import '../widgets/stock_conflict_dialog.dart';
 import '../../../sales/presentation/pages/create_promo_page.dart';
 import '../../../sales/data/repositories/sales_repository.dart';
 import '../../../purchases/data/repositories/purchases_repository.dart';
@@ -36,6 +37,7 @@ class _InventoryPageState extends State<InventoryPage> {
   final _searchCtrl = TextEditingController();
   List<ProductEntity> _products = [];
   List<ProductEntity> _filtered = [];
+  List<ProductEntity> _stockConflicts = [];
   List<String> _categories = [];
   String? _selectedCategory;
   bool _isLoading = true;
@@ -52,6 +54,8 @@ class _InventoryPageState extends State<InventoryPage> {
   void initState() {
     super.initState();
     _refresh();
+    ProductRepository.conflictChanges.addListener(_loadStockConflicts);
+    _loadStockConflicts();
     _searchCtrl.addListener(_filter);
     _productChangesSubscription = ProductRealtimeService.instance.changes
         .listen((_) {
@@ -67,10 +71,70 @@ class _InventoryPageState extends State<InventoryPage> {
   @override
   void dispose() {
     _searchCtrl.dispose();
+    ProductRepository.conflictChanges.removeListener(_loadStockConflicts);
     _productRefreshDebounce?.cancel();
     _productChangesSubscription?.cancel();
     _tablesChannel?.unsubscribe();
     super.dispose();
+  }
+
+  Future<void> _loadStockConflicts() async {
+    try {
+      final conflicts = await _repo.getStockConflicts();
+      if (mounted) setState(() => _stockConflicts = conflicts);
+    } catch (e) {
+      debugPrint('[InventoryPage] Error consultando conflictos de inventario: $e');
+    }
+  }
+
+  Future<void> _reviewStockConflicts() async {
+    final selected = await showDialog<ProductEntity>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Inventario pendiente de revisión'),
+        content: SizedBox(
+          width: 400,
+          child: ListView(
+            shrinkWrap: true,
+            children: _stockConflicts.map((product) => ListTile(
+              title: Text(product.name),
+              subtitle: Text('Existencia local: ${product.stock}'),
+              onTap: () => Navigator.pop(context, product),
+            )).toList(),
+          ),
+        ),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cerrar'))],
+      ),
+    );
+    if (selected?.id == null || !mounted) return;
+    try {
+      final snapshot = await _repo.getStockConflictSnapshot(selected!.id!);
+      if (!mounted) return;
+      final result = await showDialog<double>(
+        context: context,
+        builder: (_) => StockConflictDialog(
+          productName: snapshot.product.name,
+          localStock: snapshot.product.stock,
+          remoteStock: snapshot.remoteStock,
+        ),
+      );
+      if (result == null || !mounted) return;
+      await _repo.resolveStockConflict(snapshot, result);
+      if (!mounted) return;
+      await _loadStockConflicts();
+      await _refresh();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Existencia revisada. Los demás cambios pendientes se sincronizarán.')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudo resolver el conflicto: $e')),
+        );
+      }
+    }
   }
 
   void _filter() {
@@ -374,8 +438,17 @@ class _InventoryPageState extends State<InventoryPage> {
           IconButton(icon: const Icon(Icons.refresh), onPressed: _refresh),
         ],
       ),
-      body:
-          _isLoading
+      body: Column(
+        children: [
+          if (_stockConflicts.isNotEmpty)
+            ListTile(
+              leading: const Icon(Icons.warning_amber_rounded, color: Colors.orange),
+              title: Text('${_stockConflicts.length} productos requieren revisión de inventario'),
+              subtitle: const Text('Los cambios pendientes se conservan en este dispositivo.'),
+              trailing: TextButton(onPressed: _reviewStockConflicts, child: const Text('Revisar')),
+            ),
+          Expanded(
+            child: _isLoading
               ? const Center(child: CircularProgressIndicator())
               : _filtered.isEmpty
               ? EmptyState(
@@ -547,6 +620,9 @@ class _InventoryPageState extends State<InventoryPage> {
                   );
                 },
               ),
+          ),
+        ],
+      ),
       floatingActionButton: FloatingActionButton(
         onPressed: () => _showForm(null),
         child: const Icon(Icons.add, color: Colors.white),

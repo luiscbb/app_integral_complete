@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../../../../core/utils/scoped_remote_image.dart';
 import '../../../tournaments/data/tournament_repository.dart';
 import '../../../tournaments/domain/tournament.dart';
 import '../../../tournaments/presentation/pages/tournament_detail_page.dart';
@@ -9,7 +10,12 @@ import '../../domain/entities/player_stats.dart';
 
 class PlayerDetailPage extends StatefulWidget {
   final PlayerEntity player;
-  const PlayerDetailPage({super.key, required this.player});
+  final bool readOnly;
+  const PlayerDetailPage({
+    super.key,
+    required this.player,
+    this.readOnly = false,
+  });
 
   @override
   State<PlayerDetailPage> createState() => _PlayerDetailPageState();
@@ -35,14 +41,25 @@ class _PlayerDetailPageState extends State<PlayerDetailPage> {
         appBar: AppBar(
           title: Text(widget.player.displayName),
           bottom: const TabBar(
-            tabs: [Tab(text: 'ESTADÍSTICAS'), Tab(text: 'HISTORIAL'), Tab(text: 'TORNEOS')],
+            tabs: [
+              Tab(text: 'ESTADÍSTICAS'),
+              Tab(text: 'HISTORIAL'),
+              Tab(text: 'TORNEOS'),
+            ],
           ),
         ),
         body: TabBarView(
           children: [
-            _StatsTab(player: widget.player, tournamentHistory: _tournamentHistory),
+            _StatsTab(
+              player: widget.player,
+              tournamentHistory: _tournamentHistory,
+            ),
             _HistoryTab(player: widget.player),
-            _TournamentsTab(player: widget.player, tournamentHistory: _tournamentHistory),
+            _TournamentsTab(
+              player: widget.player,
+              tournamentHistory: _tournamentHistory,
+              readOnly: widget.readOnly,
+            ),
           ],
         ),
       ),
@@ -64,24 +81,48 @@ class _StatsTab extends StatelessWidget {
       future: tournamentHistory,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
-          return Center(child: Text('No se pudo cargar el historial: ${snapshot.error}'));
+          return Center(
+            child: Text('No se pudo cargar el historial: ${snapshot.error}'),
+          );
         }
         final history = snapshot.data ?? const <TournamentPlayerHistory>[];
         final tournamentGamesPlayed = history.fold(
           0,
           (total, item) => total + item.gamesWon + item.gamesLost,
         );
-        final tournamentWins = history.fold(0, (total, item) => total + item.gamesWon);
-        final tournamentLosses = history.fold(0, (total, item) => total + item.gamesLost);
-        final tournamentGoldenBreaks = history.fold(0, (total, item) => total + item.goldenBreaks);
-        final tournamentBreakAndRuns = history.fold(0, (total, item) => total + item.breakAndRuns);
-        final tournamentNormalWins = history.fold(0, (total, item) => total + item.normalWins);
-        final tournamentCombinations = history.fold(0, (total, item) => total + item.combinations);
-        final tournamentWinsByFouls = history.fold(0, (total, item) => total + item.winsByFouls);
+        final tournamentWins = history.fold(
+          0,
+          (total, item) => total + item.gamesWon,
+        );
+        final tournamentLosses = history.fold(
+          0,
+          (total, item) => total + item.gamesLost,
+        );
+        final tournamentGoldenBreaks = history.fold(
+          0,
+          (total, item) => total + item.goldenBreaks,
+        );
+        final tournamentBreakAndRuns = history.fold(
+          0,
+          (total, item) => total + item.breakAndRuns,
+        );
+        final tournamentNormalWins = history.fold(
+          0,
+          (total, item) => total + item.normalWins,
+        );
+        final tournamentCombinations = history.fold(
+          0,
+          (total, item) => total + item.combinations,
+        );
+        final tournamentWinsByFouls = history.fold(
+          0,
+          (total, item) => total + item.winsByFouls,
+        );
         final totalWins = stats.wins + tournamentWins;
         final totalLosses = stats.losses + tournamentLosses;
         final totalMatches = stats.totalMatches + tournamentGamesPlayed;
-        final winRate = totalMatches == 0 ? 0.0 : (totalWins / totalMatches) * 100;
+        final winRate =
+            totalMatches == 0 ? 0.0 : (totalWins / totalMatches) * 100;
         return SingleChildScrollView(
           padding: const EdgeInsets.all(20),
           child: Column(
@@ -97,9 +138,24 @@ class _StatsTab extends StatelessWidget {
                 crossAxisSpacing: 12,
                 childAspectRatio: 1.3,
                 children: [
-                  _StatCard('Partidas', '$totalMatches', Icons.sports_bar, Colors.white70),
-                  _StatCard('Victorias', '$totalWins', Icons.emoji_events, Colors.greenAccent),
-                  _StatCard('Derrotas', '$totalLosses', Icons.close, Colors.redAccent),
+                  _StatCard(
+                    'Partidas',
+                    '$totalMatches',
+                    Icons.sports_bar,
+                    Colors.white70,
+                  ),
+                  _StatCard(
+                    'Victorias',
+                    '$totalWins',
+                    Icons.emoji_events,
+                    Colors.greenAccent,
+                  ),
+                  _StatCard(
+                    'Derrotas',
+                    '$totalLosses',
+                    Icons.close,
+                    Colors.redAccent,
+                  ),
                   _StatCard(
                     'Empates',
                     '${stats.draws}',
@@ -154,7 +210,9 @@ class _StatsTab extends StatelessWidget {
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(20),
                         color: cs.surface,
-                        border: Border.all(color: Colors.amber.withValues(alpha: 0.35)),
+                        border: Border.all(
+                          color: Colors.amber.withValues(alpha: 0.35),
+                        ),
                       ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -180,7 +238,10 @@ class _StatsTab extends StatelessWidget {
                           ),
                           Text(
                             '$totalWins ganadas de $totalMatches partidas',
-                            style: const TextStyle(color: Colors.white54, fontSize: 11),
+                            style: const TextStyle(
+                              color: Colors.white54,
+                              fontSize: 11,
+                            ),
                             maxLines: 2,
                           ),
                         ],
@@ -208,17 +269,18 @@ class _PlayerStatsIdentity extends StatelessWidget {
   Widget build(BuildContext context) {
     final avatarPath = player.avatar;
     final uri = Uri.tryParse(avatarPath);
-    final isWebUrl = uri != null && (uri.scheme == 'http' || uri.scheme == 'https');
+    final isWebUrl =
+        uri != null && (uri.scheme == 'http' || uri.scheme == 'https');
     final image =
         avatarPath.isEmpty
             ? null
             : isWebUrl
-            ? Image.network(
-              avatarPath,
+            ? ScopedRemoteImage(
+              url: avatarPath,
               width: 54,
               height: 54,
               fit: BoxFit.cover,
-              errorBuilder: (context, error, stackTrace) => _fallbackAvatar(),
+              error: _fallbackAvatar(),
             )
             : Image.file(
               File(avatarPath),
@@ -258,7 +320,9 @@ class _PlayerStatsIdentity extends StatelessWidget {
               children: [
                 for (var index = 0; index < 6; index++)
                   Icon(
-                    index < player.level ? Icons.star_rounded : Icons.star_border_rounded,
+                    index < player.level
+                        ? Icons.star_rounded
+                        : Icons.star_border_rounded,
                     color: index < player.level ? Colors.amber : Colors.white24,
                     size: 13,
                   ),
@@ -277,7 +341,11 @@ class _PlayerStatsIdentity extends StatelessWidget {
     color: Colors.white10,
     child: Text(
       player.initials,
-      style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
+      style: const TextStyle(
+        color: Colors.white,
+        fontSize: 20,
+        fontWeight: FontWeight.bold,
+      ),
     ),
   );
 }
@@ -293,7 +361,10 @@ class _HistoryTab extends StatelessWidget {
     }
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
-      child: Text('Historial de partidas próximamente', style: TextStyle(color: Colors.white38)),
+      child: Text(
+        'Historial de partidas próximamente',
+        style: TextStyle(color: Colors.white38),
+      ),
     );
   }
 }
@@ -301,7 +372,12 @@ class _HistoryTab extends StatelessWidget {
 class _TournamentsTab extends StatelessWidget {
   final PlayerEntity player;
   final Future<List<TournamentPlayerHistory>> tournamentHistory;
-  const _TournamentsTab({required this.player, required this.tournamentHistory});
+  final bool readOnly;
+  const _TournamentsTab({
+    required this.player,
+    required this.tournamentHistory,
+    required this.readOnly,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -309,7 +385,9 @@ class _TournamentsTab extends StatelessWidget {
       future: tournamentHistory,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
-          return Center(child: Text('No se pudo cargar el historial: ${snapshot.error}'));
+          return Center(
+            child: Text('No se pudo cargar el historial: ${snapshot.error}'),
+          );
         }
         if (!snapshot.hasData) {
           return const Center(child: CircularProgressIndicator());
@@ -325,12 +403,18 @@ class _TournamentsTab extends StatelessWidget {
               Card(
                 child: InkWell(
                   borderRadius: BorderRadius.circular(12),
-                  onTap: () => Navigator.push<void>(
-                        context,
-                        MaterialPageRoute(
-                          builder: (_) => TournamentDetailPage(tournament: item.tournament),
-                        ),
-                      ),
+                  onTap:
+                      readOnly
+                          ? null
+                          : () => Navigator.push<void>(
+                            context,
+                            MaterialPageRoute(
+                              builder:
+                                  (_) => TournamentDetailPage(
+                                    tournament: item.tournament,
+                                  ),
+                            ),
+                          ),
                   child: Padding(
                     padding: const EdgeInsets.all(14),
                     child: Column(
@@ -338,10 +422,7 @@ class _TournamentsTab extends StatelessWidget {
                       children: [
                         Row(
                           children: [
-                            const Icon(
-                              Icons.emoji_events,
-                              color: Colors.amber,
-                            ),
+                            const Icon(Icons.emoji_events, color: Colors.amber),
                             const SizedBox(width: 10),
                             Expanded(
                               child: Text(
@@ -425,9 +506,16 @@ class _StatCard extends StatelessWidget {
             children: [
               Text(
                 value,
-                style: TextStyle(color: color, fontSize: 22, fontWeight: FontWeight.bold),
+                style: TextStyle(
+                  color: color,
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
-              Text(label, style: TextStyle(color: Colors.white54, fontSize: 11)),
+              Text(
+                label,
+                style: TextStyle(color: Colors.white54, fontSize: 11),
+              ),
             ],
           ),
         ],
@@ -444,7 +532,11 @@ class _SectionTitle extends StatelessWidget {
   Widget build(BuildContext context) {
     return Text(
       text,
-      style: const TextStyle(color: Colors.white38, fontSize: 12, letterSpacing: 2),
+      style: const TextStyle(
+        color: Colors.white38,
+        fontSize: 12,
+        letterSpacing: 2,
+      ),
     );
   }
 }
@@ -462,7 +554,13 @@ class _EmptyTab extends StatelessWidget {
         children: [
           Icon(icon, size: 56, color: Colors.white.withValues(alpha: 0.06)),
           const SizedBox(height: 12),
-          Text(text, style: TextStyle(color: Colors.white.withValues(alpha: 0.2), fontSize: 14)),
+          Text(
+            text,
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.2),
+              fontSize: 14,
+            ),
+          ),
         ],
       ),
     );

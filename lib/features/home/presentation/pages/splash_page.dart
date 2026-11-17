@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -8,12 +10,15 @@ import '../../../../core/routes/app_routes.dart';
 import '../../../../core/services/config_remote_repository.dart';
 import '../../../../core/services/sync_service.dart';
 import '../../../../core/storage/preferences_service.dart';
+import '../../../../core/storage/account_storage.dart';
 import '../../../../core/theme/theme_provider.dart';
 import '../../../auth/data/auth_access_repository.dart';
 import '../../../../features/sales/data/repositories/sales_repository.dart';
 
 class SplashPage extends StatefulWidget {
-  const SplashPage({super.key});
+  const SplashPage({super.key, this.enableStaffForIntegration = false});
+
+  final bool enableStaffForIntegration;
 
   @override
   State<SplashPage> createState() => _SplashPageState();
@@ -24,6 +29,7 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
   late Animation<double> _scaleAnimation;
   late Animation<double> _rotationAnimation;
   bool _isOffline = false;
+  bool _canRetry = false;
   String _statusMessage = 'INICIANDO...';
 
   ImageProvider? _logoImage;
@@ -57,21 +63,21 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
     debugPrint('[SplashPage] Usando logo de app principal en splash');
   }
 
-  void _setOfflineStatus(String message) {
-    if (!mounted) return;
-    setState(() {
-      _isOffline = true;
-      _statusMessage = message;
-    });
-  }
-
   Future<void> _checkSessionAndNavigate() async {
+    if (mounted) {
+      setState(() {
+        _isOffline = false;
+        _canRetry = false;
+      });
+    }
     final prefs = PreferencesService();
+    final initialSession = Supabase.instance.client.auth.currentSession;
     final start = DateTime.now();
     debugPrint('[SplashPage] _checkSessionAndNavigate start $start');
 
     try {
-      final session = Supabase.instance.client.auth.currentSession;
+      await prefs.ensureLegacyPreferencesSnapshot();
+      final session = initialSession;
       debugPrint('[SplashPage] session=${session != null}');
 
       if (session == null) {
@@ -82,8 +88,28 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
         return;
       }
 
-      final account = await AuthAccessRepository().resolveCurrentAccount();
-      if (account.kind == AccountKind.player || account.kind == AccountKind.manager) {
+      void requireInitialSession() {
+        final current = Supabase.instance.client.auth.currentSession;
+        if (current?.user.id != session.user.id ||
+            current?.accessToken != session.accessToken) {
+          throw StateError('La sesión cambió durante el inicio.');
+        }
+      }
+
+      final account = await AuthAccessRepository(
+        enableStaffForIntegration: widget.enableStaffForIntegration,
+      ).resolveCurrentAccount().timeout(
+        const Duration(seconds: 8),
+      );
+      requireInitialSession();
+      if (account.kind == AccountKind.player || account.kind == AccountKind.manager ||
+          account.kind == AccountKind.staff && widget.enableStaffForIntegration) {
+        await AccountStorage.instance.activate(
+          billarId: account.billarId,
+          migrateLegacyOwner: false,
+        );
+        requireInitialSession();
+        if (mounted) context.read<ThemeProvider>().reloadFromPreferences();
         if (account.billarId.isNotEmpty) {
           await prefs.setBillarId(account.billarId);
         }
@@ -92,67 +118,91 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
                 ? AppRoutes.changeTemporaryPassword
                 : account.kind == AccountKind.player
                 ? AppRoutes.playerPortal
+                : account.kind == AccountKind.staff
+                ? AppRoutes.staffPortal
                 : AppRoutes.managerPortal;
         if (mounted) {
           Navigator.of(context).pushReplacementNamed(route, arguments: account.player);
         }
         return;
       }
-      if (account.kind == AccountKind.unavailable &&
-          (session.user.appMetadata['account_type'] == 'player' ||
-              session.user.appMetadata['account_type'] == 'manager')) {
+      if (account.kind == AccountKind.blocked ||
+          account.kind == AccountKind.staff ||
+          (account.kind == AccountKind.unavailable &&
+              requiresManagedAccountAccess(session.user))) {
         await Supabase.instance.client.auth.signOut();
         if (mounted) {
           Navigator.of(context).pushReplacementNamed(AppRoutes.login);
         }
         return;
       }
-      if (account.billarId.isNotEmpty) {
-        await prefs.setBillarId(account.billarId);
-      }
-
       final remote = ConfigRemoteRepository();
       debugPrint('[SplashPage] fetchSettings start');
       final remoteSettings = await remote.fetchSettings().timeout(
         const Duration(seconds: 8),
-        onTimeout: () {
-          _setOfflineStatus('SIN CONEXIÓN - MODO LOCAL');
-          return null;
-        },
       );
+      requireInitialSession();
       debugPrint('[SplashPage] fetchSettings end, tieneSettings=${remoteSettings != null}');
 
-      if (remoteSettings != null) {
-        await _applyRemoteSettings(prefs, remoteSettings);
-
-        if (mounted) {
-          Navigator.of(context).pushReplacementNamed(AppRoutes.home);
-          SyncService().schedulePendingSync();
+      if (account.kind != AccountKind.owner) {
+        if (remoteSettings != null) {
+          throw StateError('No se pudo verificar al administrador del negocio.');
         }
+        if (mounted) Navigator.of(context).pushReplacementNamed(AppRoutes.initialSetup);
         return;
       }
-
-      // No hay configuración remota. Si localmente tampoco se configuró, ir al setup.
-      if (mounted) {
-        if (prefs.isFirstRun) {
-          Navigator.of(context).pushReplacementNamed(AppRoutes.initialSetup);
-        } else {
-          Navigator.of(context).pushReplacementNamed(AppRoutes.home);
-          SyncService().schedulePendingSync();
-        }
+      if (remoteSettings == null || account.mustChangePassword ||
+          remoteSettings['billar_id'] != account.billarId) {
+        throw StateError('No se pudo verificar la configuración del administrador.');
       }
+      await AccountStorage.instance.activate(
+        billarId: account.billarId,
+        migrateLegacyOwner: true,
+      );
+      requireInitialSession();
+      if (mounted) context.read<ThemeProvider>().reloadFromPreferences();
+      await _applyRemoteSettings(prefs, remoteSettings);
+      if (mounted) {
+        Navigator.of(context).pushReplacementNamed(AppRoutes.home);
+        SyncService().schedulePendingSync();
+      }
+      return;
     } catch (e, st) {
       debugPrint('[Splash] Error durante navegación inicial: $e');
       debugPrint('[Splash] Stack: $st');
-      _setOfflineStatus('SIN CONEXIÓN - MODO LOCAL');
-      // En cualquier error de red/auth: descartar sesión y forzar login.
-      try {
-        await Supabase.instance.client.auth.signOut();
-      } catch (_) {
-        // Ignorar error al cerrar sesión.
+      final current = Supabase.instance.client.auth.currentSession;
+      if (current?.user.id != initialSession?.user.id ||
+          current?.accessToken != initialSession?.accessToken) {
+        if (mounted) unawaited(_checkSessionAndNavigate());
+        return;
+      }
+      if ((e is SocketException || e is http.ClientException || e is TimeoutException) &&
+          initialSession != null && !AccountStorage.instance.requiresRestart) {
+        final billar = AccountStorage.instance.verifiedOwnerBillar(initialSession.user.id);
+        if (billar != null) {
+          try {
+            await AccountStorage.instance.activate(
+              billarId: billar, migrateLegacyOwner: false, offline: true,
+            );
+            if (mounted) {
+              context.read<ThemeProvider>().reloadFromPreferences();
+              Navigator.of(context).pushReplacementNamed(AppRoutes.home);
+              SyncService().schedulePendingSync();
+            }
+            return;
+          } catch (offlineError, offlineStack) {
+            debugPrint('[Splash] No se pudo abrir la cuenta sin conexión: $offlineError\n$offlineStack');
+          }
+        }
       }
       if (mounted) {
-        Navigator.of(context).pushReplacementNamed(AppRoutes.login);
+        setState(() {
+          _isOffline = true;
+          _statusMessage = AccountStorage.instance.requiresRestart
+              ? 'CIERRA Y VUELVE A ABRIR LA APLICACIÓN'
+              : 'NO SE PUDO VERIFICAR LA CUENTA';
+          _canRetry = !AccountStorage.instance.requiresRestart;
+        });
       }
     }
     debugPrint(
@@ -310,13 +360,19 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
                   ],
                 ),
               ),
-            SizedBox(
-              width: 40,
-              child: CircularProgressIndicator(
-                color: _isOffline ? const Color(0xFFFF9800) : primary,
-                backgroundColor: Colors.white10,
+            if (_canRetry)
+              TextButton(
+                onPressed: () => unawaited(_checkSessionAndNavigate()),
+                child: const Text('REINTENTAR'),
+              )
+            else if (!_isOffline)
+              SizedBox(
+                width: 40,
+                child: CircularProgressIndicator(
+                  color: _isOffline ? const Color(0xFFFF9800) : primary,
+                  backgroundColor: Colors.white10,
+                ),
               ),
-            ),
           ],
         ),
       ),

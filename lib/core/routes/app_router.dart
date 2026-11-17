@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../features/home/presentation/pages/home_page.dart';
 import '../../features/home/presentation/pages/splash_page.dart';
 import '../../features/auth/presentation/pages/login_page.dart';
 import '../../features/quick_sale/presentation/pages/quick_sale_page.dart';
+import '../../features/auth/presentation/pages/staff_route_gate.dart';
+import '../../features/auth/domain/staff_access.dart';
 import '../../features/sales/presentation/pages/billiard_tables_page.dart';
 import '../../features/sales/presentation/pages/create_promo_page.dart';
 import '../../features/inventory/presentation/pages/inventory_page.dart';
@@ -29,11 +32,34 @@ import 'app_routes.dart';
 
 class AppRouter {
   static Route<dynamic> onGenerateRoute(RouteSettings settings) {
+    return generateRoute(settings, enableStaffForIntegration: staffPilotEnabled);
+  }
+
+  static Route<dynamic> generateRoute(
+    RouteSettings settings, {
+    bool enableStaffForIntegration = false,
+  }) {
+    final staff = Supabase.instance.client.auth.currentUser
+        ?.appMetadata['account_type'] == 'staff';
+    if (settings.name == AppRoutes.staffPortal ||
+        (staff && settings.name != AppRoutes.login && settings.name != AppRoutes.splash)) {
+      return MaterialPageRoute(
+        settings: settings,
+        builder: (_) => StaffRouteGate(
+          routeName: settings.name,
+          enableForIntegration: enableStaffForIntegration,
+        ),
+      );
+    }
     switch (settings.name) {
       case AppRoutes.splash:
-        return MaterialPageRoute(builder: (_) => const SplashPage());
+        return MaterialPageRoute(builder: (_) => SplashPage(
+          enableStaffForIntegration: enableStaffForIntegration,
+        ));
       case AppRoutes.login:
-        return MaterialPageRoute(builder: (_) => const LoginPage());
+        return MaterialPageRoute(builder: (_) => LoginPage(
+          enableStaffForIntegration: enableStaffForIntegration,
+        ));
       case AppRoutes.initialSetup:
         return MaterialPageRoute(builder: (_) => const InitialSetupPage());
       case AppRoutes.home:

@@ -26,5 +26,6 @@ class AppRoutes {
   static const personalStats = '/personal_stats';
   static const playerPortal = '/player_portal';
   static const managerPortal = '/manager_portal';
+  static const staffPortal = '/staff_portal';
   static const changeTemporaryPassword = '/change_temporary_password';
 }

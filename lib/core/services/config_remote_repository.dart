@@ -2,10 +2,46 @@ import 'dart:developer';
 import 'dart:convert';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../storage/preferences_service.dart';
+import 'sync_session.dart';
+
+typedef BusinessBranding = ({
+  String businessName,
+  String logoUrl,
+  int? primaryColor,
+});
+
 class ConfigRemoteRepository {
   final _client = Supabase.instance.client;
 
   static const _table = 'billar_settings';
+
+  Future<BusinessBranding> fetchStaffBranding() async {
+    final guard = SyncSessionGuard(_client, PreferencesService());
+    final session = guard.capture();
+    final row = await _client
+        .rpc('staff_business_profile', params: {
+          'requested_billar_id': session.billarId,
+        })
+        .setHeader('Authorization', 'Bearer ${session.token}')
+        .single();
+    guard.require(session);
+    final name = row['business_name'];
+    final logo = row['logo_url'];
+    final color = row['primary_color'];
+    if (row['billar_id'] != session.billarId ||
+        name is! String ||
+        name.trim().isEmpty ||
+        (logo != null && logo is! String) ||
+        (color != null && color is! int)) {
+      throw const FormatException('La identidad del negocio no es válida.');
+    }
+    return (
+      businessName: name.trim(),
+      logoUrl: normalizeLogoUrl(logo as String?),
+      primaryColor: color is int ? 0xFF000000 | (color & 0x00FFFFFF) : null,
+    );
+  }
 
   static String normalizeLogoUrl(String? value) {
     final trimmed = value?.trim() ?? '';
@@ -18,17 +54,26 @@ class ConfigRemoteRepository {
   }
 
   Future<Map<String, dynamic>?> fetchSettings() async {
-    try {
-      final user = _client.auth.currentUser;
-      if (user == null) return null;
+    final session = _client.auth.currentSession;
+    if (session == null) return null;
+    void requireSameSession() {
+      final current = _client.auth.currentSession;
+      if (current?.user.id != session.user.id ||
+          current?.accessToken != session.accessToken) {
+        throw StateError('La sesión cambió durante la descarga de configuración.');
+      }
+    }
 
+    try {
       final res =
           await _client
               .from(_table)
+              .setHeader('Authorization', 'Bearer ${session.accessToken}')
               .select()
-              .eq('user_id', user.id)
+              .eq('user_id', session.user.id)
               .maybeSingle();
 
+      requireSameSession();
       if (res == null) return null;
 
       // Restaurar el canal alpha del color: Supabase guarda solo RGB (sin alpha)
@@ -40,8 +85,9 @@ class ConfigRemoteRepository {
       res['logo_url'] = normalizeLogoUrl(res['logo_url']?.toString());
       return res;
     } catch (e, st) {
+      requireSameSession();
       log('[ConfigRemoteRepository] fetchSettings error: $e', stackTrace: st);
-      return null;
+      rethrow;
     }
   }
 
@@ -69,10 +115,17 @@ class ConfigRemoteRepository {
     String? logoUrl,
   }) async {
     try {
-      final user = _client.auth.currentUser;
-      if (user == null) return null;
+      final session = _client.auth.currentSession;
+      if (session == null) return null;
+      final user = session.user;
+      void requireSameSession() {
+        if (!identical(_client.auth.currentSession, session)) {
+          throw StateError('La sesión cambió durante el guardado de configuración.');
+        }
+      }
 
       final existing = await fetchSettings();
+      requireSameSession();
 
       String value(String? v) => (v != null && v.isNotEmpty) ? v : '';
 
@@ -111,15 +164,20 @@ class ConfigRemoteRepository {
         final res =
             await _client
                 .from(_table)
+                .setHeader('Authorization', 'Bearer ${session.accessToken}')
                 .update(payload)
                 .eq('user_id', user.id)
                 .select()
                 .single();
+        requireSameSession();
         return res;
       } else {
         // Insertar
         final res =
-            await _client.from(_table).insert(payload).select().single();
+            await _client.from(_table)
+                .setHeader('Authorization', 'Bearer ${session.accessToken}')
+                .insert(payload).select().single();
+        requireSameSession();
         return res;
       }
     } catch (e, st) {

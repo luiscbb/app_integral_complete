@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../domain/entities/player_stats.dart';
 import '../../../../core/theme/theme_provider.dart';
+import '../../../../core/utils/scoped_remote_image.dart';
 
 class PlayerCard extends StatelessWidget {
   final PlayerEntity player;
@@ -219,15 +220,12 @@ class _Avatar extends StatelessWidget {
 
       if (isWebUrl) {
         return ClipOval(
-          child: Image.network(
-            avatarPath,
+          child: ScopedRemoteImage(
+            url: avatarPath,
             width: 48,
             height: 48,
-            cacheWidth: 128,
-            cacheHeight: 128,
             fit: BoxFit.cover,
-            errorBuilder:
-                (context, error, stackTrace) => _FallbackAvatar(player: player),
+            error: _FallbackAvatar(player: player),
           ),
         );
       }

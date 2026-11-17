@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -6,12 +7,18 @@ import 'package:sqflite/sqflite.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../features/players/domain/entities/player_stats.dart';
+import '../../features/purchases/domain/entities/provider_entity.dart';
 import '../../features/inventory/data/repositories/product_repository.dart';
 import '../../features/quick_sale/data/quick_sale_repository_impl.dart';
 import '../database/database_helper.dart';
+import '../database/purchase_scope.dart';
 import 'inventory_movement_sync_service.dart';
+import 'owner_transaction_outbox.dart';
 import '../storage/preferences_service.dart';
+import '../utils/uuid_v4.dart';
 import 'app_services.dart';
+import 'business_image_paths.dart';
+import 'sync_session.dart';
 
 /// Servicio central de sincronización con Supabase.
 /// Gestiona cola de reintentos, estados sync y merge bidireccional.
@@ -27,6 +34,7 @@ class SyncService {
   StreamSubscription<bool>? _connectivitySubscription;
   bool _isSyncing = false;
   bool _syncRequestedWhileRunning = false;
+  final Map<int, Future<bool>> _providerOperations = {};
 
   SyncService._internal() {
     _connectivitySubscription = AppServices
@@ -40,6 +48,7 @@ class SyncService {
   /// Disparador para sincronizar ventas pendientes.
   void schedulePendingSync() {
     _retryTimer?.cancel();
+    if (!_db.isAccountDatabaseAvailable) return;
     _retryTimer = Timer(const Duration(seconds: 3), _syncAllPending);
   }
 
@@ -63,7 +72,7 @@ class SyncService {
     final db = await _db.database;
     await db.update(
       'sales_history',
-      {'synced': 0, 'cloud_id': null},
+      {'synced': 0},
       where: 'id = ?',
       whereArgs: [localSaleId],
     );
@@ -75,81 +84,44 @@ class SyncService {
   Future<String?> pushSaleToCloud({
     required int localSaleId,
     required String billarId,
-    required double total,
-    required double paid,
-    required String date,
-    required String type,
-    required String paymentMethod,
-    required List<Map<String, dynamic>> items,
-    String? customerKey,
-    String? existingCloudId,
-    bool cancelled = false,
+    required String accessToken,
   }) async {
     try {
       debugPrint('[SyncService] pushSaleToCloud localId=$localSaleId');
 
-      // Verificar conectividad
+      final session = _syncSession();
+      if (session.billarId != billarId || session.token != accessToken) {
+        throw StateError('La venta no corresponde a la sesión actual.');
+      }
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) {
         debugPrint('[SyncService] Sin red, se pospone sync');
         return null;
       }
-
-      String? cloudId = existingCloudId;
-
-      // Upsert cabecera
-      final saleMap = {
-        'billar_id': billarId,
-        'total': total,
-        'paid': paid,
-        'date': date,
-        'type': type,
-        'payment_method': paymentMethod,
-        // Anulación lógica (Etapa 3): la venta anulada se propaga a la nube.
-        'cancelled': cancelled,
-        if (customerKey != null) 'customer_key': customerKey,
-      };
-
-      if (cloudId != null) {
-        await _sup.from('sales_history').update(saleMap).eq('id', cloudId);
-      } else {
-        final resp = await _sup
-            .from('sales_history')
-            .insert(saleMap)
-            .select('id');
-        cloudId = (resp as List).first['id'].toString();
-      }
-
-      // Sincronizar detalles: eliminar previos y reinsertar
-      if (existingCloudId != null) {
-        await _sup.from('sale_details').delete().eq('sale_id', existingCloudId);
-      }
-
-      for (final item in items) {
-        final detail = {
-          'sale_id': cloudId,
-          'product_name': item['product_name'],
-          'quantity': item['quantity'],
-          'price_at_sale': item['price_at_sale'],
-        };
-        if (item['product_id'] != null) {
-          detail['product_id'] = item['product_id'];
-        }
-        if (item['cost_at_sale'] != null) {
-          detail['cost_at_sale'] = item['cost_at_sale'];
-        }
-        await _sup.from('sale_details').insert(detail);
-      }
-
-      // Marcar local como sync
+      _requireSyncSession(session);
       final db = await _db.database;
-      await db.update(
-        'sales_history',
-        {'synced': 1, 'cloud_id': cloudId},
-        where: 'id = ?',
-        whereArgs: [localSaleId],
+      final outbox = OwnerTransactionOutbox(db, _requireSyncSession);
+      final request = await outbox.prepare(
+        session: session, kind: 'sale', localId: localSaleId,
       );
-
+      _requireSyncSession(session);
+      final response = await _sup.rpc(
+        'sync_owner_sale',
+        params: {
+          'p_request_id': request.requestId,
+          'p_billar_id': billarId,
+          ...request.payload,
+        },
+      ).setHeader('Authorization', 'Bearer $accessToken');
+      if (response is! int || response <= 0) {
+        throw StateError('La respuesta de la venta no es válida.');
+      }
+      final cloudId = response.toString();
+      final unchanged = await outbox.acknowledge(
+        session: session, kind: 'sale', localId: localSaleId,
+        request: request, cloudId: cloudId,
+      );
+      if (!unchanged) schedulePendingSync();
       debugPrint('[SyncService] Venta $localSaleId sync OK cloudId=$cloudId');
       return cloudId;
     } catch (e, st) {
@@ -166,12 +138,15 @@ class SyncService {
   /// Marca una compra local como pendiente de subida.
   Future<void> markPurchasePending(int localPurchaseId) async {
     final db = await _db.database;
-    await db.update(
+    final updated = await db.update(
       'purchases',
-      {'synced': 0, 'cloud_id': null},
-      where: 'id = ?',
-      whereArgs: [localPurchaseId],
+      {'synced': 0},
+      where: 'id = ? AND ${purchaseBusinessScope()}',
+      whereArgs: [localPurchaseId, _prefs.billarId],
     );
+    if (updated != 1) {
+      throw StateError('La compra no pertenece al billar actual o no existe.');
+    }
     schedulePendingSync();
   }
 
@@ -179,72 +154,49 @@ class SyncService {
   Future<String?> pushPurchaseToCloud({
     required int localPurchaseId,
     required String billarId,
-    required int? providerId,
-    required double total,
-    required String date,
-    required String reference,
-    String createdBy = '',
-    String cashSource = 'caja',
-    bool cancelled = false,
-    required List<Map<String, dynamic>> items,
-    String? existingCloudId,
+    required String accessToken,
   }) async {
     try {
       debugPrint('[SyncService] pushPurchaseToCloud localId=$localPurchaseId');
 
+      final session = _syncSession();
+      if (session.billarId != billarId || session.token != accessToken) {
+        throw StateError('La compra no corresponde a la sesión actual.');
+      }
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) {
         debugPrint('[SyncService] Sin red, se pospone sync');
         return null;
       }
-
-      String? cloudId = existingCloudId;
-      final purchaseMap = {
-        'provider_id': providerId,
-        'total': total,
-        'date': date,
-        'reference': reference,
-        'created_by': createdBy,
-        'cash_source': cashSource,
-        'billar_id': billarId,
-        'cancelled': cancelled,
-      };
-
-      if (cloudId != null) {
-        await _sup.from('purchases').update(purchaseMap).eq('id', cloudId);
-      } else {
-        final resp = await _sup
-            .from('purchases')
-            .insert(purchaseMap)
-            .select('id');
-        cloudId = (resp as List).first['id'].toString();
-      }
-
-      if (existingCloudId != null) {
-        await _sup
-            .from('purchase_details')
-            .delete()
-            .eq('purchase_id', existingCloudId);
-      }
-
-      for (final item in items) {
-        await _sup.from('purchase_details').insert({
-          'purchase_id': cloudId,
-          'product_id': item['product_id'],
-          'quantity': item['quantity'],
-          'cost_per_unit': item['cost_per_unit'],
-          'created_by': item['created_by'] ?? createdBy,
-        });
-      }
-
+      _requireSyncSession(session);
       final db = await _db.database;
-      await db.update(
-        'purchases',
-        {'synced': 1, 'cloud_id': cloudId},
-        where: 'id = ?',
-        whereArgs: [localPurchaseId],
+      final outbox = OwnerTransactionOutbox(db, _requireSyncSession);
+      final request = await outbox.prepare(
+        session: session, kind: 'purchase', localId: localPurchaseId,
       );
-
+      _requireSyncSession(session);
+      final header = request.payload['p_purchase'];
+      if (header is! Map<String, dynamic>) {
+        throw StateError('La cabecera de compra pendiente no es válida.');
+      }
+      final response = await _sup.rpc(
+        header.containsKey('payment_condition')
+            ? 'sync_owner_purchase_with_payment' : 'sync_owner_purchase',
+        params: {
+          'p_request_id': request.requestId,
+          'p_billar_id': billarId,
+          ...request.payload,
+        },
+      ).setHeader('Authorization', 'Bearer $accessToken');
+      if (response is! int || response <= 0) {
+        throw StateError('La respuesta de la compra no es válida.');
+      }
+      final cloudId = response.toString();
+      final unchanged = await outbox.acknowledge(
+        session: session, kind: 'purchase', localId: localPurchaseId,
+        request: request, cloudId: cloudId,
+      );
+      if (!unchanged) schedulePendingSync();
       debugPrint(
         '[SyncService] Compra $localPurchaseId sync OK cloudId=$cloudId',
       );
@@ -262,19 +214,29 @@ class SyncService {
 
   Future<String?> pushPlayerToCloud(PlayerEntity player) async {
     try {
+      final guard = SyncSessionGuard(_sup, _prefs);
+      final session = guard.capture();
+      final billarId = session.billarId;
+      if (player.billarId != billarId) {
+        throw StateError('El jugador no pertenece a la sesión o al billar actual.');
+      }
+      void requireSameSession() => guard.require(session);
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) return null;
+      requireSameSession();
 
-      final billarId = _prefs.billarId;
       String? avatarUrl = player.avatar;
 
       if (player.avatar.isNotEmpty && !player.avatar.startsWith('http')) {
         final file = File(player.avatar);
         if (await file.exists()) {
-          final fileName =
-              '${DateTime.now().millisecondsSinceEpoch}_${player.name.trim().replaceAll(' ', '_')}.jpg';
+          requireSameSession();
+          final fileName = businessImagePath(
+            billarId, 'avatars', '${newUuidV4()}.jpg',
+          );
           await _sup.storage
               .from('player_avatars')
+              .setHeader('Authorization', 'Bearer ${session.token}')
               .upload(
                 fileName,
                 file,
@@ -283,6 +245,7 @@ class SyncService {
                   upsert: true,
                 ),
               );
+          requireSameSession();
           avatarUrl = _sup.storage
               .from('player_avatars')
               .getPublicUrl(fileName);
@@ -309,19 +272,24 @@ class SyncService {
         'best_streak': player.stats.bestStreak,
       };
 
+      requireSameSession();
       final response =
           player.cloudId == null
               ? await _sup
                   .from('players')
+                  .setHeader('Authorization', 'Bearer ${session.token}')
                   .upsert(map, onConflict: 'billar_id,client_id')
                   .select('id')
                   .single()
               : await _sup
                   .from('players')
+                  .setHeader('Authorization', 'Bearer ${session.token}')
                   .update(map)
                   .eq('id', player.cloudId!)
+                  .eq('billar_id', billarId)
                   .select('id')
                   .maybeSingle();
+      requireSameSession();
       if (response == null) return null;
       final cloudId = response['id'].toString();
 
@@ -338,91 +306,231 @@ class SyncService {
   // PROVEEDORES
   // ────────────────────────────────────────────────────────────────────
 
-  Future<bool> pushProviderToCloud(
-    Map<String, dynamic> map,
-    int localId,
-  ) async {
-    try {
-      final hasNet = await AppServices.connectivityService.isOnline;
-      if (!hasNet) return false;
+  SyncSession _syncSession() {
+    return SyncSessionGuard(_sup, _prefs).capture();
+  }
 
-      await _sup.from('providers').upsert({
-        ...map,
-        'id': localId,
-        'billar_id': _prefs.billarId,
-      });
-      return true;
-    } catch (e) {
-      debugPrint('[SyncService] pushProvider ERROR: $e');
-      return false;
+  SyncSession captureProviderSession() => _syncSession();
+
+  void requireProviderSession(
+    SyncSession session,
+  ) => _requireSyncSession(session);
+
+  void _requireSyncSession(
+    SyncSession expected,
+  ) {
+    SyncSessionGuard(_sup, _prefs).require(expected);
+  }
+
+  Future<void> _requireRemoteProvider(
+    int providerId,
+    SyncSession session,
+  ) async {
+    _requireSyncSession(session);
+    final provider = await _sup
+        .from('providers')
+        .setHeader('Authorization', 'Bearer ${session.token}')
+        .select('id')
+        .eq('id', providerId)
+        .eq('billar_id', session.billarId)
+        .maybeSingle();
+    _requireSyncSession(session);
+    if (provider == null) {
+      throw StateError('El proveedor no está disponible en este billar.');
     }
   }
 
-  Future<bool> pushProviderProductsToCloud(int providerId) async {
+  Future<bool> _queueProviderOperation(
+    int providerId,
+    String operationName,
+    Future<bool> Function(SyncSession) operation,
+  ) async {
+    final SyncSession session;
     try {
+      session = _syncSession();
+    } catch (error) {
+      debugPrint('[SyncService] $operationName ERROR: $error');
+      return false;
+    }
+    final previous = _providerOperations[providerId];
+    final current = () async {
+      if (previous != null) await previous;
+      try {
+        _requireSyncSession(session);
+        return await operation(session);
+      } catch (error) {
+        debugPrint('[SyncService] $operationName ERROR: $error');
+        return false;
+      }
+    }();
+    _providerOperations[providerId] = current;
+    try {
+      return await current;
+    } finally {
+      if (identical(_providerOperations[providerId], current)) {
+        _providerOperations.remove(providerId);
+      }
+    }
+  }
+
+  Future<bool> pushProviderToCloud(
+    Map<String, dynamic> map,
+    int localId,
+  ) {
+    return _queueProviderOperation(localId, 'pushProvider', (session) async {
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) return false;
+      _requireSyncSession(session);
+
+      final payload = {
+        ...map,
+        'id': localId,
+        'billar_id': session.billarId,
+      };
+      final updated = await _sup
+          .from('providers')
+          .setHeader('Authorization', 'Bearer ${session.token}')
+          .update(payload)
+          .eq('id', localId)
+          .eq('billar_id', session.billarId)
+          .select('id');
+      _requireSyncSession(session);
+      if (updated.isEmpty) {
+        await _sup
+            .from('providers')
+            .setHeader('Authorization', 'Bearer ${session.token}')
+            .insert(payload);
+        _requireSyncSession(session);
+      }
+      return true;
+    });
+  }
+
+  Future<bool> pushProviderProductsToCloud(
+    int providerId, {
+    List<int>? products,
+  }) {
+    return _queueProviderOperation(providerId, 'pushProviderProducts', (session) async {
+      final hasNet = await AppServices.connectivityService.isOnline;
+      if (!hasNet) return false;
+      _requireSyncSession(session);
 
       final db = await _db.database;
-      final rows = await db.query(
+      final productIds = products ?? (await db.query(
         'provider_products',
         columns: ['product_id'],
         where: 'provider_id = ?',
         whereArgs: [providerId],
-      );
-      final productIds = rows.map((r) => r['product_id'] as int).toList();
+      )).map((r) => r['product_id'] as int).toList();
+      for (final productId in productIds) {
+        final products = await db.query(
+          'products',
+          columns: ['id'],
+          where: 'id = ? AND billar_id = ?',
+          whereArgs: [productId, session.billarId],
+          limit: 1,
+        );
+        if (products.isEmpty) {
+          throw StateError('Un producto no pertenece al billar actual.');
+        }
+      }
+      await _requireRemoteProvider(providerId, session);
 
       await _sup
           .from('provider_products')
+          .setHeader('Authorization', 'Bearer ${session.token}')
           .delete()
           .eq('provider_id', providerId);
+      _requireSyncSession(session);
       for (final productId in productIds) {
-        await _sup.from('provider_products').insert({
-          'provider_id': providerId,
-          'product_id': productId,
-        });
+        await _sup
+            .from('provider_products')
+            .setHeader('Authorization', 'Bearer ${session.token}')
+            .insert({
+              'provider_id': providerId,
+              'product_id': productId,
+            });
+        _requireSyncSession(session);
       }
       return true;
-    } catch (e) {
-      debugPrint('[SyncService] pushProviderProducts ERROR: $e');
-      return false;
-    }
+    });
   }
 
-  Future<bool> deleteProviderFromCloud(int localId) async {
-    try {
+  Future<bool> archiveProviderInCloud(int localId, String requestId) {
+    return _queueProviderOperation(localId, 'archiveProvider', (session) async {
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) return false;
-
-      await _sup.from('provider_products').delete().eq('provider_id', localId);
-      await _sup.from('providers').delete().eq('id', localId);
+      _requireSyncSession(session);
+      final response = await _sup
+          .rpc('archive_provider_idempotent', params: {
+            'p_request_id': requestId,
+            'p_billar_id': session.billarId,
+            'p_provider_id': localId,
+          })
+          .setHeader('Authorization', 'Bearer ${session.token}');
+      _requireSyncSession(session);
+      if (response is! Map ||
+          response['request_id'] != requestId ||
+          response['billar_id'] != session.billarId ||
+          response['provider_id'] != localId ||
+          response['archived'] != true) {
+        throw StateError('La confirmación de archivado no es válida.');
+      }
       return true;
-    } catch (e) {
-      debugPrint('[SyncService] deleteProvider ERROR: $e');
-      return false;
-    }
+    });
   }
 
   Future<void> pullProvidersFromCloud() async {
     try {
+      final session = _syncSession();
+      final billarId = session.billarId;
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) return;
+      _requireSyncSession(session);
 
       final db = await _db.database;
 
       final remoteProviders = await _sup
           .from('providers')
+          .setHeader('Authorization', 'Bearer ${session.token}')
           .select()
-          .eq('billar_id', _prefs.billarId);
-      final remoteProducts = await _sup.from('provider_products').select();
+          .eq('billar_id', billarId);
+      _requireSyncSession(session);
+      final providerIds = <int>{};
+      for (final provider in remoteProviders) {
+        if (provider['billar_id'] != billarId || provider['id'] is! int) {
+          throw StateError('La respuesta contiene un proveedor de otro billar.');
+        }
+        if (provider.containsKey('is_active') && provider['is_active'] is! bool) {
+          throw StateError('El estado del proveedor recibido no es válido.');
+        }
+        providerIds.add(provider['id'] as int);
+      }
+      final remoteProducts = providerIds.isEmpty
+          ? <Map<String, dynamic>>[]
+          : await _sup
+              .from('provider_products')
+              .setHeader('Authorization', 'Bearer ${session.token}')
+              .select()
+              .inFilter('provider_id', providerIds.toList());
+      _requireSyncSession(session);
 
       debugPrint(
         '[SyncService] pullProvidersFromCloud: ${remoteProviders.length} proveedores, ${remoteProducts.length} relaciones',
       );
 
       await db.transaction((txn) async {
+        final pending = await txn.query(
+          'pending_provider_operations',
+          columns: ['provider_id'],
+          distinct: true,
+        );
+        final pendingProviderIds = pending.map((row) => row['provider_id'] as int).toSet();
         for (final p in remoteProviders) {
+          _requireSyncSession(session);
           final id = p['id'] as int;
+          if (pendingProviderIds.contains(id)) continue;
+          final provider = ProviderEntity.fromMap(p);
           final existing = await txn.query(
             'providers',
             where: 'id = ?',
@@ -438,6 +546,10 @@ class SyncService {
             'notes': p['notes'] ?? '',
             'category': p['category'] ?? 'General',
             'visit_days': p['visit_days'] ?? '',
+            if (p.containsKey('credit_days')) 'credit_days': provider.creditDays,
+            if (p.containsKey('preferred_payment_method'))
+              'preferred_payment_method': provider.preferredPaymentMethod,
+            'is_active': p['is_active'] == false ? 0 : 1,
           };
           if (existing.isEmpty) {
             await txn.insert('providers', {'id': id, ...map});
@@ -451,26 +563,75 @@ class SyncService {
           }
         }
 
-        // Sincronizar relaciones (merge simple: borrar locales y reinsertar remotas)
-        final localProviderIds =
-            remoteProviders.map((p) => p['id'] as int).toSet();
-        await txn.delete(
-          'provider_products',
-          where: 'provider_id IN (${localProviderIds.join(',')})',
-        );
         for (final rp in remoteProducts) {
+          _requireSyncSession(session);
           final pid = rp['provider_id'] as int?;
           final prid = rp['product_id'] as int?;
-          if (pid == null || prid == null) continue;
+          if (pid == null || prid == null || !providerIds.contains(pid)) {
+            throw StateError('La relación recibida no pertenece al billar.');
+          }
+          if (pendingProviderIds.contains(pid)) continue;
+          final products = await txn.query(
+            'products',
+            columns: ['id'],
+            where: 'id = ? AND billar_id = ?',
+            whereArgs: [prid, billarId],
+            limit: 1,
+          );
+          if (products.isEmpty) {
+            debugPrint(
+              '[SyncService] Relación de proveedor pendiente: producto local no disponible.',
+            );
+            continue;
+          }
           await txn.insert('provider_products', {
             'provider_id': pid,
             'product_id': prid,
           }, conflictAlgorithm: ConflictAlgorithm.ignore);
         }
+        _requireSyncSession(session);
       });
     } catch (e, st) {
       debugPrint('[SyncService] pullProvidersFromCloud ERROR: $e');
       if (kDebugMode) debugPrint('$st');
+    }
+  }
+
+  Future<void> _syncPendingProviderOperations(
+    Database db,
+    SyncSession session,
+  ) async {
+    final pending = await db.query(
+      'pending_provider_operations',
+      where: 'actor_id = ? AND billar_id = ?',
+      whereArgs: [session.actorId, session.billarId],
+      orderBy: 'id ASC',
+    );
+    final blockedProviders = <int>{};
+    for (final row in pending) {
+      _requireSyncSession(session);
+      final providerId = row['provider_id'] as int;
+      if (blockedProviders.contains(providerId)) continue;
+      final payload = jsonDecode(row['payload'] as String);
+      final success = switch (row['operation']) {
+        'save' when payload is Map =>
+          await pushProviderToCloud(Map<String, dynamic>.from(payload), providerId),
+        'products' when payload is List =>
+          await pushProviderProductsToCloud(providerId, products: payload.cast<int>()),
+        'delete' when payload is Map && payload['request_id'] is String =>
+          await archiveProviderInCloud(providerId, payload['request_id'] as String),
+        _ => throw StateError('La operación pendiente del proveedor no es válida.'),
+      };
+      _requireSyncSession(session);
+      if (!success) {
+        blockedProviders.add(providerId);
+        continue;
+      }
+      await db.delete(
+        'pending_provider_operations',
+        where: 'id = ? AND actor_id = ? AND billar_id = ?',
+        whereArgs: [row['id'], session.actorId, session.billarId],
+      );
     }
   }
 
@@ -483,6 +644,7 @@ class SyncService {
   Future<void> syncAllPending() async => _syncAllPending();
 
   Future<void> _syncAllPending() async {
+    if (!_db.isAccountDatabaseAvailable) return;
     if (_isSyncing) {
       _syncRequestedWhileRunning = true;
       return;
@@ -490,7 +652,23 @@ class SyncService {
     _isSyncing = true;
 
     try {
+      if (_sup.auth.currentSession == null) {
+        debugPrint('[SyncService] Sin sesión activa; se conservan los pendientes.');
+        return;
+      }
+      final scope = _syncSession();
+      bool ensureSession() {
+        try {
+          _requireSyncSession(scope);
+          return true;
+        } on StateError {
+          debugPrint('[SyncService] La sesión cambió; se detiene la sincronización.');
+          return false;
+        }
+      }
+
       final hasNet = await AppServices.connectivityService.isOnline;
+      if (!ensureSession()) return;
       if (!hasNet) {
         debugPrint('[SyncService] Sin red, auto-sync abortado');
         _scheduleRetry();
@@ -498,47 +676,49 @@ class SyncService {
       }
 
       final db = await _db.database;
-      final billarId = _prefs.billarId;
+      if (!ensureSession()) return;
+      final billarId = scope.billarId;
+      final session = scope.authSession;
 
       await pullTablesFromCloud();
+      if (!ensureSession()) return;
 
       // ── Ventas pendientes ──
       final pendingSales = await db.query(
         'sales_history',
-        where: 'synced = ?',
-        whereArgs: [0],
+        where: 'synced = ? AND billar_id = ?',
+        whereArgs: [0, billarId],
         orderBy: 'date ASC',
       );
       debugPrint('[SyncService] Ventas pendientes: ${pendingSales.length}');
+      final otherBusinessSales = await db.rawQuery(
+        'SELECT COUNT(*) AS count FROM sales_history '
+        'WHERE synced = 0 AND billar_id != ?',
+        [billarId],
+      );
+      if ((otherBusinessSales.first['count'] as int? ?? 0) > 0) {
+        debugPrint(
+          '[SyncService] Hay ventas pendientes de otro billar; se conservan sin sincronizar.',
+        );
+      }
 
       // Descargar ventas nuevas de la nube (incluye anulaciones hechas en
       // otro dispositivo) dentro del ciclo de auto-sync.
       await pullSalesFromCloud();
+      if (!ensureSession()) return;
 
       // Descargar retiros/gastos hechos en otro dispositivo (afectan
       // utilidad y flujo de caja en ambos lados).
       await pullOutflowsFromCloud();
+      if (!ensureSession()) return;
 
       for (final sale in pendingSales) {
+        if (!ensureSession()) return;
         final localId = sale['id'] as int;
-        final details = await db.query(
-          'sale_details',
-          where: 'sale_id = ?',
-          whereArgs: [localId],
-        );
-
         final cloudId = await pushSaleToCloud(
           localSaleId: localId,
           billarId: billarId,
-          total: (sale['total'] as num).toDouble(),
-          paid: (sale['paid'] as num).toDouble(),
-          date: sale['date'] as String,
-          type: sale['type'] as String,
-          paymentMethod: sale['payment_method'] as String,
-          items: details,
-          existingCloudId: sale['cloud_id'] as String?,
-          cancelled: (sale['cancelled'] as int? ?? 0) == 1,
-          customerKey: sale['customer_key']?.toString(),
+          accessToken: session.accessToken,
         );
 
         if (cloudId == null) {
@@ -546,13 +726,14 @@ class SyncService {
             '[SyncService] Falló sync venta $localId, se reintentará luego',
           );
         }
+        if (!ensureSession()) return;
       }
 
       // ── Compras pendientes ──
       final pendingPurchases = await db.query(
         'purchases',
-        where: 'synced = ?',
-        whereArgs: [0],
+        where: 'synced = ? AND ${purchaseBusinessScope()}',
+        whereArgs: [0, billarId],
         orderBy: 'date ASC',
       );
       debugPrint(
@@ -560,25 +741,12 @@ class SyncService {
       );
 
       for (final purchase in pendingPurchases) {
+        if (!ensureSession()) return;
         final localId = purchase['id'] as int;
-        final details = await db.query(
-          'purchase_details',
-          where: 'purchase_id = ?',
-          whereArgs: [localId],
-        );
-
         final cloudId = await pushPurchaseToCloud(
           localPurchaseId: localId,
           billarId: billarId,
-          providerId: purchase['provider_id'] as int?,
-          total: (purchase['total'] as num).toDouble(),
-          date: purchase['date'] as String,
-          reference: purchase['reference'] as String,
-          createdBy: (purchase['created_by'] as String?) ?? '',
-          cashSource: (purchase['cash_source'] as String?) ?? 'caja',
-          cancelled: (purchase['cancelled'] as int? ?? 0) == 1,
-          items: details,
-          existingCloudId: purchase['cloud_id'] as String?,
+          accessToken: session.accessToken,
         );
 
         if (cloudId == null) {
@@ -591,8 +759,8 @@ class SyncService {
       // ── Jugadores pendientes ──
       final pendingPlayers = await db.query(
         'players',
-        where: 'synced = ?',
-        whereArgs: [0],
+        where: 'synced = ? AND billar_id = ?',
+        whereArgs: [0, billarId],
         orderBy: 'created_at ASC',
       );
       debugPrint(
@@ -600,6 +768,7 @@ class SyncService {
       );
 
       for (final row in pendingPlayers) {
+        if (!ensureSession()) return;
         final localId = row['id'] as int;
         final player = PlayerEntity.fromMap(row);
         final cloudId = await pushPlayerToCloud(player);
@@ -621,8 +790,8 @@ class SyncService {
       // ── Retiros/Gastos pendientes ──
       final pendingOutflows = await db.query(
         'cash_outflows',
-        where: 'synced = ?',
-        whereArgs: [0],
+        where: 'synced = ? AND billar_id = ?',
+        whereArgs: [0, billarId],
         orderBy: 'created_at ASC',
       );
       debugPrint(
@@ -630,10 +799,12 @@ class SyncService {
       );
 
       for (final row in pendingOutflows) {
+        if (!ensureSession()) return;
         final localId = row['id'] as int;
         final cloudId = await pushOutflowToCloud(
           localOutflowId: localId,
-          billarId: (row['billar_id'] as String?) ?? billarId,
+          billarId: billarId,
+          accessToken: session.accessToken,
           outflowType: row['outflow_type'] as String,
           amount: (row['amount'] as num).toDouble(),
           description: (row['description'] as String?) ?? '',
@@ -656,9 +827,22 @@ class SyncService {
         }
       }
 
+      if (!ensureSession()) return;
       await ProductRepository().syncPendingProducts();
+      if (!ensureSession()) return;
       await InventoryMovementSyncService.instance.sync();
+      if (!ensureSession()) return;
       await QuickSaleRepositoryImpl().syncPendingSales();
+      if (!ensureSession()) return;
+      try {
+        await _syncPendingProviderOperations(db, scope);
+      } catch (error, stack) {
+        debugPrint('[SyncService] Cola de proveedores no sincronizada: $error');
+        if (kDebugMode) debugPrint('$stack');
+        if (ensureSession()) _scheduleRetry();
+        return;
+      }
+      if (!ensureSession()) return;
 
       if (await _hasPendingUploads(db)) {
         debugPrint(
@@ -677,6 +861,25 @@ class SyncService {
   }
 
   Future<bool> _hasPendingUploads(Database db) async {
+    final session = _sup.auth.currentSession;
+    if (session != null) {
+      final pendingProviders = await db.query(
+        'pending_provider_operations',
+        columns: ['id'],
+        where: 'actor_id = ? AND billar_id = ?',
+        whereArgs: [session.user.id, _prefs.billarId],
+        limit: 1,
+      );
+      if (pendingProviders.isNotEmpty) return true;
+    }
+    const businessScoped = {
+      'sales_history',
+      'cash_outflows',
+      'inventory_movements',
+      'players',
+      'products',
+      'pending_product_deletions',
+    };
     for (final table in [
       'sales_history',
       'purchases',
@@ -685,11 +888,22 @@ class SyncService {
       'products',
       'pending_product_deletions',
       'inventory_movements',
-      'pending_sales',
       'billiard_tables',
     ]) {
       final result = await db.rawQuery(
-        'SELECT COUNT(*) AS count FROM $table WHERE synced = 0',
+        'SELECT COUNT(*) AS count FROM $table WHERE synced = 0'
+        '${table == 'products' ? ' AND stock_conflict = 0' : ''}'
+        '${table == 'purchases' ? ' AND ${purchaseBusinessScope()}' : ''}'
+        '${businessScoped.contains(table) ? ' AND billar_id = ?' : ''}',
+        businessScoped.contains(table) || table == 'purchases' ? [_prefs.billarId] : null,
+      );
+      if ((result.first['count'] as int? ?? 0) > 0) return true;
+    }
+    if (session != null) {
+      final result = await db.rawQuery(
+        'SELECT COUNT(*) AS count FROM pending_sales '
+        'WHERE synced = 0 AND actor_id = ? AND billar_id = ?',
+        [session.user.id, _prefs.billarId],
       );
       if ((result.first['count'] as int? ?? 0) > 0) return true;
     }
@@ -704,6 +918,7 @@ class SyncService {
   Future<String?> pushOutflowToCloud({
     required int localOutflowId,
     required String billarId,
+    required String accessToken,
     required String outflowType,
     required double amount,
     required String description,
@@ -732,12 +947,14 @@ class SyncService {
       if (existingCloudId != null) {
         response = await _sup
             .from('cash_outflows')
+            .setHeader('Authorization', 'Bearer $accessToken')
             .update(payload)
             .eq('id', existingCloudId)
             .select('id');
       } else {
         response = await _sup
             .from('cash_outflows')
+            .setHeader('Authorization', 'Bearer $accessToken')
             .insert(payload)
             .select('id');
       }
@@ -759,47 +976,51 @@ class SyncService {
   /// en la utilidad/flujo de caja del otro.
   Future<void> pullOutflowsFromCloud() async {
     try {
+      final session = _syncSession();
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) return;
+      _requireSyncSession(session);
 
       final db = await _db.database;
-      final billarId = _prefs.billarId;
-
-      final localRows = await db.query('cash_outflows', columns: ['cloud_id']);
-      final localCloudIds =
-          localRows
-              .map((r) => r['cloud_id']?.toString())
-              .whereType<String>()
-              .toSet();
-
-      // Sin filtro de fecha, por la misma razón que ventas/compras: el reloj
-      // de otro dispositivo puede ir atrás. Dedupe por cloud_id.
       final response = await _sup
           .from('cash_outflows')
+          .setHeader('Authorization', 'Bearer ${session.token}')
           .select()
-          .eq('billar_id', billarId)
+          .eq('billar_id', session.billarId)
           .order('created_at', ascending: false)
           .limit(200)
           .timeout(const Duration(seconds: 8));
+      _requireSyncSession(session);
 
       int nuevos = 0;
-      for (final o in response) {
-        final cid = o['id']?.toString();
-        if (cid == null || localCloudIds.contains(cid)) continue;
+      await db.transaction((txn) async {
+        for (final o in response) {
+          _requireSyncSession(session);
+          if (o['billar_id'] != session.billarId || o['id'] == null) {
+            throw StateError('El retiro recibido no pertenece al billar actual.');
+          }
+          final cid = o['id'].toString();
+          final existing = await txn.query(
+            'cash_outflows', columns: ['id'],
+            where: 'cloud_id = ?', whereArgs: [cid], limit: 1,
+          );
+          if (existing.isNotEmpty) continue;
 
-        await db.insert('cash_outflows', {
-          'billar_id': (o['billar_id'] as String?) ?? billarId,
-          'outflow_type': o['outflow_type'] as String,
-          'amount': (o['amount'] as num).toDouble(),
-          'description': (o['description'] as String?) ?? '',
-          'payment_method': (o['payment_method'] as String?) ?? 'Efectivo',
-          'created_by': (o['created_by'] as String?) ?? '',
-          'created_at': o['created_at'] as String,
-          'synced': 1,
-          'cloud_id': cid,
-        });
-        nuevos++;
-      }
+          await txn.insert('cash_outflows', {
+            'billar_id': session.billarId,
+            'outflow_type': o['outflow_type'] as String,
+            'amount': (o['amount'] as num).toDouble(),
+            'description': (o['description'] as String?) ?? '',
+            'payment_method': (o['payment_method'] as String?) ?? 'Efectivo',
+            'created_by': (o['created_by'] as String?) ?? '',
+            'created_at': o['created_at'] as String,
+            'synced': 1,
+            'cloud_id': cid,
+          });
+          nuevos++;
+        }
+        _requireSyncSession(session);
+      });
       if (nuevos > 0) {
         debugPrint('[SyncService] pullOutflowsFromCloud: $nuevos nuevos');
       }
@@ -817,55 +1038,54 @@ class SyncService {
   /// Solo descarga lo que no existe localmente (por cloud_id).
   Future<void> pullSalesFromCloud() async {
     try {
+      final session = _syncSession();
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) return;
+      _requireSyncSession(session);
 
       final db = await _db.database;
-      final billarId = _prefs.billarId;
-
-      // Obtener cloud_ids locales para evitar duplicados
-      final localRows = await db.query('sales_history', columns: ['cloud_id']);
-      final localCloudIds =
-          localRows
-              .map((r) => r['cloud_id']?.toString())
-              .whereType<String>()
-              .toSet();
-
-      // Sin filtro de fecha: el reloj de otro dispositivo puede ir atrás del
-      // nuestro y el filtro .gte() se saltaba esas ventas. La deduplicación
-      // por cloud_id ya evita re-insertar, así que bajar las últimas 200 es seguro.
       final response = await _sup
           .from('sales_history')
+          .setHeader('Authorization', 'Bearer ${session.token}')
           .select('*, sale_details(*)')
-          .eq('billar_id', billarId)
+          .eq('billar_id', session.billarId)
           .order('date', ascending: false)
           .limit(200);
+      _requireSyncSession(session);
 
-      for (final sale in response) {
-        final cid = sale['id']?.toString();
-        if (cid == null) continue;
-
-        // Si ya existe localmente, solo propagar el estado cancelled
-        // (anulación hecha en otro dispositivo) y saltar la inserción.
-        if (localCloudIds.contains(cid)) {
-          final cloudCancelled =
-              (sale['cancelled'] ?? false) == true || sale['cancelled'] == 1;
-          if (cloudCancelled) {
-            final local = await db.query(
-              'sales_history',
-              columns: ['id', 'cancelled'],
-              where: 'cloud_id = ?',
-              whereArgs: [cid],
+      await db.transaction((txn) async {
+        for (final sale in response) {
+          _requireSyncSession(session);
+          if (sale['billar_id'] != session.billarId || sale['id'] == null) {
+            throw StateError('La venta recibida no pertenece al billar actual.');
+          }
+          final cid = sale['id'].toString();
+          final requestId = sale['sync_client_id']?.toString();
+          if (requestId != null && requestId.isNotEmpty) {
+            final pending = await txn.query(
+              'pending_owner_transactions',
+              columns: ['local_id'],
+              where: 'request_id = ? AND actor_id = ? AND billar_id = ? AND kind = ?',
+              whereArgs: [requestId, session.actorId, session.billarId, 'sale'],
+              limit: 1,
             );
-            if (local.isNotEmpty &&
+            if (pending.isNotEmpty) continue;
+          }
+          final local = await txn.query(
+            'sales_history', columns: ['id', 'cancelled'],
+            where: 'cloud_id = ?', whereArgs: [cid], limit: 1,
+          );
+          if (local.isNotEmpty) {
+            final cloudCancelled = sale['cancelled'] == true || sale['cancelled'] == 1;
+            if (cloudCancelled &&
                 (local.first['cancelled'] as int? ?? 0) == 0) {
-              await db.update(
+              await txn.update(
                 'sales_history',
                 {'cancelled': 1},
                 where: 'cloud_id = ?',
                 whereArgs: [cid],
               );
-              await db.update(
+              await txn.update(
                 'sale_details',
                 {'cancelled': 1},
                 where: 'sale_id = ?',
@@ -875,43 +1095,47 @@ class SyncService {
                 '[SyncService] Venta $cid marcada anulada desde la nube',
               );
             }
+            continue;
           }
-          continue;
-        }
 
-        final localId = await db.insert('sales_history', {
-          'billar_id': billarId,
-          'total': (sale['total'] as num).toDouble(),
-          'paid': (sale['paid'] as num?)?.toDouble() ?? 0,
-          'date': sale['date'],
-          'type': sale['type'],
-          'payment_method': sale['payment_method'] ?? 'Efectivo',
-          'customer_key': sale['customer_key']?.toString(),
-          'cancelled':
-              (sale['cancelled'] ?? false) == true || sale['cancelled'] == 1
-                  ? 1
-                  : 0,
-          'synced': 1,
-          'cloud_id': cid,
-        });
-
-        final details = sale['sale_details'] as List? ?? [];
-        for (final d in details) {
-          await db.insert('sale_details', {
-            'sale_id': localId,
-            'product_id': d['product_id'],
-            'product_name': d['product_name'],
-            'quantity': (d['quantity'] as num).toDouble(),
-            'price_at_sale': (d['price_at_sale'] as num).toDouble(),
+          final localId = await txn.insert('sales_history', {
+            'billar_id': session.billarId,
+            'total': (sale['total'] as num).toDouble(),
+            'paid': (sale['paid'] as num?)?.toDouble() ?? 0,
+            'date': sale['date'],
+            'type': sale['type'],
+            'source_module': sale['source_module']?.toString(),
+            'payment_method': sale['payment_method'] ?? 'Efectivo',
+            'customer_key': sale['customer_key']?.toString(),
             'cancelled':
-                (d['cancelled'] ?? false) == true || d['cancelled'] == 1
+                (sale['cancelled'] ?? false) == true || sale['cancelled'] == 1
                     ? 1
                     : 0,
-            if (d['cost_at_sale'] != null)
-              'cost_at_sale': (d['cost_at_sale'] as num).toDouble(),
+            'synced': 1,
+            'cloud_id': cid,
           });
+
+          final details = sale['sale_details'] as List? ?? [];
+          for (final d in details) {
+            _requireSyncSession(session);
+            await txn.insert('sale_details', {
+              'sale_id': localId,
+              'product_id': d['product_id'],
+              'product_name': d['product_name'],
+              'quantity': (d['quantity'] as num).toDouble(),
+              'price_at_sale': (d['price_at_sale'] as num).toDouble(),
+              'cancelled':
+                  (d['cancelled'] ?? false) == true || d['cancelled'] == 1
+                      ? 1
+                      : 0,
+              if (d['cost_at_sale'] != null)
+                'cost_at_sale': (d['cost_at_sale'] as num).toDouble(),
+              'cost_available': d['cost_at_sale'] == null ? 0 : 1,
+            });
+          }
         }
-      }
+        _requireSyncSession(session);
+      });
 
       debugPrint('[SyncService] pullSalesFromCloud completado');
     } catch (e, st) {
@@ -923,89 +1147,106 @@ class SyncService {
   /// Descarga compras desde Supabase para el billar actual.
   Future<void> pullPurchasesFromCloud() async {
     try {
+      final session = _syncSession();
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) return;
+      _requireSyncSession(session);
 
       final db = await _db.database;
-      final billarId = _prefs.billarId;
-
-      final localRows = await db.query('purchases', columns: ['cloud_id']);
-      final localCloudIds =
-          localRows
-              .map((r) => r['cloud_id']?.toString())
-              .whereType<String>()
-              .toSet();
-
-      // Sin filtro de fecha: el reloj de otro dispositivo puede ir atrás y el
-      // filtro .gte() se saltaba esas compras. Deduplicación por cloud_id.
       final response = await _sup
           .from('purchases')
+          .setHeader('Authorization', 'Bearer ${session.token}')
           .select('*, purchase_details(*)')
-          .eq('billar_id', billarId)
+          .eq('billar_id', session.billarId)
           .order('date', ascending: false)
           .limit(200);
+      _requireSyncSession(session);
 
-      for (final purchase in response) {
-        final cid = purchase['id']?.toString();
-        if (cid == null) continue;
-
-        // Si ya existe localmente, solo propagar el estado cancelled
-        // (anulación hecha en otro dispositivo) y saltar la inserción.
-        if (localCloudIds.contains(cid)) {
-          final cloudCancelled = (purchase['cancelled'] ?? false) == true;
-          if (cloudCancelled) {
-            final local = await db.query(
-              'purchases',
-              columns: ['id', 'cancelled'],
-              where: 'cloud_id = ?',
-              whereArgs: [cid],
+      await db.transaction((txn) async {
+        for (final purchase in response) {
+          _requireSyncSession(session);
+          if (purchase['billar_id'] != session.billarId || purchase['id'] == null) {
+            throw StateError('La compra recibida no pertenece al billar actual.');
+          }
+          final cid = purchase['id'].toString();
+          final requestId = purchase['sync_client_id']?.toString();
+          if (requestId != null && requestId.isNotEmpty) {
+            final pending = await txn.query(
+              'pending_owner_transactions',
+              columns: ['local_id'],
+              where: 'request_id = ? AND actor_id = ? AND billar_id = ? AND kind = ?',
+              whereArgs: [requestId, session.actorId, session.billarId, 'purchase'],
+              limit: 1,
             );
-            if (local.isNotEmpty &&
-                (local.first['cancelled'] as int? ?? 0) == 0) {
-              await db.update(
-                'purchases',
-                {'cancelled': 1},
-                where: 'cloud_id = ?',
-                whereArgs: [cid],
+            if (pending.isNotEmpty) continue;
+          }
+          final local = await txn.query(
+            'purchases',
+            columns: ['id', 'billar_id', 'cancelled'],
+            where: 'cloud_id = ?',
+            whereArgs: [cid],
+            limit: 1,
+          );
+          if (local.isNotEmpty) {
+            final localBillar = local.first['billar_id'];
+            if (localBillar == null) {
+              debugPrint(
+                '[SyncService] Compra antigua sin billar omitida: $cid.',
               );
-              await db.update(
-                'purchase_details',
-                {'cancelled': 1},
+              continue;
+            }
+            if (localBillar != session.billarId) {
+              throw StateError('La compra local pertenece a otro billar.');
+            }
+            if (purchase['cancelled'] == true &&
+                (local.first['cancelled'] as int? ?? 0) == 0) {
+              await txn.update(
+                'purchases', {'cancelled': 1},
+                where: 'id = ? AND billar_id = ?',
+                whereArgs: [local.first['id'], session.billarId],
+              );
+              await txn.update(
+                'purchase_details', {'cancelled': 1},
                 where: 'purchase_id = ?',
                 whereArgs: [local.first['id']],
               );
-              debugPrint(
-                '[SyncService] Compra $cid marcada anulada desde la nube',
-              );
             }
+            continue;
           }
-          continue;
-        }
 
-        final localId = await db.insert('purchases', {
-          'provider_id': purchase['provider_id'],
-          'total': (purchase['total'] as num).toDouble(),
-          'date': purchase['date'],
-          'reference': purchase['reference'] ?? '',
-          'created_by': purchase['created_by'] ?? '',
-          'cash_source': purchase['cash_source'] ?? 'caja',
-          'cancelled': (purchase['cancelled'] ?? false) == true ? 1 : 0,
-          'synced': 1,
-          'cloud_id': cid,
-        });
-
-        final details = purchase['purchase_details'] as List? ?? [];
-        for (final d in details) {
-          await db.insert('purchase_details', {
-            'purchase_id': localId,
-            'product_id': d['product_id'],
-            'quantity': (d['quantity'] as num).toDouble(),
-            'cost_per_unit': (d['cost_per_unit'] as num).toDouble(),
-            'created_by': d['created_by'] ?? '',
-            'cancelled': (d['cancelled'] ?? false) == true ? 1 : 0,
+          final localId = await txn.insert('purchases', {
+            'billar_id': session.billarId,
+            'provider_id': purchase['provider_id'],
+            'total': (purchase['total'] as num).toDouble(),
+            'date': purchase['date'],
+            'reference': purchase['reference'] ?? '',
+            'created_by': purchase['created_by'] ?? '',
+            'cash_source': purchase['payment_condition'] == 'credito'
+                ? null : purchase['cash_source'] ?? 'caja',
+            for (final field in [
+              'payment_condition', 'payment_method', 'credit_days',
+              'due_date', 'paid_amount', 'balance_due',
+            ]) field: purchase[field],
+            'cancelled': (purchase['cancelled'] ?? false) == true ? 1 : 0,
+            'synced': 1,
+            'cloud_id': cid,
           });
+
+          final details = purchase['purchase_details'] as List? ?? [];
+          for (final d in details) {
+            _requireSyncSession(session);
+            await txn.insert('purchase_details', {
+              'purchase_id': localId,
+              'product_id': d['product_id'],
+              'quantity': (d['quantity'] as num).toDouble(),
+              'cost_per_unit': (d['cost_per_unit'] as num).toDouble(),
+              'created_by': d['created_by'] ?? '',
+              'cancelled': (d['cancelled'] ?? false) == true ? 1 : 0,
+            });
+          }
         }
-      }
+        _requireSyncSession(session);
+      });
 
       debugPrint('[SyncService] pullPurchasesFromCloud completado');
     } catch (e, st) {
@@ -1019,16 +1260,31 @@ class SyncService {
   // ────────────────────────────────────────────────────────────────────
 
   /// Sube o actualiza una mesa en Supabase.
-  Future<bool> pushTableToCloud(Map<String, dynamic> table) async {
+  Future<bool> pushTableToCloud(Map<String, dynamic> table) {
+    try {
+      return _pushTableToCloud(table, _syncSession());
+    } catch (e) {
+      debugPrint('[SyncService] pushTableToCloud ERROR: $e');
+      return Future.value(false);
+    }
+  }
+
+  Future<bool> _pushTableToCloud(
+    Map<String, dynamic> table,
+    SyncSession session,
+  ) async {
     try {
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) return false;
+      _requireSyncSession(session);
 
-      final billarId = _prefs.billarId;
+      if (table['billar_id'] != session.billarId) {
+        throw StateError('La mesa no pertenece al billar actual.');
+      }
       final id = table['id'] as int;
       final map = {
         'id': id,
-        'billar_id': table['billar_id'] ?? billarId,
+        'billar_id': session.billarId,
         'name': table['name'] ?? 'Mesa $id',
         'table_type': table['table_type'] ?? 'Billar',
         'is_occupied': table['is_occupied'] ?? 0,
@@ -1037,28 +1293,35 @@ class SyncService {
         'is_deleted': table['is_deleted'] ?? 0,
       };
 
-      await _sup.from('billiard_tables').upsert(map);
+      await _sup.from('billiard_tables')
+          .setHeader('Authorization', 'Bearer ${session.token}')
+          .upsert(map);
+      _requireSyncSession(session);
       final db = await _db.database;
-      final currentRows = await db.query(
-        'billiard_tables',
-        where: 'id = ? AND billar_id = ?',
-        whereArgs: [id, map['billar_id']],
-        limit: 1,
-      );
-      if (currentRows.isNotEmpty &&
-          currentRows.first['name'] == map['name'] &&
-          currentRows.first['table_type'] == map['table_type'] &&
-          currentRows.first['is_occupied'] == map['is_occupied'] &&
-          currentRows.first['start_time'] == map['start_time'] &&
-          currentRows.first['orders'] == map['orders'] &&
-          currentRows.first['is_deleted'] == map['is_deleted']) {
-        await db.update(
+      await db.transaction((txn) async {
+        _requireSyncSession(session);
+        final currentRows = await txn.query(
           'billiard_tables',
-          {'synced': 1},
           where: 'id = ? AND billar_id = ?',
-          whereArgs: [id, map['billar_id']],
+          whereArgs: [id, session.billarId],
+          limit: 1,
         );
-      }
+        if (currentRows.isNotEmpty &&
+            currentRows.first['name'] == map['name'] &&
+            currentRows.first['table_type'] == map['table_type'] &&
+            currentRows.first['is_occupied'] == map['is_occupied'] &&
+            currentRows.first['start_time'] == map['start_time'] &&
+            currentRows.first['orders'] == map['orders'] &&
+            currentRows.first['is_deleted'] == map['is_deleted']) {
+          await txn.update(
+            'billiard_tables',
+            {'synced': 1},
+            where: 'id = ? AND billar_id = ?',
+            whereArgs: [id, session.billarId],
+          );
+        }
+        _requireSyncSession(session);
+      });
       debugPrint('[SyncService] pushTableToCloud id=$id OK');
       return true;
     } catch (e, st) {
@@ -1075,18 +1338,27 @@ class SyncService {
   /// para propagar en tiempo real el estado entre dispositivos.
   Future<void> pullTablesFromCloud({bool forceApply = false}) async {
     try {
+      final session = _syncSession();
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) return;
+      _requireSyncSession(session);
 
       final db = await _db.database;
-      final billarId = _prefs.billarId;
+      final billarId = session.billarId;
 
       var response = await _sup
           .from('billiard_tables')
+          .setHeader('Authorization', 'Bearer ${session.token}')
           .select()
           .eq('billar_id', billarId)
           .order('id', ascending: true);
+      _requireSyncSession(session);
       var tables = response as List<dynamic>;
+      for (final table in tables) {
+        if (table['billar_id'] != billarId || table['id'] is! num) {
+          throw StateError('La mesa recibida no pertenece al billar actual.');
+        }
+      }
       final remoteById = {
         for (final table in tables)
           (table['id'] as num).toInt(): table as Map<String, dynamic>,
@@ -1098,41 +1370,52 @@ class SyncService {
         orderBy: 'id ASC',
       );
       for (final table in pendingTables) {
+        _requireSyncSession(session);
         final id = (table['id'] as num).toInt();
         final remote = remoteById[id];
         if (remote != null &&
             (remote['is_deleted'] as num?)?.toInt() == 1 &&
             (table['is_deleted'] as num?)?.toInt() != 1) {
-          await db.update(
-            'billiard_tables',
-            {
-              'is_deleted': 1,
-              'is_occupied': 0,
-              'start_time': null,
-              'orders': '[]',
-              'synced': 1,
-            },
-            where: 'id = ? AND billar_id = ?',
-            whereArgs: [id, billarId],
-          );
+          await db.transaction((txn) async {
+            _requireSyncSession(session);
+            await txn.update(
+              'billiard_tables',
+              {
+                'is_deleted': 1,
+                'is_occupied': 0,
+                'start_time': null,
+                'orders': '[]',
+                'synced': 1,
+              },
+              where: 'id = ? AND billar_id = ? AND synced = 0',
+              whereArgs: [id, billarId],
+            );
+            _requireSyncSession(session);
+          });
           continue;
         }
-        await pushTableToCloud(table);
+        await _pushTableToCloud(table, session);
       }
+      _requireSyncSession(session);
 
       response = await _sup
           .from('billiard_tables')
+          .setHeader('Authorization', 'Bearer ${session.token}')
           .select()
           .eq('billar_id', billarId)
           .order('id', ascending: true);
+      _requireSyncSession(session);
       tables = response as List<dynamic>;
       debugPrint('[SyncService] pullTablesFromCloud: ${tables.length} mesas');
-      final cloudIds = <int>{};
 
+      // RLS puede ocultar filas; solo un tombstone explícito elimina una mesa.
       await db.transaction((txn) async {
         for (final t in tables) {
+          _requireSyncSession(session);
+          if (t['billar_id'] != billarId || t['id'] is! num) {
+            throw StateError('La mesa recibida no pertenece al billar actual.');
+          }
           final id = (t['id'] as num).toInt();
-          cloudIds.add(id);
           final existing = await txn.query(
             'billiard_tables',
             where: 'id = ? AND billar_id = ?',
@@ -1182,30 +1465,14 @@ class SyncService {
             );
           }
         }
-
-        final localRows = await txn.query(
-          'billiard_tables',
-          where: 'billar_id = ? AND synced = ?',
-          whereArgs: [billarId, 1],
-        );
-        for (final local in localRows) {
-          final id = (local['id'] as num).toInt();
-          if (!cloudIds.contains(id)) {
-            await txn.delete(
-              'billiard_tables',
-              where: 'id = ? AND billar_id = ? AND synced = ?',
-              whereArgs: [id, billarId, 1],
-            );
-          }
-        }
+        _requireSyncSession(session);
       });
 
-      final activeTableCount =
-          tables
-              .where(
-                (table) => ((table['is_deleted'] as num?)?.toInt() ?? 0) == 0,
-              )
-              .length;
+      final activeTableCount = Sqflite.firstIntValue(await db.rawQuery(
+        'SELECT COUNT(*) FROM billiard_tables WHERE billar_id = ? AND is_deleted = 0',
+        [billarId],
+      ))!;
+      _requireSyncSession(session);
       await _prefs.setTableCount(activeTableCount);
     } catch (e, st) {
       debugPrint('[SyncService] pullTablesFromCloud ERROR: $e');

@@ -96,9 +96,7 @@ class _SpecialClientPageState extends State<SpecialClientPage> {
         if (_selectedKey != null) {
           final account = _openAccounts[_selectedKey];
           _items =
-              account == null
-                  ? []
-                  : _itemsFromMap(account.items, products);
+              account == null ? [] : _itemsFromMap(account.items, products);
           _selectedName =
               _customerOptions
                   .where((option) => option.key == _selectedKey)
@@ -201,7 +199,7 @@ class _SpecialClientPageState extends State<SpecialClientPage> {
   ];
 
   Future<void> _chooseCustomer() async {
-    final selected = await showModalBottomSheet<_PersonalCustomerOption>(
+    final result = await showModalBottomSheet<(bool, _PersonalCustomerOption?)>(
       context: context,
       showDragHandle: true,
       builder: (context) {
@@ -233,7 +231,7 @@ class _SpecialClientPageState extends State<SpecialClientPage> {
                             _openAccounts.containsKey(option.key)
                                 ? const Chip(label: Text('CONSUMO ABIERTO'))
                                 : null,
-                        onTap: () => Navigator.pop(context, option),
+                        onTap: () => Navigator.pop(context, (false, option)),
                       ),
                     if (options.isEmpty)
                       const Padding(
@@ -246,7 +244,7 @@ class _SpecialClientPageState extends State<SpecialClientPage> {
               Padding(
                 padding: const EdgeInsets.all(12),
                 child: OutlinedButton.icon(
-                  onPressed: () => Navigator.pop(context),
+                  onPressed: () => Navigator.pop(context, (true, null)),
                   icon: const Icon(Icons.person_add),
                   label: const Text('ADMINISTRAR CLIENTES'),
                 ),
@@ -256,11 +254,13 @@ class _SpecialClientPageState extends State<SpecialClientPage> {
         );
       },
     );
-    if (!mounted) return;
-    if (selected == null) {
+    if (!mounted || result == null) return;
+    if (result.$1) {
       await _manageClients();
       return;
     }
+    final selected = result.$2;
+    if (selected == null) return;
     final account = _openAccounts[selected.key];
     setState(() {
       _selectedKey = selected.key;
@@ -294,7 +294,9 @@ class _SpecialClientPageState extends State<SpecialClientPage> {
                             textCapitalization: TextCapitalization.characters,
                             inputFormatters: [
                               TextInputFormatter.withFunction(
-                                (_, value) => value.copyWith(text: value.text.toUpperCase()),
+                                (_, value) => value.copyWith(
+                                  text: value.text.toUpperCase(),
+                                ),
                               ),
                             ],
                             decoration: const InputDecoration(
@@ -314,16 +316,22 @@ class _SpecialClientPageState extends State<SpecialClientPage> {
                                   return value.copyWith(text: text);
                                 } else if (text.length <= 6) {
                                   return value.copyWith(
-                                    text: '${text.substring(0, 3)}-${text.substring(3)}',
+                                    text:
+                                        '${text.substring(0, 3)}-${text.substring(3)}',
                                     selection: TextSelection.fromPosition(
-                                      TextPosition(offset: value.text.length + 1),
+                                      TextPosition(
+                                        offset: value.text.length + 1,
+                                      ),
                                     ),
                                   );
                                 } else {
                                   return value.copyWith(
-                                    text: '${text.substring(0, 3)}-${text.substring(3, 6)}-${text.substring(6)}',
+                                    text:
+                                        '${text.substring(0, 3)}-${text.substring(3, 6)}-${text.substring(6)}',
                                     selection: TextSelection.fromPosition(
-                                      TextPosition(offset: value.text.length + 2),
+                                      TextPosition(
+                                        offset: value.text.length + 2,
+                                      ),
                                     ),
                                   );
                                 }
@@ -339,7 +347,9 @@ class _SpecialClientPageState extends State<SpecialClientPage> {
                             keyboardType: TextInputType.emailAddress,
                             inputFormatters: [
                               TextInputFormatter.withFunction(
-                                (_, value) => value.copyWith(text: value.text.toLowerCase()),
+                                (_, value) => value.copyWith(
+                                  text: value.text.toLowerCase(),
+                                ),
                               ),
                             ],
                             decoration: const InputDecoration(
@@ -380,7 +390,10 @@ class _SpecialClientPageState extends State<SpecialClientPage> {
                             return;
                           }
                           // Remover caracteres de la máscara del teléfono
-                          final phoneCleaned = phone.text.replaceAll(RegExp(r'[^\d]'), '');
+                          final phoneCleaned = phone.text.replaceAll(
+                            RegExp(r'[^\d]'),
+                            '',
+                          );
                           Navigator.pop(
                             context,
                             PersonalClient(
@@ -760,10 +773,18 @@ class _SpecialClientPageState extends State<SpecialClientPage> {
                             decoration: const InputDecoration(
                               labelText: 'Recibido',
                             ),
+                            onTap: () {
+                              controller.clear();
+                              setDialogState(() => paid = 0);
+                            },
                             onChanged:
-                                (value) => setDialogState(
-                                  () => paid = double.tryParse(value) ?? 0,
-                                ),
+                                (value) => setDialogState(() {
+                                  final amount = double.tryParse(value);
+                                  paid =
+                                      amount != null && amount.isFinite
+                                          ? amount
+                                          : 0;
+                                }),
                           ),
                         if (paid < total)
                           const Padding(
@@ -771,6 +792,14 @@ class _SpecialClientPageState extends State<SpecialClientPage> {
                             child: Text(
                               'El monto recibido no cubre el total.',
                               style: TextStyle(color: Colors.redAccent),
+                            ),
+                          ),
+                        if (method == 'Efectivo' && paid >= total)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: Text(
+                              'Cambio: \$${(paid - total).toStringAsFixed(2)}',
+                              style: const TextStyle(color: Colors.greenAccent),
                             ),
                           ),
                       ],
@@ -820,6 +849,7 @@ class _SpecialClientPageState extends State<SpecialClientPage> {
         paid: payment.$1,
         paymentMethod: payment.$2,
         saleType: 'Cuenta personal · $customerName',
+        origin: SaleOrigin.personalAccount,
         customerKey: customerKey,
       );
       for (final item in items) {
@@ -838,6 +868,8 @@ class _SpecialClientPageState extends State<SpecialClientPage> {
       setState(() {
         _items = [];
         _openAccounts.remove(customerKey);
+        _selectedKey = null;
+        _selectedName = null;
       });
       _ticket.showPreviewSheet(
         context: context,

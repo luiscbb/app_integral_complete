@@ -7,6 +7,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
 import '../../../core/storage/preferences_service.dart';
+import '../../../core/services/private_image_service.dart';
 import '../domain/tournament.dart';
 
 class TournamentStandingsPdfPage extends StatelessWidget {
@@ -245,27 +246,7 @@ class TournamentStandingsPdf {
 
   static Future<Uint8List> _loadLogo(PreferencesService prefs) async {
     if (prefs.logoUrl.isNotEmpty) {
-      final client = HttpClient();
-      try {
-        final request = await client
-            .getUrl(Uri.parse(prefs.logoUrl))
-            .timeout(const Duration(seconds: 15));
-        final response = await request.close().timeout(
-          const Duration(seconds: 15),
-        );
-        if (response.statusCode < 200 || response.statusCode >= 300) {
-          throw HttpException(
-            'No se pudo cargar el logo del billar (HTTP ${response.statusCode}).',
-          );
-        }
-        final bytes = await response.fold<List<int>>(
-          <int>[],
-          (buffer, chunk) => buffer..addAll(chunk),
-        );
-        return Uint8List.fromList(bytes);
-      } finally {
-        client.close(force: true);
-      }
+      return PrivateImageService.current().loadRemote(prefs.logoUrl);
     }
 
     if (prefs.logoPath.isNotEmpty) {

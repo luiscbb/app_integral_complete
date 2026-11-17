@@ -6,13 +6,44 @@
       "request": "launch",
       "type": "dart",
       "args": [
-        "--dart-define-from-file=.env"
+        "--dart-define-from-file=.env",
+        "--dart-define=STAFF_PILOT_ENABLED=true"
+      ]
+    },
+    {
+      "name": "Personal - M2004J19C",
+      "request": "launch",
+      "type": "dart",
+      "deviceId": "0118caba0507",
+      "args": [
+        "--dart-define-from-file=.env",
+        "--dart-define=STAFF_PILOT_ENABLED=true"
+      ]
+    },
+    {
+      "name": "Administrador - A60L",
+      "request": "launch",
+      "type": "dart",
+      "deviceId": "SOSPIROA60L4223004563",
+      "args": [
+        "--dart-define-from-file=.env",
+        "--dart-define=STAFF_PILOT_ENABLED=true"
       ]
     },
     {
       "name": "App Integral (stub)",
       "request": "launch",
       "type": "dart"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Ambos telefonos (piloto)",
+      "configurations": [
+        "Personal - M2004J19C",
+        "Administrador - A60L"
+      ],
+      "stopAll": true
     }
   ]
 }

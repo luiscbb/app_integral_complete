@@ -11,6 +11,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'core/routes/app_router.dart';
 import 'core/routes/app_routes.dart';
 import 'core/services/sync_service.dart';
+import 'core/storage/account_storage.dart';
 import 'core/storage/preferences_service.dart';
 import 'core/theme/theme_provider.dart';
 
@@ -78,6 +79,7 @@ class _AppBootstrapState extends State<AppBootstrap> {
 
       await PreferencesService().init();
       debugPrint('[MAIN] Prefs init done');
+      AccountStorage.initialize(Supabase.instance.client);
 
       final themeProvider = ThemeProvider()..init();
       debugPrint('[MAIN] ThemeProvider init done');
@@ -158,7 +160,10 @@ class _BaumarPOSAppState extends State<BaumarPOSApp> with WidgetsBindingObserver
         _skipFirstResumeSync = false;
         return;
       }
-      SyncService().schedulePendingSync();
+      if (AccountStorage.instance.isActive &&
+          Supabase.instance.client.auth.currentUser?.appMetadata['account_type'] != 'staff') {
+        SyncService().schedulePendingSync();
+      }
     }
   }
 

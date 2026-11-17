@@ -1,6 +1,10 @@
 # Environment variables (never commit secrets)
 .env
 
+# Local test dependencies and generated runtime traces
+node_modules/
+run_app_log*.txt
+
 # Miscellaneous
 *.class
 *.log

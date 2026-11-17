@@ -9,6 +9,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:blue_thermal_printer/blue_thermal_printer.dart';
 
 import '../../../../core/storage/preferences_service.dart';
+import '../../../../core/services/business_logo_loader.dart';
 import '../../domain/entities/sale_item_entity.dart';
 
 class TicketService {
@@ -23,47 +24,8 @@ class TicketService {
     return next;
   }
 
-  Future<Uint8List?> _loadLogoBytes() async {
-    // The remote URL is the shared source of truth; a local file may be stale
-    // when the logo was changed from another device.
-    final logoUrl = _prefs.logoUrl;
-    if (logoUrl.isNotEmpty) {
-      final client =
-          HttpClient()..connectionTimeout = const Duration(seconds: 4);
-      try {
-        final req = await client.getUrl(Uri.parse(logoUrl));
-        final res = await req.close().timeout(const Duration(seconds: 8));
-        if (res.statusCode == 200) {
-          final bytes = <int>[];
-          await for (final chunk in res) {
-            bytes.addAll(chunk);
-          }
-          return Uint8List.fromList(bytes);
-        }
-        debugPrint(
-          '[TicketService] No se pudo descargar el logo remoto: HTTP ${res.statusCode}',
-        );
-      } catch (e) {
-        debugPrint('[TicketService] Error descargando el logo remoto: $e');
-      } finally {
-        client.close(force: true);
-      }
-    }
-
-    // Offline fallback; this file can be older than the remote logo.
-    final logoPath = _prefs.logoPath;
-    if (logoPath.isNotEmpty) {
-      final file = File(logoPath);
-      if (await file.exists()) {
-        try {
-          return await file.readAsBytes();
-        } catch (e) {
-          debugPrint('[TicketService] Error leyendo el logo local: $e');
-        }
-      }
-    }
-    return null;
-  }
+  Future<Uint8List?> _loadLogoBytes() =>
+      loadBusinessLogo(_prefs, remoteFirst: true);
 
   Future<void> printTicket({
     required List<SaleItemEntity> items,
@@ -87,7 +49,7 @@ class TicketService {
         ticketNumber: resolvedTicketNumber,
       );
     } else {
-      final doc = await _buildPdf(
+      final doc = await buildPdf(
         items,
         total,
         paid,
@@ -278,6 +240,9 @@ class TicketService {
         await bluetooth.write(line);
         await bluetooth.printNewLine();
       }
+      await bluetooth.printNewLine();
+      await bluetooth.printNewLine();
+      await bluetooth.printNewLine();
 
       await Future.delayed(const Duration(milliseconds: 1500));
       await bluetooth.disconnect();
@@ -311,7 +276,7 @@ class TicketService {
     int? ticketNumber,
   }) async {
     final resolvedTicketNumber = await _nextTicketNumber(ticketNumber);
-    final doc = await _buildPdf(
+    final doc = await buildPdf(
       items,
       total,
       paid,
@@ -338,7 +303,7 @@ class TicketService {
     int? ticketNumber,
   }) async {
     final resolvedTicketNumber = ticketNumber ?? (_prefs.ticketCounter + 1);
-    final doc = await _buildPdf(
+    final doc = await buildPdf(
       items,
       total,
       paid,
@@ -443,7 +408,7 @@ class TicketService {
     );
   }
 
-  Future<pw.Document> _buildPdf(
+  Future<pw.Document> buildPdf(
     List<SaleItemEntity> items,
     double total,
     double paid,
@@ -476,20 +441,9 @@ class TicketService {
     final is58 = widthMm == 58;
     final pageWidth = widthMm * PdfPageFormat.mm;
 
-    final itemHeight = (is58 ? 9 : 7) * PdfPageFormat.mm;
-    final headerHeight = (logoImage != null ? 54 : 40) * PdfPageFormat.mm;
-    final footerHeight =
-        (paymentMethod == 'Efectivo' && paid > 0 ? 34 : 24) * PdfPageFormat.mm;
-    final headerLineCount = layout.pdfHeaderLines(dateStr).length;
-    final pageHeight =
-        headerHeight +
-        (headerLineCount * 3 * PdfPageFormat.mm) +
-        (items.length + 1) * itemHeight +
-        footerHeight +
-        4 * PdfPageFormat.mm;
     final format = PdfPageFormat(
       pageWidth,
-      pageHeight,
+      double.infinity,
       marginAll: (is58 ? 2 : 4) * PdfPageFormat.mm,
     );
 
@@ -528,7 +482,7 @@ class TicketService {
     );
     final tinyStyle = pw.TextStyle(fontSize: is58 ? 6.5 : 7.5, color: grey);
     final farewellStyle = pw.TextStyle(
-      color: primaryColor,
+      color: black,
       fontWeight: pw.FontWeight.bold,
       fontSize: is58 ? 8 : 9.5,
     );
@@ -765,10 +719,10 @@ class TicketService {
                       style: smallStyle,
                       textAlign: pw.TextAlign.center,
                     ),
-                  if (layout.socialFooter.isNotEmpty)
+                  for (final social in layout.socialFooter)
                     pw.Text(
-                      layout.socialFooter,
-                      style: tinyStyle,
+                      social,
+                      style: normalStyle,
                       textAlign: pw.TextAlign.center,
                     ),
                   pw.SizedBox(height: 4),
@@ -794,7 +748,7 @@ class _TicketLayout {
   late final double safeTotal;
   late final List<List<String>> itemLines;
   late final List<String> totalLines;
-  late final String socialFooter;
+  late final List<String> socialFooter;
 
   _TicketLayout({
     required this.prefs,
@@ -844,9 +798,18 @@ class _TicketLayout {
     totalLines = ['TOTAL: \$${safeTotal.toStringAsFixed(2)}'];
   }
 
-  String _buildSocialFooter() {
-    if (prefs.socialNetworks.isEmpty) return '';
-    return prefs.socialNetworks.entries.map((e) => '@${e.value}').join('  ');
+  List<String> _buildSocialFooter() {
+    const labels = {
+      'facebook': 'Facebook',
+      'instagram': 'Instagram',
+      'tiktok': 'TikTok',
+    };
+    return prefs.socialNetworks.entries
+        .where((entry) => entry.value.trim().isNotEmpty)
+        .map(
+          (entry) => '${labels[entry.key] ?? entry.key}: ${entry.value.trim()}',
+        )
+        .toList();
   }
 
   List<String> pdfHeaderLines(String dateStr) {
@@ -901,7 +864,7 @@ class _TicketLayout {
   List<String> bluetoothFooterLines() {
     final lines = <String>['*** ${prefs.ticketFarewell.toUpperCase()} ***'];
     if (prefs.businessWebsite.isNotEmpty) lines.add(prefs.businessWebsite);
-    if (socialFooter.isNotEmpty) lines.add(socialFooter);
+    lines.addAll(socialFooter);
     return lines;
   }
 }

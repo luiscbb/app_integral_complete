@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../../core/formatters/phone_mask_formatter.dart';
+import '../../../../core/utils/scoped_remote_image.dart';
 import '../../domain/entities/player_stats.dart';
 import '../providers/players_provider.dart';
 
@@ -201,22 +202,33 @@ class _AddPlayerPageState extends State<AddPlayerPage> {
 
   Widget _buildAvatar() {
     final path = _avatarPath;
-    ImageProvider? image;
+    Widget? image;
     if (path != null && path.isNotEmpty) {
       final uri = Uri.tryParse(path);
       if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
-        image = NetworkImage(path);
+        image = ScopedRemoteImage(
+          url: path,
+          width: 92,
+          height: 92,
+          error: const Icon(Icons.person, size: 44, color: Colors.white54),
+        );
       } else {
-        image = FileImage(File(path));
+        image = Image.file(
+          File(path),
+          width: 92,
+          height: 92,
+          fit: BoxFit.cover,
+          errorBuilder: (_, _, _) =>
+              const Icon(Icons.person, size: 44, color: Colors.white54),
+        );
       }
     }
     return CircleAvatar(
       radius: 46,
       backgroundColor: Colors.white12,
-      backgroundImage: image,
       child: image == null
           ? const Icon(Icons.person, size: 44, color: Colors.white54)
-          : null,
+          : ClipOval(child: image),
     );
   }
 

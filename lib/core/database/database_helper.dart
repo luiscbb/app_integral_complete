@@ -1,40 +1,415 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' as ffi;
 import 'package:sqflite/sqflite.dart';
 
+import '../utils/uuid_v4.dart';
+import 'scoped_database.dart';
+
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
   static Database? _database;
+  static bool _ffiInitialized = false;
+  bool _legacyMigrationInProgress = false;
+  bool _legacyClosedForMigration = false;
+  bool _requiresAccountScope = false;
+  ScopedDatabase? _activeScopedDatabase;
+  final Map<String, Future<void>> _scopeLocks = {};
 
   DatabaseHelper._init();
 
+  bool get isAccountDatabaseAvailable =>
+      !_requiresAccountScope || (_activeScopedDatabase?.isOpen ?? false);
+  bool get requiresRestartAfterMigration =>
+      _legacyClosedForMigration && _activeScopedDatabase == null;
+
   Future<Database> get database async {
-    if (_database != null) return _database!;
-    _database = await _initDB('integral_pos_v1.db');
-    return _database!;
+    if (_requiresAccountScope) {
+      final scoped = _activeScopedDatabase;
+      if (scoped == null || !scoped.isOpen) {
+        throw StateError('La base local de la cuenta no está disponible.');
+      }
+      return scoped;
+    }
+    return legacyDatabaseForMigration;
   }
 
-  Future<Database> _initDB(String filePath) async {
-    String path;
+  void requireAccountScope() {
+    if (_database?.isOpen == true || _activeScopedDatabase != null) {
+      throw StateError('La base local ya fue abierta.');
+    }
+    _database = null;
+    _requiresAccountScope = true;
+  }
+
+  void activateAccountDatabase(ScopedDatabase database) {
+    if (!_requiresAccountScope || _activeScopedDatabase != null || !database.isOpen) {
+      throw StateError('No se puede activar la base de la cuenta.');
+    }
+    _activeScopedDatabase = database;
+  }
+
+  Future<bool> hasLegacyDatabase() async =>
+      File(await _databasePath('integral_pos_v1.db')).exists();
+
+  Future<Database> get legacyDatabaseForMigration async {
+    if (_legacyMigrationInProgress || _legacyClosedForMigration ||
+        _activeScopedDatabase != null) {
+      throw StateError('La base local anterior está cerrada para la migración.');
+    }
+    if (_database != null) return _database!;
+    final db = await _initDB('integral_pos_v1.db');
+    if (_legacyMigrationInProgress || _legacyClosedForMigration ||
+        _activeScopedDatabase != null) {
+      await db.close();
+      throw StateError('La base local anterior está cerrada para la migración.');
+    }
+    _database = db;
+    return db;
+  }
+
+  String _scopedFileName(String actorId, String billarId) {
+    if (actorId.trim().isEmpty || billarId.trim().isEmpty) {
+      throw ArgumentError('La cuenta y el billar son obligatorios.');
+    }
+    String encode(String value) =>
+        base64Url.encode(utf8.encode(value)).replaceAll('=', '');
+    final fileName = 'integral_pos_${encode(actorId)}.${encode(billarId)}.db';
+    if (utf8.encode(fileName).length > 200) {
+      throw ArgumentError('Los identificadores del ámbito local son demasiado largos.');
+    }
+    return fileName;
+  }
+
+  Future<T> _withScopedFileLock<T>(
+    String path,
+    Future<T> Function() action,
+  ) async {
+    final previous = _scopeLocks[path];
+    final completed = Completer<void>();
+    _scopeLocks[path] = completed.future;
+    try {
+      if (previous != null) await previous;
+      final lock = await File('$path.lock').open(mode: FileMode.append);
+      try {
+        await lock.lock(FileLock.exclusive);
+        try {
+          return await action();
+        } finally {
+          await lock.unlock();
+        }
+      } finally {
+        await lock.close();
+      }
+    } finally {
+      if (identical(_scopeLocks[path], completed.future)) {
+        _scopeLocks.remove(path);
+      }
+      completed.complete();
+    }
+  }
+
+  Future<ScopedDatabase> openScopedDatabase({
+    required String actorId,
+    required String billarId,
+    required bool Function() isCurrentScope,
+    bool mustExist = false,
+  }) async {
+    if (!isCurrentScope()) {
+      throw StateError('La cuenta o el billar de la base local cambió.');
+    }
+    final fileName = _scopedFileName(actorId, billarId);
+    final path = await _databasePath(fileName);
+    return _withScopedFileLock(path, () async {
+      if (!isCurrentScope()) {
+        throw StateError('La cuenta o el billar de la base local cambió.');
+      }
+      final exists = await File(path).exists();
+      if (mustExist && !exists) {
+        throw StateError('La base local verificada ya no está disponible.');
+      }
+      if (exists) {
+        final existing = await openDatabase(
+          path, readOnly: true, singleInstance: false,
+        );
+        try {
+          await _requireScopedDatabaseOwner(existing, actorId, billarId);
+        } finally {
+          await existing.close();
+        }
+      }
+      if (!isCurrentScope()) {
+        throw StateError('La cuenta o el billar de la base local cambió.');
+      }
+      final db = await _initDB(fileName, singleInstance: false);
+      try {
+        await db.transaction((txn) async {
+          if (!isCurrentScope()) {
+            throw StateError('La cuenta o el billar de la base local cambió.');
+          }
+          await txn.execute('''
+            CREATE TABLE IF NOT EXISTS local_scope_identity (
+              singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+              actor_id TEXT NOT NULL,
+              billar_id TEXT NOT NULL
+            )
+          ''');
+          final rows = await txn.query('local_scope_identity');
+          if (rows.isEmpty) {
+            await txn.insert('local_scope_identity', {
+              'singleton': 1,
+              'actor_id': actorId,
+              'billar_id': billarId,
+            });
+          } else if (rows.length != 1 ||
+              rows.single['singleton'] != 1 ||
+              rows.single['actor_id'] != actorId ||
+              rows.single['billar_id'] != billarId) {
+            throw StateError('La base local pertenece a otra cuenta o billar.');
+          }
+          if (!isCurrentScope()) {
+            throw StateError('La cuenta o el billar de la base local cambió.');
+          }
+        });
+        if (!isCurrentScope()) {
+          throw StateError('La cuenta o el billar de la base local cambió.');
+        }
+        return ScopedDatabase(database: db, isCurrentScope: isCurrentScope);
+      } catch (_) {
+        await db.close();
+        rethrow;
+      }
+    });
+  }
+
+  Future<void> _requireScopedDatabaseOwner(
+    Database db,
+    String actorId,
+    String billarId,
+  ) async {
+    final tables = await db.rawQuery(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+      ['local_scope_identity'],
+    );
+    if (tables.isEmpty) {
+      await _requireDatabaseOwner(db, actorId, billarId);
+      return;
+    }
+    final rows = await db.query('local_scope_identity');
+    if (rows.length != 1 ||
+        rows.single['singleton'] != 1 ||
+        rows.single['actor_id'] != actorId ||
+        rows.single['billar_id'] != billarId) {
+      throw StateError('La base local pertenece a otra cuenta o billar.');
+    }
+  }
+
+  Future<ScopedDatabase> migrateConfirmedLegacyDatabase({
+    required String actorId,
+    required String billarId,
+    required bool Function() isCurrentScope,
+  }) async {
+    final fileName = _scopedFileName(actorId, billarId);
+    void requireScope() {
+      if (!isCurrentScope()) {
+        throw StateError('La cuenta o el billar cambió durante la migración.');
+      }
+    }
+
+    requireScope();
+    if (_legacyMigrationInProgress) {
+      throw StateError('Ya hay una migración local en curso.');
+    }
+    _legacyMigrationInProgress = true;
+    try {
+      final legacyPath = await _databasePath('integral_pos_v1.db');
+      final targetPath = await _databasePath(fileName);
+      requireScope();
+      if (!await File(legacyPath).exists()) {
+        throw StateError('No existe una base local anterior para migrar.');
+      }
+      final previous = _database;
+      _database = null;
+      if (previous?.isOpen == true) await previous!.close();
+      requireScope();
+
+      final legacy = await _initDB('integral_pos_v1.db', singleInstance: false);
+      try {
+        final locking = await legacy.rawQuery('PRAGMA locking_mode=EXCLUSIVE');
+        if (locking.length != 1 || locking.single.values.single != 'exclusive') {
+          throw StateError('No se pudo bloquear la base local anterior.');
+        }
+        await legacy.execute('BEGIN EXCLUSIVE');
+        await legacy.execute('COMMIT');
+        await _requireDatabaseOwner(legacy, actorId, billarId);
+        requireScope();
+        final checkpoint = await legacy.rawQuery('PRAGMA wal_checkpoint(FULL)');
+        if (checkpoint.length != 1 || checkpoint.single['busy'] != 0) {
+          throw StateError('No se pudieron consolidar los datos locales anteriores.');
+        }
+        requireScope();
+        await _withScopedFileLock(targetPath, () async {
+          requireScope();
+          final target = File(targetPath);
+          if (await target.exists()) {
+            await _validateLegacyCopy(targetPath, actorId, billarId);
+          } else {
+            final temporary = File('$targetPath.migrating.${newUuidV4()}');
+            try {
+              await File(legacyPath).copy(temporary.path);
+              requireScope();
+              await _validateLegacyCopy(temporary.path, actorId, billarId);
+              requireScope();
+              await temporary.rename(targetPath);
+            } finally {
+              if (await temporary.exists()) await temporary.delete();
+            }
+          }
+          _legacyClosedForMigration = true;
+          requireScope();
+        });
+      } finally {
+        await legacy.close();
+      }
+      requireScope();
+      return await openScopedDatabase(
+        actorId: actorId,
+        billarId: billarId,
+        isCurrentScope: isCurrentScope,
+      );
+    } finally {
+      _legacyMigrationInProgress = false;
+    }
+  }
+
+  Future<void> _requireDatabaseOwner(
+    Database db,
+    String actorId,
+    String billarId,
+  ) async {
+    final tables = await db.rawQuery(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+      ['legacy_local_owner'],
+    );
+    if (tables.isEmpty) {
+      throw StateError('La base local anterior no tiene propietario confirmado.');
+    }
+    final rows = await db.query('legacy_local_owner', limit: 1);
+    if (rows.length != 1 ||
+        rows.single['actor_id'] != actorId ||
+        rows.single['billar_id'] != billarId) {
+      throw StateError('La base local anterior pertenece a otra cuenta o billar.');
+    }
+  }
+
+  Future<void> _validateLegacyCopy(
+    String path,
+    String actorId,
+    String billarId,
+  ) async {
+    final db = await openDatabase(path, readOnly: true, singleInstance: false);
+    try {
+      await _requireDatabaseOwner(db, actorId, billarId);
+      final result = await db.rawQuery('PRAGMA quick_check');
+      if (result.length != 1 || result.single.values.single != 'ok') {
+        throw StateError('La copia de la base local no superó la verificación.');
+      }
+    } finally {
+      await db.close();
+    }
+  }
+
+  Future<String> _databasePath(String filePath) async {
     if (Platform.isWindows || Platform.isLinux) {
-      ffi.sqfliteFfiInit();
-      databaseFactory = ffi.databaseFactoryFfi;
+      if (!_ffiInitialized) {
+        ffi.sqfliteFfiInit();
+        databaseFactory = ffi.databaseFactoryFfi;
+        _ffiInitialized = true;
+      }
       final dir = await getApplicationDocumentsDirectory();
-      path = join(dir.path, 'BaumarSolutions', 'database', filePath);
+      final path = join(dir.path, 'BaumarSolutions', 'database', filePath);
       final file = File(path);
       if (!await file.parent.exists()) {
         await file.parent.create(recursive: true);
       }
-    } else {
-      final dbPath = await getDatabasesPath();
-      path = join(dbPath, filePath);
+      return path;
     }
-    return await openDatabase(path, version: 36, onCreate: _createDB, onUpgrade: _upgradeDB);
+    final dbPath = await getDatabasesPath();
+    return join(dbPath, filePath);
+  }
+
+  Future<Database> _initDB(
+    String filePath, {
+    bool singleInstance = true,
+  }) async {
+    final path = await _databasePath(filePath);
+    return await openDatabase(
+      path,
+      version: 53,
+      onCreate: _createDB,
+      onUpgrade: _upgradeDB,
+      singleInstance: singleInstance,
+    );
   }
 
   Future<void> _upgradeDB(Database db, int oldV, int newV) async {
+    if (oldV < 53) {
+      await _createStaffProviderOperations(db);
+    }
+    if (oldV < 51) {
+      await _createStaffPurchaseOperations(db);
+    }
+    if (oldV < 50) {
+      await _createStaffSaleCache(db);
+    }
+    if (oldV < 49) {
+      await _createPendingOwnerPromos(db);
+    }
+    if (oldV < 48) {
+      if (oldV >= 46 &&
+          !await _hasColumn(db, 'pending_staff_sales', 'reservation_snapshot')) {
+        await db.execute(
+          'ALTER TABLE pending_staff_sales ADD COLUMN reservation_snapshot TEXT',
+        );
+      }
+      if (!await _hasColumn(db, 'sale_details', 'cost_available')) {
+        await db.execute(
+          'ALTER TABLE sale_details ADD COLUMN cost_available INTEGER NOT NULL DEFAULT 1',
+        );
+      }
+    }
+    if (oldV < 47) {
+      await _createReconciledStaffSales(db);
+    }
+    if (oldV < 46) {
+      await _createPendingStaffSales(db);
+    }
+    if (oldV < 45) {
+      await _createPendingOwnerTransactions(db);
+    }
+    if (oldV < 43) {
+      if (!await _hasColumn(db, 'pending_sales', 'billar_id')) {
+        await db.execute('ALTER TABLE pending_sales ADD COLUMN billar_id TEXT');
+      }
+      if (!await _hasColumn(db, 'pending_sales', 'actor_id')) {
+        await db.execute('ALTER TABLE pending_sales ADD COLUMN actor_id TEXT');
+      }
+    }
+    if (oldV < 42 && !await _hasColumn(db, 'purchases', 'billar_id')) {
+      await db.execute('ALTER TABLE purchases ADD COLUMN billar_id TEXT');
+    }
+    if (oldV < 40) {
+      await _createPendingProviderOperations(db);
+    }
+    if (oldV < 39) {
+      await _createPendingStaffRequests(db);
+    }
+    if (oldV < 37 && !await _hasColumn(db, 'sales_history', 'source_module')) {
+      await db.execute('ALTER TABLE sales_history ADD COLUMN source_module TEXT');
+    }
     if (oldV < 36 && !await _hasColumn(db, 'players', 'opponent_8_ball_foul')) {
       await db.execute(
         'ALTER TABLE players ADD COLUMN opponent_8_ball_foul INTEGER NOT NULL DEFAULT 0',
@@ -457,6 +832,130 @@ class DatabaseHelper {
     if (oldV < 24) {
       await db.execute('ALTER TABLE products ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1');
     }
+    if (oldV < 38) {
+      if (!await _hasColumn(db, 'products', 'stock_revision')) {
+        await db.execute('ALTER TABLE products ADD COLUMN stock_revision INTEGER');
+      }
+      if (!await _hasColumn(db, 'products', 'local_revision')) {
+        await db.execute('ALTER TABLE products ADD COLUMN local_revision INTEGER NOT NULL DEFAULT 0');
+      }
+      if (!await _hasColumn(db, 'products', 'stock_conflict')) {
+        await db.execute('ALTER TABLE products ADD COLUMN stock_conflict INTEGER NOT NULL DEFAULT 0');
+      }
+      await _createProductRevisionTrigger(db);
+    }
+    if (oldV < 41) {
+      if (!await _hasColumn(db, 'providers', 'is_active')) {
+        await db.execute(
+          'ALTER TABLE providers ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1',
+        );
+      }
+      final pending = await db.query(
+        'pending_provider_operations',
+        columns: ['id'],
+        where: 'operation = ? AND payload = ?',
+        whereArgs: ['delete', 'null'],
+      );
+      for (final row in pending) {
+        await db.update(
+          'pending_provider_operations',
+          {'payload': jsonEncode({'request_id': newUuidV4()})},
+          where: 'id = ?',
+          whereArgs: [row['id']],
+        );
+      }
+    }
+    if (oldV < 44 && await _hasColumn(db, 'billiard_tables', 'id')) {
+      final columns = await db.rawQuery('PRAGMA table_info(billiard_tables)');
+      const expected = {
+        'id', 'billar_id', 'name', 'table_type', 'is_occupied',
+        'start_time', 'orders', 'synced', 'is_deleted',
+      };
+      final actual = columns.map((column) => column['name']).toSet();
+      if (actual.length != expected.length || !actual.containsAll(expected)) {
+        throw StateError('La estructura local de mesas requiere revisión antes de migrar.');
+      }
+      final tables = await db.rawQuery(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name <> 'billiard_tables'",
+      );
+      for (final table in tables) {
+        final name = (table['name'] as String).replaceAll('"', '""');
+        final keys = await db.rawQuery('PRAGMA foreign_key_list("$name")');
+        if (keys.any((key) => key['table']?.toString().toLowerCase() == 'billiard_tables')) {
+          throw StateError('Hay referencias a mesas que requieren revisión antes de migrar.');
+        }
+      }
+      final objects = await db.rawQuery(
+        "SELECT sql FROM sqlite_master WHERE tbl_name = ? "
+        "AND type IN ('index', 'trigger') AND sql IS NOT NULL",
+        ['billiard_tables'],
+      );
+      await _createBilliardTables(db, 'billiard_tables_v44');
+      await db.execute('''
+        INSERT INTO billiard_tables_v44
+          (id, billar_id, name, table_type, is_occupied, start_time, orders, synced, is_deleted)
+        SELECT id, billar_id, name, table_type, is_occupied, start_time, orders, synced, is_deleted
+        FROM billiard_tables
+      ''');
+      await db.execute('DROP TABLE billiard_tables');
+      await db.execute('ALTER TABLE billiard_tables_v44 RENAME TO billiard_tables');
+      for (final object in objects) {
+        await db.execute(object['sql'] as String);
+      }
+    }
+    if (oldV < 52) {
+      await _addProviderPaymentTerms(db);
+      await _addPurchasePaymentTerms(db);
+    }
+  }
+
+  Future<void> _addPurchasePaymentTerms(Database db) async {
+    const columns = {
+      'payment_condition': 'TEXT',
+      'payment_method': 'TEXT',
+      'credit_days': 'INTEGER',
+      'due_date': 'TEXT',
+      'paid_amount': 'REAL',
+      'balance_due': 'REAL',
+    };
+    for (final entry in columns.entries) {
+      if (!await _hasColumn(db, 'purchases', entry.key)) {
+        await db.execute('ALTER TABLE purchases ADD COLUMN ${entry.key} ${entry.value}');
+      }
+    }
+  }
+
+  Future<void> _addProviderPaymentTerms(Database db) async {
+    if (!await _hasColumn(db, 'providers', 'credit_days')) {
+      await db.execute(
+        'ALTER TABLE providers ADD COLUMN credit_days INTEGER '
+        "CHECK (credit_days IS NULL OR (typeof(credit_days) = 'integer' "
+        'AND credit_days >= 0 AND credit_days <= 2147483647))',
+      );
+    }
+    if (!await _hasColumn(db, 'providers', 'preferred_payment_method')) {
+      await db.execute(
+        'ALTER TABLE providers ADD COLUMN preferred_payment_method TEXT '
+        "CHECK (preferred_payment_method IN ('efectivo', 'tarjeta', 'transferencia', 'credito'))",
+      );
+    }
+  }
+
+  Future<void> _createBilliardTables(Database db, String tableName) async {
+    await db.execute('''
+      CREATE TABLE $tableName (
+        id          INTEGER NOT NULL,
+        billar_id   TEXT    NOT NULL DEFAULT 'BILLAR_001',
+        name        TEXT    NOT NULL,
+        table_type  TEXT    NOT NULL DEFAULT 'Pool',
+        is_occupied INTEGER NOT NULL DEFAULT 0,
+        start_time  TEXT,
+        orders      TEXT    DEFAULT '[]',
+        synced      INTEGER NOT NULL DEFAULT 1,
+        is_deleted  INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (billar_id, id)
+      )
+    ''');
   }
 
   Future<bool> _hasColumn(Database db, String tableName, String columnName) async {
@@ -464,9 +963,185 @@ class DatabaseHelper {
     return columns.any((column) => column['name'] == columnName);
   }
 
+  Future<void> _createProductRevisionTrigger(Database db) async {
+    await db.execute('''
+      CREATE TRIGGER IF NOT EXISTS product_local_revision
+      AFTER UPDATE OF barcode, name, description, price, cost, stock,
+        image_path, is_promo, parent_id, pieces_per_unit, category,
+        presentation, is_active ON products
+      WHEN NEW.synced = 0 AND (
+        NEW.barcode IS NOT OLD.barcode OR NEW.name IS NOT OLD.name OR
+        NEW.description IS NOT OLD.description OR NEW.price IS NOT OLD.price OR
+        NEW.cost IS NOT OLD.cost OR NEW.stock IS NOT OLD.stock OR
+        NEW.image_path IS NOT OLD.image_path OR NEW.is_promo IS NOT OLD.is_promo OR
+        NEW.parent_id IS NOT OLD.parent_id OR NEW.pieces_per_unit IS NOT OLD.pieces_per_unit OR
+        NEW.category IS NOT OLD.category OR NEW.presentation IS NOT OLD.presentation OR
+        NEW.is_active IS NOT OLD.is_active
+      )
+      BEGIN
+        UPDATE products SET local_revision = local_revision + 1 WHERE id = NEW.id;
+      END
+    ''');
+  }
+
+  Future<void> _createPendingStaffRequests(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS pending_staff_account_requests (
+        request_id TEXT PRIMARY KEY,
+        actor_id TEXT NOT NULL,
+        billar_id TEXT NOT NULL,
+        username TEXT NOT NULL,
+        full_name TEXT NOT NULL,
+        job_title TEXT NOT NULL,
+        modules_json TEXT NOT NULL,
+        UNIQUE (actor_id, billar_id, username)
+      )
+    ''');
+  }
+
+  Future<void> _createPendingOwnerTransactions(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS pending_owner_transactions (
+        kind TEXT NOT NULL CHECK (kind IN ('sale', 'purchase')),
+        local_id INTEGER NOT NULL,
+        actor_id TEXT NOT NULL,
+        billar_id TEXT NOT NULL,
+        request_id TEXT NOT NULL UNIQUE,
+        payload TEXT NOT NULL,
+        PRIMARY KEY (kind, local_id)
+      )
+    ''');
+  }
+
+  Future<void> _createStaffProviderOperations(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS staff_provider_operations (
+        request_id TEXT PRIMARY KEY,
+        actor_id TEXT NOT NULL,
+        billar_id TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        receipt TEXT
+      )
+    ''');
+    await db.execute('''
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_provider_pending
+      ON staff_provider_operations (actor_id, billar_id) WHERE receipt IS NULL
+    ''');
+  }
+
+  Future<void> _createStaffPurchaseOperations(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS staff_purchase_operations (
+        request_id TEXT PRIMARY KEY,
+        actor_id TEXT NOT NULL,
+        billar_id TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        receipt TEXT
+      )
+    ''');
+    await db.execute('''
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_purchase_pending
+      ON staff_purchase_operations (actor_id, billar_id) WHERE receipt IS NULL
+    ''');
+  }
+
+  Future<void> _createStaffSaleCache(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS staff_sale_catalog (
+        actor_id TEXT NOT NULL,
+        billar_id TEXT NOT NULL,
+        product_id INTEGER NOT NULL,
+        product_json TEXT NOT NULL,
+        stock REAL NOT NULL,
+        stock_revision INTEGER NOT NULL,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (actor_id, billar_id, product_id)
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS staff_sale_cart (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor_id TEXT NOT NULL,
+        billar_id TEXT NOT NULL,
+        product_id INTEGER NOT NULL,
+        quantity INTEGER NOT NULL CHECK (quantity > 0),
+        UNIQUE (actor_id, billar_id, product_id)
+      )
+    ''');
+  }
+
+  Future<void> _createPendingStaffSales(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS pending_staff_sales (
+        actor_id TEXT NOT NULL,
+        billar_id TEXT NOT NULL,
+        request_id TEXT NOT NULL UNIQUE,
+        payload TEXT NOT NULL,
+        reservation_snapshot TEXT,
+        remote_sale_id INTEGER,
+        PRIMARY KEY (actor_id, billar_id)
+      )
+    ''');
+  }
+
+  Future<void> _createReconciledStaffSales(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS reconciled_staff_sales (
+        actor_id TEXT NOT NULL,
+        billar_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        remote_sale_id INTEGER NOT NULL,
+        local_sale_id INTEGER NOT NULL,
+        PRIMARY KEY (actor_id, billar_id, request_id),
+        UNIQUE (billar_id, remote_sale_id)
+      )
+    ''');
+  }
+
+  Future<void> _createPendingOwnerPromos(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS pending_owner_promos (
+        product_id INTEGER PRIMARY KEY,
+        actor_id TEXT NOT NULL,
+        billar_id TEXT NOT NULL,
+        is_new INTEGER NOT NULL CHECK (is_new IN (0, 1)),
+        request_id TEXT UNIQUE,
+        payload TEXT,
+        CHECK ((request_id IS NULL) = (payload IS NULL))
+      )
+    ''');
+  }
+
+  Future<void> _createPendingProviderOperations(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS pending_provider_operations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor_id TEXT NOT NULL,
+        billar_id TEXT NOT NULL,
+        provider_id INTEGER NOT NULL,
+        operation TEXT NOT NULL CHECK (operation IN ('save', 'products', 'delete')),
+        payload TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_pending_provider_actor
+      ON pending_provider_operations (actor_id, billar_id, id)
+    ''');
+  }
+
   Future<void> _createDB(Database db, int version) async {
     const billarId = "'BILLAR_001'";
 
+    await _createPendingStaffRequests(db);
+    await _createPendingProviderOperations(db);
+    await _createPendingOwnerTransactions(db);
+    await _createPendingStaffSales(db);
+    await _createStaffPurchaseOperations(db);
+    await _createStaffProviderOperations(db);
+    await _createStaffSaleCache(db);
+    await _createReconciledStaffSales(db);
+    await _createPendingOwnerPromos(db);
     await db.execute('''
       CREATE TABLE products (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -485,9 +1160,13 @@ class DatabaseHelper {
         presentation    TEXT    DEFAULT '',
         is_active       INTEGER NOT NULL DEFAULT 1,
         synced          INTEGER NOT NULL DEFAULT 0,
+        stock_revision  INTEGER,
+        local_revision  INTEGER NOT NULL DEFAULT 0,
+        stock_conflict  INTEGER NOT NULL DEFAULT 0,
         cloud_id        TEXT
       )
     ''');
+    await _createProductRevisionTrigger(db);
 
     await db.execute('''
       CREATE TABLE tournaments (
@@ -543,19 +1222,7 @@ class DatabaseHelper {
       )
     ''');
 
-    await db.execute('''
-      CREATE TABLE billiard_tables (
-        id          INTEGER PRIMARY KEY,
-        billar_id   TEXT    NOT NULL DEFAULT $billarId,
-        name        TEXT    NOT NULL,
-        table_type  TEXT    NOT NULL DEFAULT 'Pool',
-        is_occupied INTEGER NOT NULL DEFAULT 0,
-        start_time  TEXT,
-        orders      TEXT    DEFAULT '[]',
-        synced      INTEGER NOT NULL DEFAULT 1,
-        is_deleted  INTEGER NOT NULL DEFAULT 0
-      )
-    ''');
+    await _createBilliardTables(db, 'billiard_tables');
 
     await db.execute('''
       CREATE TABLE sales_history (
@@ -565,6 +1232,7 @@ class DatabaseHelper {
         paid           REAL    NOT NULL DEFAULT 0,
         date           TEXT    NOT NULL,
         type           TEXT    NOT NULL,
+        source_module  TEXT,
         payment_method TEXT    NOT NULL DEFAULT 'Efectivo',
         cancelled      INTEGER NOT NULL DEFAULT 0,
         customer_key   TEXT,
@@ -583,6 +1251,7 @@ class DatabaseHelper {
         price_at_sale REAL    NOT NULL,
         cancelled     INTEGER NOT NULL DEFAULT 0,
         cost_at_sale  REAL    NOT NULL DEFAULT 0,
+        cost_available INTEGER NOT NULL DEFAULT 1,
         FOREIGN KEY (sale_id) REFERENCES sales_history (id) ON DELETE CASCADE
       )
     ''');
@@ -597,9 +1266,11 @@ class DatabaseHelper {
         contact_name TEXT DEFAULT '',
         notes        TEXT DEFAULT '',
         category     TEXT DEFAULT 'General',
-        visit_days   TEXT DEFAULT ''
+        visit_days   TEXT DEFAULT '',
+        is_active    INTEGER NOT NULL DEFAULT 1
       )
     ''');
+    await _addProviderPaymentTerms(db);
 
     await db.execute('''
       CREATE TABLE provider_products (
@@ -615,6 +1286,7 @@ class DatabaseHelper {
     await db.execute('''
       CREATE TABLE purchases (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        billar_id   TEXT,
         provider_id INTEGER,
         total       REAL NOT NULL,
         date        TEXT NOT NULL,
@@ -626,6 +1298,7 @@ class DatabaseHelper {
         cloud_id    TEXT
       )
     ''');
+    await _addPurchasePaymentTerms(db);
 
     await db.execute('''
       CREATE TABLE purchase_details (
@@ -643,6 +1316,8 @@ class DatabaseHelper {
     await db.execute('''
       CREATE TABLE pending_sales (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        billar_id  TEXT,
+        actor_id   TEXT,
         product    TEXT    NOT NULL,
         quantity   INTEGER NOT NULL,
         price      REAL    NOT NULL,

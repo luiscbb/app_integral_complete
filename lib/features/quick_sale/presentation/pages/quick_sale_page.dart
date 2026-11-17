@@ -121,7 +121,7 @@ class _QuickSalePageState extends State<QuickSalePage> {
     );
     // Restaurar carrito de venta rápida si había una reserva activa.
     final quickReserved = await _reservationService.getReservedQuantities(
-      excludeSource: 'table',
+      includeSource: 'quick_sale',
     );
     final restoredCart = <int, int>{};
     for (final entry in quickReserved.entries) {
@@ -490,13 +490,23 @@ class _QuickSalePageState extends State<QuickSalePage> {
     final itemsSnapshot = List<SaleItemEntity>.from(_cartItems);
     final totalSnapshot = _total;
 
-    await _salesRepo.saveSale(
-      items: itemsSnapshot,
-      total: totalSnapshot,
-      paid: paid,
-      paymentMethod: method,
-      saleType: 'Venta Rápida',
-    );
+    try {
+      await _salesRepo.saveSale(
+        items: itemsSnapshot,
+        total: totalSnapshot,
+        paid: paid,
+        paymentMethod: method,
+        saleType: 'Venta Rápida',
+        origin: SaleOrigin.quickSale,
+      );
+    } on SaleScopeException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(error.message), backgroundColor: Colors.red),
+        );
+      }
+      return;
+    }
     if (!mounted) return;
     for (final e in _cart.entries) {
       final p = _all.firstWhere((x) => x.id == e.key);
@@ -505,7 +515,6 @@ class _QuickSalePageState extends State<QuickSalePage> {
     if (!mounted) return;
 
     setState(() => _cart.clear());
-    await _reservationService.clearQuickSaleReservation();
     await _load();
     if (!mounted) return;
 

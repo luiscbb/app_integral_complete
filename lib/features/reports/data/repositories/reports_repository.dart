@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../../core/database/database_helper.dart';
+import '../../../../core/database/purchase_scope.dart';
 import '../../../../core/services/inventory_movement_sync_service.dart';
 import '../../../../core/storage/preferences_service.dart';
 
@@ -29,15 +30,20 @@ class ReportsRepository {
     final e = DateTime(end.year, end.month, end.day, 23, 59, 59).toIso8601String();
     return db.query(
       'sales_history',
-      where: 'date >= ? AND date <= ? AND cancelled = 0',
-      whereArgs: [s, e],
+      where: 'billar_id = ? AND date >= ? AND date <= ? AND cancelled = 0',
+      whereArgs: [_billarId, s, e],
       orderBy: 'date DESC',
     );
   }
 
   Future<List<Map<String, dynamic>>> getSaleDetails(int saleId) async {
     final db = await _db.database;
-    return db.query('sale_details', where: 'sale_id = ?', whereArgs: [saleId]);
+    return db.query(
+      'sale_details',
+      where: 'sale_id = ? AND EXISTS '
+          '(SELECT 1 FROM sales_history s WHERE s.id = sale_details.sale_id AND s.billar_id = ?)',
+      whereArgs: [saleId, _billarId],
+    );
   }
 
   Future<Map<String, double>> getSalesSummary(DateTime start, DateTime end) async {
@@ -59,15 +65,21 @@ class ReportsRepository {
     final e = DateTime(end.year, end.month, end.day, 23, 59, 59).toIso8601String();
     return db.query(
       'purchases',
-      where: 'date >= ? AND date <= ? AND cancelled = 0',
-      whereArgs: [s, e],
+      where: '${purchaseBusinessScope()} AND date >= ? AND date <= ? AND cancelled = 0',
+      whereArgs: [_billarId, s, e],
       orderBy: 'date DESC',
     );
   }
 
   Future<List<Map<String, dynamic>>> getPurchaseDetails(int purchaseId) async {
     final db = await _db.database;
-    return db.query('purchase_details', where: 'purchase_id = ?', whereArgs: [purchaseId]);
+    return db.query(
+      'purchase_details',
+      where: 'purchase_id = ? AND EXISTS '
+          '(SELECT 1 FROM purchases p WHERE p.id = purchase_details.purchase_id '
+          'AND ${purchaseBusinessScope('p')})',
+      whereArgs: [purchaseId, _billarId],
+    );
   }
 
   Future<Map<String, double>> getPurchasesSummary(DateTime start, DateTime end) async {
@@ -91,8 +103,9 @@ class ReportsRepository {
     final e = DateTime(end.year, end.month, end.day, 23, 59, 59).toIso8601String();
     return db.query(
       'purchases',
-      where: "date >= ? AND date <= ? AND cash_source = 'caja' AND cancelled = 0",
-      whereArgs: [s, e],
+      where: "${purchaseBusinessScope()} AND date >= ? AND date <= ? "
+          "AND cash_source = 'caja' AND cancelled = 0",
+      whereArgs: [_billarId, s, e],
       orderBy: 'date DESC',
     );
   }
@@ -106,8 +119,8 @@ class ReportsRepository {
     final db = await _db.database;
     return db.query(
       'inventory_movements',
-      where: 'product_id = ?',
-      whereArgs: [productId],
+      where: 'product_id = ? AND billar_id = ?',
+      whereArgs: [productId, _billarId],
       orderBy: 'created_at DESC',
       limit: limit,
     );
@@ -173,8 +186,8 @@ class ReportsRepository {
     final e = DateTime(end.year, end.month, end.day, 23, 59, 59).toIso8601String();
     return db.query(
       'cash_outflows',
-      where: 'created_at >= ? AND created_at <= ?',
-      whereArgs: [s, e],
+      where: 'billar_id = ? AND created_at >= ? AND created_at <= ?',
+      whereArgs: [_billarId, s, e],
       orderBy: 'created_at DESC',
     );
   }
@@ -215,7 +228,7 @@ class ReportsRepository {
   /// Informe de utilidad del rango:
   ///   Ventas − Costo de lo vendido − Retiros/Gastos = UTILIDAD NETA.
   /// - El costo de lo vendido usa `cost_at_sale` (costo histórico guardado al
-  ///   momento de vender); si la fila no lo trae (ventas viejas), cae a 0.
+  ///   momento de vender). Si faltan costos, la utilidad no está disponible.
   /// - Las compras NO se restan (son inventario/activo), solo se listan fuera.
   /// - [expensesByConcept] agrupa los retiros/gastos por concepto.
   Future<Map<String, dynamic>> getProfitSummary(DateTime start, DateTime end) async {
@@ -225,15 +238,19 @@ class ReportsRepository {
     final db = await _db.database;
     double totalSales = 0;
     double totalCost = 0;
+    var costsAvailable = true;
     for (final s in sales) {
       totalSales += (s['total'] as num).toDouble();
       final rows = await db.query(
         'sale_details',
-        columns: ['quantity', 'cost_at_sale'],
-        where: 'sale_id = ? AND cancelled = 0',
+        columns: ['quantity', 'cost_at_sale', 'cost_available', 'cancelled'],
+        where: 'sale_id = ?',
         whereArgs: [s['id']],
       );
+      if (rows.isEmpty) costsAvailable = false;
       for (final d in rows) {
+        if (d['cancelled'] == 1) continue;
+        if (d['cost_available'] != 1) costsAvailable = false;
         final qty = (d['quantity'] as num?)?.toDouble() ?? 0;
         final cost = (d['cost_at_sale'] as num?)?.toDouble() ?? 0;
         totalCost += qty * cost;
@@ -252,9 +269,10 @@ class ReportsRepository {
 
     return {
       'sales': totalSales,
-      'costOfGoodsSold': totalCost,
+      'costOfGoodsSold': costsAvailable ? totalCost : null,
       'expenses': totalOutflows,
-      'profit': totalSales - totalCost - totalOutflows,
+      'profit': costsAvailable ? totalSales - totalCost - totalOutflows : null,
+      'costsAvailable': costsAvailable,
       'salesCount': sales.length.toDouble(),
       'expensesByConcept': expensesByConcept,
     };

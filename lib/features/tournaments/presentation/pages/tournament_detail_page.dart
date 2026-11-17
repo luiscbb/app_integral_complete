@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../../../core/utils/scoped_remote_image.dart';
 import '../../../players/data/repositories/player_repository.dart';
 import '../../data/tournament_repository.dart';
 import '../../domain/tournament.dart';
@@ -804,12 +805,12 @@ class TournamentEntryAvatar extends StatelessWidget {
     return ClipOval(
       child:
           isNetworkImage
-              ? Image.network(
-                avatar,
+              ? ScopedRemoteImage(
+                url: avatar,
                 width: 42,
                 height: 42,
                 fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => fallback,
+                error: fallback,
               )
               : Image.file(
                 File(avatar),

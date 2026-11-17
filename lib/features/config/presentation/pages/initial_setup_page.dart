@@ -1,13 +1,12 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:sqflite/sqflite.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../../core/database/database_helper.dart';
 import '../../../../core/routes/app_routes.dart';
 import '../../../../core/services/config_remote_repository.dart';
 import '../../../../core/storage/preferences_service.dart';
+import '../../../../core/storage/account_storage.dart';
 import '../../../../core/theme/theme_provider.dart';
 import '../../../../core/widgets/app_button.dart';
 import '../../../../core/widgets/app_text_field.dart';
@@ -112,60 +111,113 @@ class _InitialSetupPageState extends State<InitialSetupPage> {
 
     setState(() => _loading = true);
 
-    await _prefs.setBusinessName(name);
-    await _prefs.setTableCount(tables.clamp(1, 100));
-    await _prefs.setHourlyRate(rate);
-    await _prefs.setPrimaryColorValue(_selectedColor);
-    await _prefs.setBillarId(_generatedBillarId);
-    
-    // Aplicar el color seleccionado al tema
-    if (mounted) {
-      context.read<ThemeProvider>().setPrimaryColor(Color(_selectedColor));
+    try {
+      final auth = Supabase.instance.client.auth;
+      final session = auth.currentSession;
+      if (session == null) {
+        throw StateError('La sesión ya no está disponible.');
+      }
+      void requireSession() {
+        if (!identical(auth.currentSession, session)) {
+          throw StateError('La sesión cambió durante la configuración.');
+        }
+      }
+      final remote = ConfigRemoteRepository();
+      final existing = await remote.fetchSettings();
+      requireSession();
+      if (existing != null && existing['billar_id'] != _generatedBillarId) {
+        throw StateError('Ya existe una configuración para esta cuenta; reinicia la aplicación.');
+      }
+      final saved = await remote.upsertSettings(
+        billarId: _generatedBillarId,
+        businessName: name,
+        tableCount: tables.clamp(1, 100),
+        hourlyRate: rate,
+        primaryColor: _selectedColor,
+      );
+      requireSession();
+      if (saved == null || saved['billar_id'] != _generatedBillarId) {
+        throw StateError('No se pudo confirmar la configuración en el servidor.');
+      }
+      await AccountStorage.instance.activate(
+        billarId: _generatedBillarId,
+        migrateLegacyOwner: false,
+      );
+      requireSession();
+      if (mounted) context.read<ThemeProvider>().reloadFromPreferences();
+    } catch (error, stackTrace) {
+      debugPrint('[InitialSetupPage] No se pudo activar la cuenta: $error\n$stackTrace');
+      if (mounted) {
+        setState(() => _loading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('No se pudo preparar el almacenamiento: $error'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
     }
 
     // Crear mesas en la base de datos local y en Supabase
     final tableCount = tables.clamp(1, 100);
-    final tableRepo = BilliardTableRepository();
-    final db = await DatabaseHelper.instance.database;
-
-    for (int i = 1; i <= tableCount; i++) {
-      await db.insert('billiard_tables', {
-        'id': i,
-        'billar_id': _generatedBillarId,
-        'name': 'Mesa $i',
-        'table_type': 'Billar',
-        'is_occupied': 0,
-        'orders': '[]',
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
-
-      // Sube cada mesa a Supabase (fire-and-forget)
-      unawaited(tableRepo.insert(
-        id: i,
-        billarId: _generatedBillarId,
-        name: 'Mesa $i',
-        tableType: 'Billar',
-      ));
-    }
-
-    // Subir config a Supabase si hay sesion activa
     try {
-      final user = Supabase.instance.client.auth.currentUser;
-      if (user != null) {
-        final remote = ConfigRemoteRepository();
-        await remote.upsertSettings(
-          billarId: _generatedBillarId,
-          businessName: name,
-          tableCount: tables.clamp(1, 100),
-          hourlyRate: rate,
-          primaryColor: _selectedColor,
+      await _prefs.setBusinessName(name);
+      await _prefs.setTableCount(tableCount);
+      await _prefs.setHourlyRate(rate);
+      await _prefs.setPrimaryColorValue(_selectedColor);
+      await _prefs.setBillarId(_generatedBillarId);
+      if (mounted) {
+        context.read<ThemeProvider>().setPrimaryColor(Color(_selectedColor));
+      }
+      final db = await DatabaseHelper.instance.database;
+      await db.transaction((txn) async {
+        if (_prefs.billarId != _generatedBillarId) {
+          throw StateError('El billar cambió durante la configuración.');
+        }
+        final existing = await txn.query(
+          'billiard_tables',
+          columns: ['id'],
+          where: 'billar_id = ?',
+          whereArgs: [_generatedBillarId],
+          limit: 1,
+        );
+        if (existing.isEmpty) {
+          final rows = await txn.rawQuery(
+            'SELECT COALESCE(MAX(id), 0) AS max_id FROM billiard_tables',
+          );
+          final maxId = (rows.single['max_id'] as num).toInt();
+          for (int i = 1; i <= tableCount; i++) {
+            await txn.insert('billiard_tables', {
+              'id': maxId + i,
+              'billar_id': _generatedBillarId,
+              'name': 'Mesa $i',
+              'table_type': 'Billar',
+              'is_occupied': 0,
+              'orders': '[]',
+              'synced': 0,
+            });
+          }
+        }
+        if (_prefs.billarId != _generatedBillarId) {
+          throw StateError('El billar cambió durante la configuración.');
+        }
+      });
+      await BilliardTableRepository().syncAllToCloud();
+      await _prefs.setIsFirstRun(false);
+    } catch (error, stackTrace) {
+      debugPrint('[InitialSetupPage] Error al crear mesas: $error\n$stackTrace');
+      if (mounted) {
+        setState(() => _loading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('No se pudieron crear las mesas: $error'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
-    } catch (_) {
-      // Fallo silencioso: la config local ya quedo y la sincronizacion
-      // puede hacerse luego desde ConfigPage.
+      return;
     }
-
-    await _prefs.setIsFirstRun(false);
 
     if (mounted) {
       Navigator.pushReplacementNamed(context, AppRoutes.home);

@@ -1,3 +1,5 @@
+import 'purchase_payment_terms.dart';
+
 class PurchaseItemEntity {
   final int productId;
   final String productName;
@@ -18,16 +20,36 @@ class PurchaseEntity {
   final int? providerId;
   final String reference;
   final List<PurchaseItemEntity> items;
-  final String cashSource;
+  final String? cashSource;
+  final PurchasePaymentTerms? paymentTerms;
 
   const PurchaseEntity({
     this.providerId,
     this.reference = '',
     required this.items,
     this.cashSource = 'caja',
+    this.paymentTerms,
   });
 
   double get total => items.fold(0, (acc, e) => acc + e.subtotal);
+}
+
+/// Preferencia para confirmar una compra; crédito no es un pago realizado.
+class PurchasePaymentOption {
+  static const cash = 'efectivo';
+  static const card = 'tarjeta';
+  static const transfer = 'transferencia';
+  static const credit = 'credito';
+
+  static const values = [cash, card, transfer, credit];
+
+  static String label(String value) => switch (value) {
+    cash => 'Efectivo',
+    card => 'Tarjeta',
+    transfer => 'Transferencia',
+    credit => 'Crédito',
+    _ => throw ArgumentError.value(value, 'value', 'Forma de pago no válida.'),
+  };
 }
 
 /// Origen del dinero de una compra, para el corte de efectivo por turno.

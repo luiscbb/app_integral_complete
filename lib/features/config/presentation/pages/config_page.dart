@@ -10,9 +10,19 @@ import '../../../../core/formatters/phone_mask_formatter.dart';
 import '../../../../core/routes/app_routes.dart';
 import '../../../../core/services/sync_service.dart';
 import '../../../../core/storage/preferences_service.dart';
+import '../../../../core/storage/account_storage.dart';
 import '../../../../core/services/config_remote_repository.dart';
+import '../../../../core/services/business_image_paths.dart';
+import '../../../../core/services/sync_session.dart';
+import '../../../../core/utils/uuid_v4.dart';
+import '../../../../core/utils/scoped_remote_image.dart';
 import '../../../../core/theme/theme_provider.dart';
 import '../../../../features/sales/data/repositories/billiard_table_repository.dart';
+import '../../../auth/presentation/widgets/staff_management_section.dart';
+import '../../../auth/domain/staff_access.dart';
+import '../widgets/config_tables_list.dart';
+
+const _staffManagementEnabled = staffPilotEnabled;
 
 class ConfigPage extends StatefulWidget {
   const ConfigPage({super.key});
@@ -32,6 +42,7 @@ class _ConfigPageState extends State<ConfigPage> {
     (Icons.table_bar, 'Billar/Comanda'),
     (Icons.inventory_2, 'Ventas'),
     (Icons.palette, 'Apariencia'),
+    (Icons.manage_accounts, 'Personal'),
     (Icons.logout, 'Sesión'),
   ];
 
@@ -144,6 +155,9 @@ class _ConfigPageState extends State<ConfigPage> {
                                 const _BillarSection(),
                                 const _StockSalesSection(),
                                 const _AparienciaSection(),
+                                const StaffManagementSection(
+                                  enabled: _staffManagementEnabled,
+                                ),
                                 const _SesionSection(),
                               ][_selectedSection],
                         ),
@@ -304,6 +318,9 @@ class _NegocioSectionState extends State<_NegocioSection> {
   Future<String?> _uploadLogoToStorage(String localPath) async {
     try {
       setState(() => _uploadingLogo = true);
+      final client = Supabase.instance.client;
+      final guard = SyncSessionGuard(client, _prefs);
+      final session = guard.capture();
       final file = File(localPath);
       debugPrint('[ConfigPage] Intentando subir logo desde: $localPath');
       if (!await file.exists()) {
@@ -312,10 +329,15 @@ class _NegocioSectionState extends State<_NegocioSection> {
       }
       final bytes = await file.readAsBytes();
       debugPrint('[ConfigPage] Tamaño de imagen: ${bytes.length} bytes');
-      final fileName = 'logo_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      final path = 'logos/$fileName';
-      await Supabase.instance.client.storage
+      final path = businessImagePath(
+        session.billarId,
+        'logos',
+        '${newUuidV4()}.jpg',
+      );
+      guard.require(session);
+      await client.storage
           .from('product_images')
+          .setHeader('Authorization', 'Bearer ${session.token}')
           .uploadBinary(
             path,
             bytes,
@@ -324,9 +346,8 @@ class _NegocioSectionState extends State<_NegocioSection> {
               upsert: true,
             ),
           );
-      final url = Supabase.instance.client.storage
-          .from('product_images')
-          .getPublicUrl(path);
+      guard.require(session);
+      final url = client.storage.from('product_images').getPublicUrl(path);
       debugPrint('[ConfigPage] Logo subido. URL: $url');
       return url;
     } catch (e, st) {
@@ -550,15 +571,14 @@ class _NegocioSectionState extends State<_NegocioSection> {
                         ),
                       )
                       : _logoUrl != null
-                      ? Image.network(
-                        _logoUrl!,
+                      ? ScopedRemoteImage(
+                        url: _logoUrl!,
                         fit: BoxFit.cover,
-                        errorBuilder:
-                            (ctx, err, st) => Icon(
-                              Icons.add_a_photo,
-                              color: primary,
-                              size: 32,
-                            ),
+                        error: Icon(
+                          Icons.add_a_photo,
+                          color: primary,
+                          size: 32,
+                        ),
                       )
                       : _logoPath != null && File(_logoPath!).existsSync()
                       ? Image.file(File(_logoPath!), fit: BoxFit.cover)
@@ -1458,92 +1478,11 @@ class _BillarSectionState extends State<_BillarSection> {
               );
             }
             final tables = snapshot.data ?? [];
-            if (tables.isEmpty) {
-              return const Text(
-                'No hay mesas. Usa el formulario de arriba para crear la primera.',
-                style: TextStyle(color: Colors.white24, fontSize: 12),
-              );
-            }
-            return Container(
-              decoration: BoxDecoration(
-                color: const Color(0xFF1A1A1A),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: Colors.white10),
-              ),
-              child: ListView.separated(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: tables.length,
-                separatorBuilder:
-                    (_, _) => const Divider(color: Colors.white10, height: 1),
-                itemBuilder: (_, i) {
-                  final t = tables[i];
-                  final id = t['id'] as int;
-                  final type = t['table_type'] as String? ?? 'Billar';
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 10,
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(
-                          type == 'Comanda'
-                              ? Icons.restaurant_menu
-                              : Icons.table_bar,
-                          color: primary,
-                          size: 22,
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                t['name'] as String? ?? 'Mesa $id',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14,
-                                ),
-                              ),
-                              Text(
-                                '#$id · $type',
-                                style: const TextStyle(
-                                  color: Colors.white38,
-                                  fontSize: 11,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(
-                            Icons.edit,
-                            color: Colors.white38,
-                            size: 20,
-                          ),
-                          onPressed:
-                              () => _editTableName(
-                                id,
-                                t['name'] as String? ?? 'Mesa $id',
-                              ),
-                          tooltip: 'Editar nombre',
-                        ),
-                        IconButton(
-                          icon: const Icon(
-                            Icons.delete_outline,
-                            color: Colors.redAccent,
-                            size: 20,
-                          ),
-                          onPressed: () => _removeTable(id),
-                          tooltip: 'Eliminar mesa',
-                        ),
-                      ],
-                    ),
-                  );
-                },
-              ),
+            return ConfigTablesList(
+              tables: tables,
+              primaryColor: primary,
+              onEdit: _editTableName,
+              onRemove: _removeTable,
             );
           },
         ),
@@ -2148,21 +2087,39 @@ class _SesionSectionState extends State<_SesionSection> {
     if (confirm != true || !mounted) return;
 
     setState(() => _loading = true);
+    var failed = false;
     try {
-      // Intentar sincronizar pendientes si hay conexión
       await SyncService().syncAllPending();
-      // Cerrar sesión en Supabase
-      await Supabase.instance.client.auth.signOut();
-      // Limpiar solo el nombre de usuario local
-      await _prefs.clearSession();
-    } catch (_) {
-      // Si falla el signOut (sin conexión), igual limpiamos localmente
-      await _prefs.clearSession();
-    } finally {
-      if (mounted) {
-        Navigator.of(
-          context,
-        ).pushNamedAndRemoveUntil(AppRoutes.login, (route) => false);
+    } catch (error, stackTrace) {
+      failed = true;
+      debugPrint(
+        '[ConfigPage] No se pudieron sincronizar los pendientes: $error\n$stackTrace',
+      );
+    }
+    AccountStorage.instance.retire();
+    try {
+      await Supabase.instance.client.auth.signOut().timeout(
+        const Duration(seconds: 12),
+      );
+    } catch (error, stackTrace) {
+      failed = true;
+      debugPrint(
+        '[ConfigPage] No se pudo cerrar completamente la sesión: $error\n$stackTrace',
+      );
+    }
+    if (mounted) {
+      final messenger = ScaffoldMessenger.of(context);
+      Navigator.of(
+        context,
+      ).pushNamedAndRemoveUntil(AppRoutes.login, (route) => false);
+      if (failed) {
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text(
+              'No se pudo completar la sincronización o el cierre remoto. Los datos locales se conservan.',
+            ),
+          ),
+        );
       }
     }
   }
@@ -2199,7 +2156,7 @@ class _SesionSectionState extends State<_SesionSection> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      _prefs.userName,
+                      _loading ? 'Cerrando sesión...' : _prefs.userName,
                       style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.bold,
