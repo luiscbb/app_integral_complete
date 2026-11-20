@@ -1,22 +1,572 @@
 # Avance: aislamiento por cuenta y sincronización
 
-Actualizado: cierre del 16 de noviembre de 2026.
+Actualizado: 19 de noviembre de 2026.
 
-## PUNTO DE REANUDACION PARA EL 17/11/2026
+## PUNTO DE REANUDACION VIGENTE
 
 **Leer esta sección primero. Es el estado vigente; las secciones posteriores
 conservan el historial y pueden describir bloqueos ya resueltos. No recomenzar
 los diagnósticos, migraciones, privatización ni despliegues ya confirmados.
 Revisarlos de nuevo únicamente si aparece un fallo nuevo relacionado.**
 
-### Terminado y confirmado: no repetir
+### Continuación: propiedad y visibilidad aisladas de Mesero
+
+El usuario pidió terminar Mesero antes de pasar a los demás roles y continuar
+con propiedad/visibilidad aisladas. No repetir diagnósticos ni pruebas anteriores
+que no estén relacionadas con cambios nuevos.
+
+1. **Listo localmente:** migración SQLite 59 crea el outbox de cobros, con
+   restricción para impedir cobros pendientes simultáneos por cuenta y billar.
+   La solicitud guarda UUID y payload exacto antes del RPC; ante respuesta
+   perdida, usa el mismo UUID. Guarda el recibo remoto antes de aplicarlo y
+   reconcilia venta, detalles, movimientos, inventario por revisión y cierre
+   del servicio en una transacción local repetible. El envío y la aplicación
+   bloquean mesas con conflictos de sincronización, incluso si el conflicto
+   aparece después de guardar el recibo. No se imprime ni muestra éxito desde
+   este repositorio.
+2. **Visibilidad segura preparada localmente:** el RPC
+   `staff_table_visible_tables` valida membresía activa y tipo de servicio,
+   devuelve mesas libres y servicios activos propios, y revela todas las mesas
+   solo con permiso explícito `*_view_all` o rol administrador. La respuesta
+   incluye servicio/actor y consumos para reanudar la pantalla; la implementación
+   PGlite cubre dos meseros, Cajero/Encargado con vista total, administrador,
+   permisos ausentes, comandas y separación por billar. El nuevo repositorio Dart
+   valida ámbito, filas, UUID y detalles. La migración SQLite 60 agrega caché de
+   visibilidad por actor, negocio y tipo; solo guarda respuestas ya validadas,
+   conserva fecha de consulta y ofrece lectura explícita como caché, sin convertir
+   errores de red en una respuesta exitosa ni tratar datos antiguos como actuales.
+   Si se revoca `view_all`, la lectura sin ese permiso filtra servicios que
+   pertenecen a otros actores aunque sigan en una instantánea anterior.
+3. **Contrato de permisos operativo, listo localmente:** `StaffModule` distingue
+   el módulo padre de abrir, consumir, cobrar y ver todos. La carga de cuentas
+   exige coincidencia padre/acción; el guard no considera suficiente un padre
+   sin acción. El formulario ya asigna las acciones integradas de Mesas y
+   Comandas: Mesero abre/anota servicios propios sin cobrar ni ver a otros;
+   Cajero consulta/cobra los visibles sin abrir ni consumir; Encargado tiene
+   la misma base de consulta/cobro. Ninguna recomendación concede traspasos,
+   que siguen pendientes. Cuenta personal y otros módulos sin integración
+   permanecen bloqueados. Edge/SQL validan el mismo contrato y los RPC exigen
+   membresía, módulo padre y token exacto.
+4. **Pantalla de servicio integrada localmente:** Mesas/Comandas de personal
+   dirige a una pantalla dedicada que consulta la visibilidad autenticada,
+   usa la caché solo ante errores de red reconocidos e indica su antigüedad.
+   Aperturas y consumos propios usan los outboxes; servicios de otros actores
+   son de solo lectura salvo el cobro autorizado y visible. El catálogo se lee
+   localmente y la pantalla no llama
+   `saveTableOrder`, al cierre legacy ni al cobro rápido. La prueba integrada
+   valida la ruta, apertura y consumo. Se corrigió su contaminación de fixture:
+   el producto de prueba del servicio se elimina antes de continuar con las
+   aserciones de inventario preexistentes.
+5. **Revisión de conflictos integrada localmente:** la pantalla muestra la
+   revisión solo con `*_view_all`; lista aperturas rechazadas y consumos tardíos
+   con sus consumos paginados. Una apertura rechazada se puede marcar revisada:
+   el RPC `staff_table_review_opening_conflict` conserva `reviewed_at` y
+   `reviewed_by`, mantiene el estado de conflicto y no toca la mesa. Para reintentar
+   se requiere una consulta nueva y un UUID nuevo. En ese momento, los consumos
+   tardíos seguían en solo consulta; el ajuste quedó integrado en los puntos 6–7.
+   Se quitó la sincronización/reintento de borradores en estado
+   `conflict`. PGlite valida autorización, idempotencia, lista pendiente y
+   ausencia de cambios en la mesa; Flutter valida ruta, permiso y detalle.
+6. **Ajuste de consumo tardío implementado localmente, todavía no desplegado:**
+   `staff_table_late_adjustment_partial.sql` añade snapshot paginado, recibo
+   idempotente, asociación de consumos cobrados y RPC transaccional que crea
+   una venta independiente; no edita la venta original ni vuelve a cerrar la
+   mesa. Consulta y mutación exigen `view_all` y `charge`; la ejecución de la
+   mutación permanece revocada a `authenticated`. La prueba PGlite reinstala el
+   SQL y valida permisos, revisión obsoleta, pago insuficiente, cambio de precio,
+   falta de existencias, paquete y promoción, rollback, duplicados, retiro de
+   los consumos de la lista pendiente y conservación de la venta original.
+7. **Recuperación local del ajuste integrada:** SQLite sube a versión 61 con
+   `staff_table_late_adjustment_outbox`. Guarda solicitud y UUID antes del RPC,
+   persiste el recibo antes de aplicar venta, detalles, movimientos e inventario,
+   y recupera una respuesta perdida con el mismo UUID. La reconciliación no
+   cierra ni cambia el estado local del servicio cerrado. Si el servidor rechaza
+   una revisión obsoleta, se elimina solo la solicitud cuya transacción fue
+   rechazada, para consultar el snapshot nuevo; las respuestas inciertas y los
+   recibos guardados se conservan. La pantalla de revisión ofrece el ajuste a
+   quien tiene `view_all` y `charge`; una banda permite recuperar solicitudes
+   pendientes aunque el servidor ya haya retirado el conflicto de su lista.
+   Las rutas ya aceptan `charge` o `view_all`, además de abrir/consumir. No se
+   imprime ticket desde este flujo.
+8. **Cobro ordinario integrado localmente:** los servicios activos muestran
+   `Cobrar servicio` solo con `charge`; toma un snapshot, exige que el pago cubra
+   el total y usa `staff_table_checkout_outbox.dart` para persistir solicitud y
+   UUID antes del RPC, guardar el recibo y reconciliar venta/inventario. Se puede
+   cobrar un servicio propio o uno ajeno que el servidor hizo visible con
+   `view_all`; la aplicación local no cierra ni cambia el borrador de otro
+   mesero. Las solicitudes inciertas se recuperan desde una banda con el mismo
+   UUID. Un rechazo transaccional conocido (`PST02`/`PST03` y errores de
+   validación/autorización) libera solo esa solicitud sin recibo para volver a
+   consultar y preparar otro cobro. No se usa el cierre ni el registro legacy.
+9. **Verificación del formulario de roles (solo lectura):** con autorización
+   expresa se inició en A60L el perfil `Administrador - A60L`, conservando los
+   datos. DTD confirmó `HomePage` y la identidad visible `Administrador`, sin
+   errores de ejecución. El usuario abrió `CONFIGURACIÓN > Personal`; el árbol
+   Flutter confirma la lista de personal y el botón `AGREGAR USUARIO`, también
+   sin errores. En el formulario abierto se ven las recomendaciones Mesero,
+   Cajero, Encargado y Administrador, la sección `ROLES GUARDADOS` con
+   `CARGAR ROLES GUARDADOS`, y los módulos disponibles; no se modificaron
+   campos ni se guardó una cuenta o plantilla. No se registraron errores de
+   ejecución. La carga de personal mostró `La sesión cambió`; al tocar
+   `CARGAR ROLES GUARDADOS`, la UI mostró
+   `La sesión o el billar cambió. Vuelve a abrir el formulario.` El formulario
+   permaneció abierto y no se guardó ninguna cuenta o plantilla. Esto confirma
+   un rechazo del guard de sesión, no que la sesión o el billar hayan cambiado
+   realmente; revisar el guard si se repite. El usuario cerró y volvió a abrir
+   el formulario sin guardar; reportó que tardó bastante. El segundo intento de
+   `CARGAR ROLES GUARDADOS` completó y el árbol mostró `No hay roles guardados.`,
+   sin errores de ejecución. Esto confirma la carga remota de la lista vacía;
+   no se guardó una cuenta ni plantilla. La causa del primer rechazo queda sin
+   determinarse y debe revisarse si se repite. El perfil no habilita Flutter
+   Driver y no hay una ventana de espejo para manejar el teléfono desde aquí.
+   La migración SQL ya está aplicada, pero todavía no existe ninguna plantilla
+   remota.
+10. Antes de habilitar, probar concurrencia real en PostgreSQL aislado, permisos
+    y revocación, dobles aperturas/cobros, consumos tardíos y dispositivos sin
+    conexión. En esta máquina no se encontraron `psql`, `postgres`, `initdb` ni
+    servicio PostgreSQL; Docker/Podman tampoco está disponible. PGlite no
+    sustituye la prueba concurrente. Se necesita un entorno PostgreSQL aislado;
+    no probar en producción ni habilitar mientras siga pendiente cualquiera de
+    esos bloqueos.
+
+**Preparación del entorno aislado (reanudación actual):** el intento no elevado
+`wsl --install --no-distribution` terminó con error porque WSL aún no está
+instalado. `winget` encontró el paquete oficial `Microsoft.WSL` 3.0.5 y verificó
+su hash, pero la instalación falló con `0x80073d28` porque exige privilegios de
+administrador. Docker sigue sin instalarse; no se ingresaron credenciales ni se
+inició un reinicio desde esta sesión. El usuario reportó que la operación
+solicitada terminó correctamente y que Windows aplicará los cambios al reiniciar.
+WSL aún no se ha verificado como activo. **Siguiente paso:** el usuario reinicia
+Windows manualmente y, al volver, verificar `wsl --status` y `wsl --version`.
+Después, continuar con Docker Desktop/Supabase local y recién entonces probar
+concurrencia; no usar producción ni habilitar RPC/roles mientras esas pruebas
+sigan pendientes.
+
+**Alcance remoto confirmado (19/11/26):** por solicitud explícita se ejecutó
+`staff_role_templates_operational_update.sql` en el proyecto de producción
+`app_integral_complete`. El preflight encontró una membresía de personal, cero
+plantillas y cero filas incompatibles; la migración no cambió filas de
+membresías ni plantillas. El postflight confirmó la restricción validada con
+acciones de Mesas/Comandas, RLS activo, lectura directa denegada y RPC de
+guardado ejecutable por `authenticated` pero no por `anon`. Los conteos de
+membresías y plantillas permanecieron iguales. No se crearon cuentas,
+plantillas ni datos de prueba remotos.
+
+**No desplegar ni habilitar todavía los RPC de servicio:** `staff_table_service_partial.sql`,
+`staff_table_checkout_partial.sql` y `staff_table_late_adjustment_partial.sql`
+siguen siendo preparación local; no ejecutar `staff_rollout_install.sql` en
+producción ni asignar todavía los permisos operativos a una cuenta real.
+`staff_role_templates.sql` es la instalación base ya aplicada; no repetirla.
+Los cambios de `add_staff_account_fields.sql` y los SQL regenerados son para
+despliegues coordinados futuros. El árbol de trabajo contiene cambios y
+archivos nuevos sin commit de toda esta labor: no revertirlos ni asumir que ya
+están publicados.
+
+**Últimas validaciones:** pasaron 17 pruebas Flutter dirigidas, 6 pruebas
+TypeScript de identidad, 3 pruebas PostgreSQL/PGlite para plantillas, cuentas y
+rollout, análisis Dart dirigido y `git diff --check`. Se comprobó que una acción
+sin padre y un padre sin acciones se rechazan, y que Mesero conserva solo
+apertura y consumo. El rollout se regeneró desde sus fuentes. El postflight
+remoto fue de solo lectura y confirmó los permisos y conteos descritos arriba.
+También pasaron las pruebas anteriores de visibilidad/caché y SQLite 57→60.
+PGlite no certifica concurrencia real PostgreSQL.
+En la continuación de la pantalla dedicada también pasaron
+`staff_access_flow_test.dart`, `staff_table_visibility_repository_test.dart`,
+`staff_table_service_sync_test.dart`, `staff_table_service_outbox_test.dart`,
+`staff_table_late_migration_test.dart`, `staff_table_conflict_repository_test.dart`,
+`staff_table_checkout_snapshot_repository_test.dart` y
+`staff_table_checkout_outbox_test.dart`; el análisis Dart dirigido de cinco
+archivos modificados no reportó problemas.
+En esta continuación pasaron de nuevo `staff_access_flow_test.dart` y
+`staff_table_conflict_repository_test.dart`; el análisis Dart dirigido de la
+página de servicio y la prueba integrada no reportó problemas.
+La auditoría local de aperturas rechazadas también pasó
+`node --test test/staff_table_service_test.cjs`, incluyendo reinstalación
+idempotente de SQL, autorización, repetición de revisión y conservación del
+estado de la mesa.
+En la integración del ajuste tardío pasaron las pruebas PGlite
+`staff_table_checkout_test.cjs` y `staff_table_service_test.cjs`; cubren
+instalación repetida del SQL, permisos, actualización concurrente del snapshot,
+pago insuficiente, precio/stock inválido, rollback, paquete/promoción,
+idempotencia, inventario, conflictos y preservación de la venta original.
+Pasaron también las pruebas Flutter del snapshot paginado, recuperación durable
+del outbox, migración 57→61, cobro existente y flujo de acceso; `flutter analyze`
+dirigido no reportó problemas. Ningún SQL se desplegó ni se habilitó un permiso
+real. Aún falta verificar la experiencia de cobro y ajuste en dispositivos.
+El outbox ordinario también pasó recuperación tras respuesta
+perdida, protección ante conflictos, cobro de servicio de otro actor sin tocar
+su borrador local y liberación de una solicitud rechazada con `PST02`; el flujo
+de acceso confirma que una cuenta con solo `charge` puede entrar y ver su acción
+de cobro, pero no abrir servicios ni revisar conflictos.
+La prueba antigua `sale_business_sync_test.dart` conserva el fallo ajeno
+descrito más abajo y no se corrigió.
+
+### Siguiente desarrollo acordado: roles y mesero
+
+**Avance local:** el formulario de personal ofrece recomendaciones iniciales
+para Mesero, Cajero, Encargado y Administrador. Aplicarlas requiere confirmación,
+reemplaza únicamente la selección del formulario y permite ajustes posteriores;
+no modifica otras cuentas. Mesero no selecciona Venta rápida; Cajero y Encargado
+recomiendan Venta rápida como única función actualmente disponible. La opción
+Administrador no concede privilegios administrativos. Se muestran las acciones
+previstas de mesas, comandas y cuentas como pendientes, sin habilitarlas. La
+cuenta de mesero solo puede guardarse si se selecciona al menos un módulo hoy
+disponible: todavía no se puede crear una cuenta operativa solo de mesero.
+
+**Plantillas personalizadas implementadas localmente:** desde el formulario
+pueden cargarse, crearse, actualizarse, eliminarse y aplicarse por copia.
+Persisten por negocio y solo las gestiona un administrador activo que no deba
+cambiar contraseña. Las revisiones rechazan cambios obsoletos; se vuelve a
+consultar antes de aplicar una plantilla. Editarlas o borrarlas no cambia
+cuentas existentes. Admiten solo los permisos del piloto ya habilitados, o
+ninguno; las recomendaciones iniciales siguen siendo fijas en código.
+
+El incremental `supabase/staff_role_templates.sql` **ya está aplicado** al
+proyecto remoto; se comprobaron RLS, falta de acceso directo autenticado,
+funciones con permisos previstos y cero plantillas guardadas. Se actualizó el
+código en ambos teléfonos con hot reload, sin errores de ejecución reportados.
+No se ha creado ninguna plantilla real ni verificado su uso completo en la UI.
+El conector de base de datos de VS Code no encontró conexión activa, pero la
+CLI Supabase autenticada sí funcionó. No ejecutar la instalación inicial.
+Pruebas locales: 14 Flutter y una prueba PGlite de aislamiento, autorización,
+revisiones y ausencia de cambios en membresías; análisis dirigido sin errores.
+
+**Mesero, base local:** SQLite sube a versión 58 y agrega una
+cola de borradores para aperturas de mesas/comandas y consumos, separados por
+cuenta y negocio. Conserva los registros al reabrir, rechaza identificadores
+reutilizados con datos distintos y revierte si cambia el ámbito durante la
+escritura. Se agregó sincronización preparada con confirmaciones validadas e
+idempotentes: ante respuestas perdidas, inválidas o cambios de sesión, se
+conserva lo pendiente; los consumos previos de una apertura en conflicto
+también se envían y conservan para revisión. La migración 55→56 añade la marca
+de confirmación sin borrar consumos existentes.
+
+**Servidor preparado localmente:** `supabase/staff_table_service_partial.sql`
+bloquea la fila de mesa al arbitrar, acepta la primera apertura confirmada y
+conserva la otra como conflicto; guarda consumos por UUID sin cobrar ni
+descontar existencias. Incluye autorización granular provisional y consulta
+paginada de conflictos y sus consumos para quien tenga permiso de ver todos.
+La implementación y el repositorio de consulta se probaron con fixtures
+aisladas, incluidas revocación, cuenta/negocio ajenos, reintentos, rollback y
+paginación. PGlite no sustituye una prueba de concurrencia real de PostgreSQL.
+
+**Protección administrativa parcial, también local:** el SQL preparado agrega
+un índice de servicio activo por mesa y un trigger que rechaza cambios o
+eliminaciones legacy sobre una mesa con servicio de personal activo, con código
+`PST01`. La sincronización guarda en SQLite una copia del envío rechazado,
+mantiene la mesa pendiente y, una vez identificado el conflicto, no reintenta
+la mesa ni aplica una eliminación remota sobre ella. La pantalla advierte del
+conflicto y el registro de venta impide cobrar la mesa identificada. La
+migración 56→57 crea este registro sin eliminar datos previos.
+
+Si una descarga encuentra una eliminación remota frente a una mesa
+con cambios locales pendientes, ahora conserva la mesa y registra fotografías
+de los datos locales y remotos para revisión, en lugar de borrar el consumo.
+También protege cambios que aparecen entre las dos descargas del mismo ciclo;
+una mesa ya sincronizada sigue aceptando la eliminación remota. El registro
+`table_sync_conflicts.payload` conserva los envíos rechazados como antes; para
+estas eliminaciones usa un objeto con `kind: remote_deleted`, `local` y
+`remote`. No hay una migración nueva de SQLite para este avance.
+
+**Eliminación local protegida:** Ajustes ya no elimina una mesa o comanda si
+tiene servicio activo, tiempo iniciado, consumos pendientes o un conflicto
+local; también se bloquea si no se pueden interpretar los consumos. Muestra
+el motivo al usuario. La eliminación de varias mesas comprueba todas antes de
+modificar cualquiera, y las mesas libres siguen eliminándose normalmente.
+Se validó aislamiento por negocio y cambio de cuenta durante la operación.
+
+Esta protección **no es una solución completa de cobro ni de conflictos**:
+todavía no hay pantalla para consultar o resolver las copias guardadas, y un
+dispositivo desconectado no puede saber de inmediato que existe un servicio de
+personal. Un cobro anterior a detectar el conflicto y los envíos que ya están
+en curso aún requieren protección integral en servidor. La liberación de mesa
+tras el cobro sigue pudiendo limpiar consumos antes del rechazo remoto; no
+confundir la protección de eliminación desde Ajustes con un cobro seguro.
+El registro de venta, la baja de inventario y
+la liberación de mesa siguen siendo pasos separados; hay que integrar un cobro
+transaccional e idempotente antes de activar la función. El trigger se probó en
+PGlite, no con transacciones concurrentes PostgreSQL reales.
+
+**Decisión de cobro acordada:** al activar el servicio de meseros en un negocio,
+las aperturas y consumos podrán seguir offline, pero el cobro de mesas y
+comandas se confirmará únicamente con conexión y respuesta del servidor. Sin
+confirmación no se debe presentar la operación como cobrada ni emitir ticket de
+venta; conservar la cuenta para recuperación. Venta rápida no forma parte de
+esta decisión.
+
+**Preparación de consulta previa de cobro:** el SQL local incorpora
+`staff_table_checkout_snapshot`, con permisos provisionales separados de cobro
+para billar y comandas, que comprueba servicio activo y coherencia de la mesa.
+Devuelve consumos paginados, revisión, hora del servidor, costo de tiempo y
+total; si se agrega un consumo entre páginas, rechaza la revisión anterior.
+El repositorio Dart exige que todas las páginas coincidan en cuenta, servicio,
+mesa, revisión y cantidad de consumos, y verifica el total con los detalles.
+Usa el importe más reciente cuando cambia el tiempo durante la paginación.
+Esta consulta es solo lectura: no cobra, valida precios ni existencias, ni
+cierra la mesa. Ni el SQL ni el repositorio están desplegados o conectados a la
+UI; PGlite no comprueba concurrencia real entre transacciones PostgreSQL.
+
+**Consumos tardíos preparados:** si un servicio ya está cerrado, el servidor
+guarda los consumos recibidos posteriormente como conflictos, sin agregarlos a
+la venta ni descontar inventario. Los reintentos de consumos que sí habían
+llegado antes del cierre conservan su estado original. La consulta de conflictos
+distingue una apertura disputada de un consumo tardío y, en este último caso,
+solo muestra los consumos tardíos. El sincronizador conserva esta distinción en
+SQLite; la migración 57→58 mantiene los consumos existentes. También maneja una
+confirmación de apertura perdida si el servicio ya fue cerrado.
+
+Esta parte se probó localmente con PGlite y Flutter, incluyendo respuestas
+perdidas, reintentos y reapertura de la base. Aún no existen la pantalla de
+revisión ni la resolución de los conflictos. No se han desplegado estos cambios.
+
+**Cobro transaccional preparado localmente:** el nuevo incremental
+`supabase/staff_table_checkout_partial.sql` comprueba permisos, revisión,
+consumos, precios, tiempo, existencias y pago; registra venta, detalles y
+movimientos, actualiza inventario y cierra el servicio y la mesa en una sola
+transacción. El UUID permite recuperar el mismo resultado sin duplicar la venta;
+si cambian los datos, se revoca el permiso o la venta fue anulada, rechaza el
+reintento. Los paquetes y componentes de promociones descuentan sus productos
+base. Un consumo recibido después del cierre queda como conflicto.
+
+**Cobro completo obligatorio:** por indicación del usuario, mesas y comandas no
+se pueden cerrar con un importe recibido inferior al total. La pantalla actual,
+el repositorio local y el cobro transaccional preparado rechazan el importe
+insuficiente; no se registra la venta ni se libera la mesa. Para tarjeta y
+transferencia la pantalla registra como recibido el total final. No cambia Venta
+rápida ni las cuentas de clientes/jugadores.
+
+El costo de tiempo se recalcula en el servidor al confirmar; si ya no coincide
+con el mostrado, devuelve `PST03` y no cobra. La consulta previa ya proporciona
+ese importe del servidor, aunque aún no está conectada a la pantalla. El incremental no concede
+ejecución a cuentas autenticadas y no está conectado a la aplicación. La prueba
+PGlite cubre reintentos, rechazo, rollback de inventario y fallo al cerrar, pero
+no prueba concurrencia real. Para activarlo también se requiere proteger todas
+las escrituras de promociones mediante su RPC y las demás rutas legacy.
+
+**Siguiente paso:** preparar una solicitud local durable para recuperar respuestas
+inciertas, incluida la reconciliación de inventario. Integrar los conflictos
+tardíos con su revisión y resolución, y conectar el cobro con las pantallas y la
+sincronización administrativa antes de habilitar los permisos.
+
+**No desplegar ese SQL ni habilitar al mesero todavía.** Falta integrar y
+proteger ambos caminos administrativos, completar permisos reales, visibilidad,
+traspaso, resolución de conflictos, inventario, cobro y pantallas.
+Los precios y productos recibidos son fotografías para revisión, no una venta
+ni una validación de inventario. La cola y su sincronizador aún no están
+conectados a ninguna pantalla o ejecutor automático. Pasaron 31 pruebas Flutter
+dirigidas y la prueba SQL PGlite; análisis dirigido sin
+errores. La protección de eliminaciones remotas se verificó con cuatro pruebas
+Flutter dirigidas y análisis sin errores. La protección de eliminación local se
+verificó con cinco pruebas dirigidas y análisis sin errores. La prueba previa
+`test/sale_business_sync_test.dart` falla antes de
+su sección de mesas: espera que un resumen no cambie al agregar una compra a
+crédito, pero ahora el campo `creditPurchases` sí aumenta a 250. No se modificó
+esa prueba ni la lógica de informes, ajenas a este cambio. La migración local se
+aplicará al siguiente inicio de la app; no se reiniciaron los teléfonos por este
+cambio de preparación.
+
+Aún faltan los permisos operativos de ventas, autorización, asignación y
+sincronización offline. No cambiar los permisos reales de mesero1 ni desplegar
+funciones incompletas. La cuenta conserva sus permisos actuales hasta una
+autorización específica para modificarlos.
+
+- Los roles son **plantillas de configuración rápida editables**, no límites
+  rígidos: proponer Mesero, Cajero, Encargado y Administrador, y permitir que
+  se creen otros puestos con funciones seleccionables. El administrador puede
+  aumentar o reducir permisos en cada cuenta. Cambiar una plantilla afecta
+  futuras aplicaciones del rol, no modifica usuarios existentes.
+- **Mesero recomendado:** iniciar tiempo en mesas de billar y anotar consumos
+  en mesas, comandas y cuentas de clientes/jugadores, sin cobrar ni cerrar la
+  venta por defecto. Venta rápida no forma parte de esa recomendación porque
+  implica cobro inmediato. Se pueden conceder excepciones expresamente.
+- Cada mesero ve los servicios libres y los asignados a él; no debe ver ni
+  modificar los ocupados por otro mesero. Cajero y encargado ven todos por
+  defecto y pueden cobrar los servicios autorizados. Estas diferencias deben
+  depender de permisos efectivos, no solo del nombre escrito del puesto.
+  Encargado o administrador pueden traspasar un servicio a otro mesero.
+- Separar permisos de iniciar/abrir, anotar consumo, cobrar/cerrar, ver todos
+  y traspasar, por tipo de servicio según corresponda. Todas las opciones
+  deben aparecer en el catálogo, pero no se deben asignar como funciones
+  operativas hasta que sus controles reales estén implementados y probados.
+  Conservar el acceso real de administrador como una autorización protegida;
+  nombrar una plantilla «Administrador» no debe otorgarlo por sí solo.
+- **Sin conexión:** se permite trabajar offline. Si dos dispositivos abren
+  el mismo servicio, gana la primera apertura confirmada por el servidor; la
+  otra y sus consumos se conservan para revisión del encargado, sin borrarlos
+  ni cobrarlos automáticamente. Mientras esté desconectado, un dispositivo
+  puede mostrar como libre una mesa que otro ya ocupó: no prometer visibilidad
+  instantánea ni exclusividad absoluta offline.
+- La asignación, visibilidad, autorización por acción, traspaso, sincronización
+  idempotente y resolución de conflictos requieren control de servidor además
+  de interfaz. Reutilizar la apariencia y componentes administrativos de
+  billar, comandas y cuentas donde sea seguro; no reutilizar sin proteger sus
+  repositorios o botones de cobro. La sincronización actual de mesas escribe
+  localmente y sube en segundo plano, sin titular de servicio ni arbitraje:
+  no habilitarla directamente para personal como si ya cumpliera estas reglas.
+- Validar con fixtures aisladas, dos meseros, cajero/encargado, negocios
+  distintos, revocación, cobro no autorizado, traspaso y dos aperturas offline.
+  No inventar operaciones en producción. Mantener el comportamiento actual del
+  administrador y no subir cambios a Git automáticamente.
+
+### Corte vigente: pasos 1, 2 y 3 implementados
+
+- **No detener el desarrollo por falta de datos ni crear operaciones ficticias.**
+  La ausencia de compras reales ya fue confirmada; se validan cálculos y bordes
+  con fixtures aisladas. Los datos reales/impresora se comprobarán cuando existan.
+- **Informes por subcategoría:** Ventas (`reports_sales`), Compras
+  (`reports_purchases`), Flujo de caja (`reports_cash_flow`), Kardex
+  (`reports_kardex`) y Utilidad (`reports_profit`). La casilla del módulo marca
+  los cinco hijos; no guarda el permiso amplio legacy `reports`.
+  Un hijo no habilita los otros ni sus operaciones de negocio.
+  La ruta admite cualquiera de los permisos hijos y muestra solamente los
+  asignados. `StaffReportsPage` sustituye la página exclusiva de Compras y
+  reutiliza su carga, fechas, errores, sesión y paginación.
+  No montar `ReportsPage` administrativa en el portal ni copiar cinco pantallas.
+- **Servidor de informes:** nueva RPC `staff_read_report` para las cuatro
+  subcategorías adicionales; Compras conserva su RPC ya probada.
+  Solo consulta, membresía vigente, billar/campos/rango acotados, sin SELECT
+  directo adicional. Ventas/Kardex: páginas de 50; totales completos.
+  **Dato de esquema confirmado:** `date` de ventas/compras remoto es TEXT;
+  `sale_details.cost_available` no existe remotamente, es una marca local.
+  Usar `cost_at_sale` nullable para disponibilidad remota, no inventar columna.
+  Si faltan costos o existen salidas legacy sin clasificar, Utilidad no presenta
+  una ganancia inventada. Aportes/retiros/parciales nuevos no son gastos.
+- **Modelo de Caja elegido expresamente:** una sola caja compartida por negocio,
+  con apertura/cierre en línea. `SharedCashRepository` reutiliza
+  `CashOperationsPage`, sus formularios, conceptos y comprobantes.
+  Backend en `shared_cash.sql`: tablas separadas de turnos, movimientos y
+  solicitudes; RLS y sin acceso directo autenticado/anónimo.
+  Índice único de turno abierto, bloqueo por negocio, UUID idempotente y actor
+  real de Auth. Apertura, aporte, gasto/retiro, parcial y cierre se confirman
+  remotamente. Cierre/reapertura explícita es una sola transacción.
+- **Entradas manuales y contabilidad:** aporte aumenta efectivo, no venta ni
+  utilidad; gasto, retiro de capital y parcial tienen clasificación diferente.
+  No se duplican movimientos compartidos en `cash_outflows`.
+  Informes administrativos incorpora una caché separada; un cierre legacy
+  excluye esa caché. Sin conexión se advierte que puede faltar información
+  compartida y no se emite utilidad como actualizada.
+  SQLite sube a **54** con caché y solicitudes pendientes; no borra datos.
+- **Respuesta perdida:** se conserva la solicitud por actor/billar en SQLite;
+  se reintenta con el mismo UUID. Resolver/cancelar nunca revierte una ya
+  aplicada y sella las canceladas para que no se ejecuten después.
+- **Límite financiero explícito:** bloquear apertura/cierre si este dispositivo
+  tiene operaciones pendientes. Antes del corte, confirmar también sincronización
+  de los demás teléfonos. El servidor no conoce sus ventas todavía desconectadas.
+  Se conserva la fotografía original del cierre; el histórico marca conciliación
+  si después cambian sus operaciones. No prometer balance físico definitivo ni
+  modificar diferencias cerradas para esconder operaciones tardías.
+- **Histórico compartido:** turnos y movimientos paginados; reimpresión de
+  cierres históricos y movimientos del día sin volver a registrarlos.
+  Los turnos locales antiguos siguen separados. Si hay uno abierto, cerrar
+  explícitamente ese turno antes de usar la nueva Caja; no migrarlo/importarlo
+  automáticamente ni reabrir otro legacy desde ese cierre.
+- **Despliegue confirmado:** `staff_reports_update.sql` aplicado incrementalmente
+  y diagnóstico de metadatos correcto; no se reaplicó instalación inicial.
+  `player-admin` **ACTIVE, versión 9, verify_jwt=true**. No se modificaron
+  membresías, permisos reales, contraseñas ni secretos.
+  Nuevas RPC públicas sin ejecución anónima; cálculo interno de Caja sin
+  ejecución autenticada; tres tablas nuevas protegidas e índice único presente.
+- **Validación final:** **19 pruebas Flutter + 10 Node/PostgreSQL aprobadas**;
+  análisis de los archivos afectados y Deno check limpios.
+  Incluye actualización repetible con personal existente sin alterar filas,
+  aislamiento/revocación, totales/páginas, clasificación, respuestas perdidas,
+  persistencia de UUID, cancelación, cambio de turno y conciliación tardía.
+  Se corrigió el generador para insertar SQL mediante callback de `replace`:
+  no usar reemplazo string con `$$`, porque JavaScript lo reduce a `$`.
+- **Ambos teléfonos actualizados por hot restart, conservando datos y sesiones.**
+  A60 abrió Caja administrativa y realizó lectura autenticada real con
+  `loading=false; error=null; repo=SharedCashRepository; pending=false`.
+  M2004 conservó branding, usuario y las cuatro cards autorizadas; Informes
+  abrió la página compartida con `loading=false; error=null; loaded=true`,
+  cero compras y **un solo informe autorizado**.
+  No se abrieron/cerraron turnos ni registraron aportes, ventas, compras o retiros.
+  Ambos sin errores Flutter tras reiniciar. No equivale a reinstalar APK.
+
+### Siguiente punto, sin repetir lo anterior
+
+1. Revisar la distribución de permisos/roles y la equivalencia visual de las
+   pantallas de personal con administración, como pidió el usuario. Reutilizar
+   componentes de consulta, pero no habilitar acciones administrativas.
+   No se rediseñaron todas las pantallas ni se prometió que ya sean idénticas.
+2. Los cuatro informes nuevos están implementados, **no asignados a mesero1**.
+   Conserva Venta rápida, Inventario, Compras e Informes/Compras. Cualquier
+   cambio de permisos reales necesita autorización específica nueva.
+3. **Caja sigue bloqueada para personal**, tanto en Edge como en rutas.
+   Falta definir/integrar su permiso operativo por rol antes de habilitarla,
+   probar entrega física/impresora cuando sea posible y modelar pagos/abonos
+   de cuentas por pagar sin duplicar la compra.
+4. Cambios acumulados siguen locales, sin commit/push posterior a
+   `407c215df409396dac91703bb73f8868b3aef054`. No publicar automáticamente.
+
+### Historial confirmado anterior a esta ampliación: no repetir
+
+Los bloqueos de Informes completo y los turnos exclusivamente locales descritos
+debajo corresponden al corte anterior. El estado vigente es el de arriba.
 
 - El piloto de personal **ya está habilitado**, tanto en Supabase/Edge como
   en los perfiles de VS Code. No falta activar roles para iniciar sus pruebas
-  limitadas: Venta rápida, Inventario de consulta y Compras/proveedores.
+  limitadas: Venta rápida, Inventario de consulta, Compras/proveedores e
+  Informes de compras independiente.
+- **Contraseña temporal simplificada y desplegada:** las altas nuevas usan
+  14 caracteres, sin `0/O` ni `1/I/l`, y mantienen el cambio obligatorio.
+  Auth registra `staff_credential_version: 2`; recuperar una cuenta anterior
+  sin ese campo devuelve su contraseña original de 47 caracteres.
+  No se modificaron cuentas existentes, el HMAC ni su fingerprint.
+  No hace falta SQL, recompilar la app ni repetir este despliegue.
+- **Catálogo completo por etapas, elegido por el usuario:** Agregar/Editar
+  usuario ya muestra diez módulos y sus subcategorías desplegables, incluyendo
+  Caja y turnos como módulo independiente pendiente de autorización para personal.
+  Los tres módulos operativos integrados y la subcategoría Informes/Compras
+  tienen casillas habilitadas. Los demás indican pendiente de integración;
+  Informes completo y Caja para personal permanecen bloqueados.
+- **Primer permiso granular real terminado: Informes/Compras.**
+  `reports_purchases` se guarda en `allowed_modules` de manera independiente.
+  Permite ver la card Informes y un informe dedicado de compras no anuladas,
+  con fechas, totales completos del rango, pagado/saldo registrados y páginas
+  de 50 registros. No monta los informes administrativos, no permite anular,
+  ni concede Compras operativas, proveedores completos u otros informes.
+  La RPC verifica la membresía vigente y el billar; el cliente vuelve a validar
+  permiso/sesión después de la lectura y descarta respuestas obsoletas.
+  **Servidor actualizado:** `staff_purchase_reports_update.sql` aplicado,
+  diagnóstico de metadatos correcto y `player-admin` **ACTIVE, versión 8**,
+  JWT habilitado. El despliegue no reaplicó la instalación inicial ni modificó
+  cuentas, solicitudes, secretos o políticas de lectura directa.
+  Validación: **10 pruebas Flutter + 8 Node/PostgreSQL aprobadas**, análisis de
+  8 archivos Dart y Deno check limpios. Incluye actualización SQL repetible con
+  personal existente, crédito, paginación, acceso entre billars y revocación.
+  **Cliente ya cargado en ambos teléfonos desde VS Code:** A60L y M2004J19C
+  conectados al DTD del proyecto, conservando datos y sesiones. El A60 abrió el
+  inicio administrativo y Configuración/Personal; el M2004J19C conservó el inicio
+  original de personal con logo, nombre del negocio y usuario de la membresía.
+  **Con autorización explícita del usuario**, se añadió únicamente
+  `reports_purchases` a mesero1 desde el formulario administrativo, conservando
+  `quick_sale`, `inventory` y `purchases`. Se comprobó Informes completo bloqueado
+  y la casilla independiente de Compras seleccionable.
+  Tras actualizar permisos en el M2004J19C aparecieron las cuatro cards esperadas;
+  Informes abrió `StaffPurchaseReportPage` y la lectura autenticada real terminó
+  con `loading=false`, sin error y con respuesta validada. El rango inicial
+  no tiene compras: se muestra el estado vacío, no una falla ni datos ficticios.
+  No aparecen anulación ni operaciones de caja en esta página.
+  Ambos teléfonos sin errores Flutter registrados al cerrar la comprobación.
+  No se crearon operaciones reales/ficticias ni se probaron revocación o
+  paginación con datos reales; esos casos siguen cubiertos por pruebas locales.
+- **Caja separada de Informes en código:** nueva card/ruta administrativa
+  Caja y turnos para retiros/gastos, conceptos, apertura y cortes.
+  Informes/Caja solo consulta flujo total y movimiento de efectivo.
+  Se conserva el fondo inicial, se usa la ventana exacta del turno y se separan
+  tarjeta/transferencia del cajón; crédito no se cuenta como pago.
+  Abrir otro turno ya no cierra el anterior silenciosamente; cierre y reapertura
+  opcional con fondo explícito son una transacción local. Los parciales descuentan
+  una vez y los movimientos de hoy permiten reimprimir sin repetir el registro.
+  Validación: 11 pruebas Flutter y 4 TypeScript aprobadas, análisis de 10 archivos
+  sin incidencias. No se realizaron operaciones reales ni cambios SQL/remotos.
+  **Cliente aplicado en ambos teléfonos en el corte posterior:** card
+  administrativa presente y Caja ausente del portal de personal. Las operaciones
+  y la impresión física siguen pendientes de prueba autorizada.
 - **Ya existe una cuenta real de personal y entra al portal.** No volver al
   paso de crear la primera cuenta. Se verificaron su membresía activa y sus
-  tres módulos asignados; no se registraron operaciones ficticias.
+  tres módulos operativos y, posteriormente, el permiso de consulta de Informes
+  de compras autorizado por el usuario; no se registraron operaciones ficticias.
 - La base y las RPC del piloto están instaladas; `player-admin` está
   desplegado y `STAFF_PILOT_ENABLED=true` está configurado en el servidor.
   El HMAC existente se conservó. No buscarlo, imprimirlo ni rotarlo.
@@ -24,6 +574,10 @@ Revisarlos de nuevo únicamente si aparece un fallo nuevo relacionado.**
   privados**. El propietario confirmó logo online/offline en M2004J19C;
   la lectura pública sin autorización fue rechazada. La prueba entre billars
   sigue pendiente, no la privatización.
+- **Logo en A60L confirmado por el usuario a las 22:02:** la imagen ya cargó.
+  Se cierra el pendiente de imagen ausente. No se confirmó la causa de la demora
+  ni se midió el rendimiento; no atribuirlo a un bug o al equipo sin evidencia.
+  Investigar solo si vuelve a fallar o la demora se reproduce.
 - Compras/proveedores ya están conectados al portal, con solicitudes
   recuperables/idempotentes, tratamiento de rechazos y condiciones de pago
   al confirmar. Se precargan las preferencias del proveedor y se permite una
@@ -44,7 +598,7 @@ Revisarlos de nuevo únicamente si aparece un fallo nuevo relacionado.**
   descargado con **3 061 938 bytes**. Esto no equivale a una nueva instalación
   del APK: si se necesita abrir fuera de VS Code, compilar/actualizar la versión
   final conservando datos. No desinstalar ni borrar almacenamiento.
-- Última validación dirigida: **6 pruebas Flutter y 3 PostgreSQL/PGlite
+- Validación dirigida del inicio: **6 pruebas Flutter y 3 PostgreSQL/PGlite
   aprobadas**, más análisis de los 8 archivos Dart implicados sin incidencias.
   Incluye cards filtradas, usuario visible, rechazo de identidad de otro billar,
   actualización/revocación de permisos, logo del dueño e imágenes privadas.
@@ -52,33 +606,38 @@ Revisarlos de nuevo únicamente si aparece un fallo nuevo relacionado.**
 
 ### Continuar aquí: pendientes en orden
 
-1. **Logo del administrador en A60L:** el reporte continúa pendiente.
-   No confundirlo con el logo de personal en M2004J19C, que sí se verificó.
-   Diagnosticar su versión/sesión y descarga autenticada, sin revelar URLs
-   privadas o tokens. El último reinicio fue solo del teléfono de personal.
-2. **Contraseña temporal más sencilla:** todavía no se cambió.
-   Revisar `staff_creation_key.ts` y sus pruebas; conservar derivación
-   determinista, recuperación exacta e idempotencia. No recortar la firma
-   arbitrariamente ni rotar el HMAC con solicitudes pendientes.
-3. **Permisos por módulo y subcategoría:** todavía no se implementaron.
-   El usuario quiere asignar módulos completos o partes, por ejemplo solo
-   informes de compras. Acordar el catálogo y proteger cliente, rutas,
-   RPC/RLS/Edge de forma coordinada. No mostrar interruptores funcionales para
-   módulos sin autorización efectiva del servidor ni abrir todo al personal.
-4. **Pruebas reales autorizadas del piloto:** usar la cuenta existente.
+1. **Continuar con datos existentes, no repetir la carga ni la asignación:**
+   el cliente de ambos teléfonos, la casilla independiente, la card Informes y
+   la consulta autenticada real ya están comprobados. Falta revisar un rango que
+   contenga compras reales y, si hay suficientes, la siguiente página.
+   No crear compras ficticias para llenar el informe. La revocación en vivo o
+   retirar módulos operativos requiere autorización específica; no está incluida
+   en la aprobación de añadir el informe conservando los permisos existentes.
+   El aislamiento con solo `reports_purchases` y la revocación durante lectura
+   están probados automáticamente, no con cambios adicionales a la cuenta real.
+2. **Ampliar autorización granular por etapas:** continuar con otra subcategoría
+   solo después del primer paso. Conservar `reports_purchases`, los tres permisos
+   operativos y solicitudes pendientes; no enviar los textos descriptivos restantes
+   como permisos ni habilitar casillas sin autorización efectiva del servidor.
+   **Caja y turnos ya está separada en código y en el catálogo**, pero su casilla
+   de personal permanece bloqueada. Implementar su permiso operativo independiente
+   solo con autorización real del servidor, sin volver a meter movimientos en
+   Informes. Falta sincronización/identidad de turnos entre dispositivos antes
+   de ofrecer una caja compartida a personal; los turnos actuales son locales.
+3. **Pruebas reales autorizadas del piloto:** usar la cuenta existente.
    Validar venta, compra/proveedor, inventario de consulta, revocación y
    cambio de contraseña con acciones expresamente autorizadas. El acceso
    actual ya funciona; el primer cambio obligatorio con una cuenta real no
    se declara probado de extremo a extremo solo por las pruebas automatizadas.
    El aislamiento entre billars requiere otra cuenta autorizada disponible.
-5. **Cola funcional restante, sin bloquear la corrección del piloto:**
+4. **Cola funcional restante, sin bloquear la corrección del piloto:**
    - Jugador: detalle propio de estadísticas como el administrador y
      retas/training con formas de victoria; training no suma estadísticas
      competitivas y retas sí. No reclasificar historial por suposición.
-   - Caja y turnos: operación separada de Informes/Caja, permiso independiente,
-     tickets y turnos explícitos. Corregir efectivo físico frente a flujo total,
-     fondo inicial, ventana exacta de turno y dobles movimientos. Tarjeta y
-     transferencia no alteran el cajón; crédito no es pago hasta liquidarlo.
+   - Caja y turnos: aplicar/revisar esta versión en dispositivos e impresora.
+     Faltan entradas manuales de efectivo, pagos/abonos relacionados con compras
+     sin duplicar el pago original, histórico completo de comprobantes,
+     sincronización de turnos y permiso operativo para personal.
    - Cuentas por pagar, abonos/anticipos y demás módulos fuera del piloto.
 
 ### Entorno y límites que deben conservarse
@@ -100,9 +659,42 @@ Revisarlos de nuevo únicamente si aparece un fallo nuevo relacionado.**
 - No borrar datos, crear cuentas/movimientos ficticios, reabrir buckets ni
   ampliar permisos por atajos. Las autorizaciones de limpieza del historial
   no son una autorización vigente para repetir borrados.
-- Este es el corte solicitado para guardar en Git todos los cambios de código,
-  SQL, pruebas y documentación acumulados. Credenciales, `node_modules` y
-  trazas generadas quedan fuera del versionado; los logs locales se conservan.
+- El corte anterior está publicado en Git (`407c215`); los cambios posteriores
+  de contraseña, catálogo, Caja, Informes/Compras y documentación siguen locales,
+  sin nuevo commit/push. Esto no revierte los despliegues de servidor confirmados.
+  Credenciales, `node_modules` y trazas generadas quedan fuera del versionado;
+  los logs locales se conservan.
+
+### Archivos y comandos del último corte: Informes/Compras
+
+- Cliente: `staff_purchase_report_repository.dart`, `staff_purchase_report_page.dart`,
+  modelo/catálogo/formulario y `staff_route_gate.dart`. Se reutilizan el guard de
+  módulos, la sesión aislada y la card original de Informes.
+- SQL canónico: `supabase/staff_purchase_report.sql`; actualización generada:
+  `supabase/staff_purchase_reports_update.sql`. El generador extrae las funciones
+  canónicas de reserva/edición y los campos de membresía; no mantiene copias manuales.
+- Verificación remota de solo metadatos:
+  `supabase/staff_purchase_reports_diagnostic.sql`.
+  Resultado confirmado: RPC instalada, ejecución autenticada sí/anónima no,
+  `security definer` sí, constraint ampliada, sin permiso nuevo en políticas
+  directas de compras/proveedores, creación/edición de cuentas solo al servicio.
+- Validación dirigida:
+  `flutter test --no-pub test\staff_purchase_report_repository_test.dart test\staff_account_form_test.dart test\staff_access_flow_test.dart test\staff_management_section_test.dart`
+  y
+  `node --experimental-strip-types --test test\staff_purchase_report_test.cjs test\staff_rollout_install_test.cjs test\staff_rollout_diagnostic_test.cjs test\staff_identity_test.ts`.
+- No se crearon cuentas/compras ficticias remotas, no se asignaron permisos a
+  usuarios reales durante el despliegue. En la comprobación posterior se añadió
+  únicamente el permiso de informe a la cuenta existente, con aprobación
+  explícita; no se realizaron operaciones de caja. El informe requiere
+  conexión; no almacena compras en una base local ni ejecuta sincronizadores del dueño.
+- La carga dual se inició con el compound existente. El A60L quedó conectado
+  primero; la sesión del M2004J19C se inició de nuevo con su perfil individual
+  y finalmente quedaron ambas activas. No se diagnosticó la causa de la primera
+  desconexión y no se modificaron los perfiles por suposición.
+- Para continuar inspección, descubrir las URIs actuales; no reutilizar las
+  antiguas. Si Android informa `AppLifecycleState.paused`, pedir que la app
+  vuelva al primer plano antes de validar cambios visuales. No cerrar sesión,
+  borrar almacenamiento ni simular un estado de ciclo de vida.
 
 ## Estado
 
@@ -1711,3 +2303,101 @@ modificaron, no hubo instalaciones y los flags de personal permanecen cerrados.
   e imágenes privadas); tres pruebas PostgreSQL/PGlite aprobadas para lectura
   limitada, instalación y diagnóstico. Análisis Dart de los ocho archivos
   involucrados sin incidencias. No se realizaron ventas ni compras de prueba.
+
+### Confirmación posterior: logo del A60L (16/11/2026, 22:02)
+
+- El usuario confirmó que la imagen del negocio ya cargó en A60L. Esto
+  sustituye las notas anteriores que dejaban pendiente ese reporte.
+- No hubo una corrección adicional ni una medición de tiempos en este cierre;
+  la causa de la demora sigue sin determinarse. No dar por demostrado un bug
+  ni lentitud del dispositivo. Reabrir el diagnóstico solo si se reproduce.
+- El siguiente trabajo es simplificar la contraseña temporal y después definir
+  permisos por módulo/subcategoría; no volver a investigar el logo por rutina.
+
+### Contraseña temporal simplificada (17/11/2026)
+
+- Implementada y desplegada en `player-admin`: nuevas altas con 14 caracteres
+  legibles, las cuatro clases de caracteres y sin prefijo fijo. HMAC usa un
+  dominio v2 separado; su clave y fingerprint permanecen intactos.
+- Auth guarda la versión en `app_metadata`, no en metadatos editables por el
+  personal. Al recuperar una solicitud, se valida el usuario, billar, tipo de
+  cuenta y solicitud antes de derivar la contraseña según la versión guardada.
+  Ausencia de versión significa legacy v1; versiones inválidas fallan explícitamente.
+- La entrega solo consulta la contraseña si la finalización autoriza recuperarla.
+  Una consulta temporalmente fallida devuelve 503 y permite repetir la misma
+  solicitud sin recrear usuarios ni auditorías. No se resetea ninguna contraseña.
+- Validación: **25 pruebas TypeScript aprobadas**, incluyendo hash de regresión
+  legacy, longitud/clases/aislamiento v2, respuestas perdidas, concurrencia,
+  revocación, consulta fallida y recuperación repetida de ambas versiones.
+  `deno check --no-config` de la función completa y `git diff --check` aprobados.
+- La CLI confirmó el despliegue remoto de los seis archivos de la función.
+  No hubo migración SQL, cambios de secretos/flags/buckets, cuentas ficticias
+  ni operaciones reales de venta/compra. La creación real de una cuenta nueva
+  con el formato corto aún debe verificarse en una alta autorizada.
+- Continuar por permisos granulares, acordando catálogo/alcance antes de ampliar
+  la autorización efectiva. El piloto actual sigue limitado a sus tres módulos.
+
+### Catálogo de permisos: primera etapa (17/11/2026)
+
+- El usuario eligió **mostrar todos los módulos y subcategorías, habilitándolos
+  por etapas con autorización real**. No volver a preguntar entre catálogo
+  completo o mostrar únicamente los módulos del piloto.
+- Agregar/Editar usuario ahora muestra los nueve módulos del catálogo existente.
+  Cada uno se despliega para consultar sus secciones; Informes enumera Ventas,
+  Compras, Flujo de caja, Kardex y Utilidad.
+- Solo las casillas de Venta rápida, Inventario de consulta y Compras siguen
+  habilitadas. Marcar una casilla asigna el módulo completo existente; desplegar
+  sus secciones no cambia permisos. Proveedores sigue incluido en Compras.
+  Se indica explícitamente que la asignación individual está pendiente.
+- No se modificaron payloads, IDs de módulos, RLS/RPC/Edge ni rutas de acceso.
+  No se habilitaron Informes, Configuración, Jugadores ni otros módulos por UI.
+- Validación: **8 pruebas Flutter aprobadas** para formulario, conservación de
+  selección al editar/desplegar, casillas pendientes deshabilitadas, gestión de
+  personal y aislamiento de acceso. Análisis de cuatro archivos sin incidencias.
+- DTD del proyecto no tenía apps conectadas al consultar. No se inició otra
+  sesión ni se intervino en otros proyectos. El catálogo está guardado en código,
+  pero **no se declara actualizado/verificado en los teléfonos**; aplicar con
+  la siguiente ejecución del perfil de VS Code o actualización de la app,
+  conservando datos. La contraseña corta sí está activa en el servidor.
+- Próximo bloque: permiso real de Informes/Compras independiente. El catálogo
+  visual por sí solo no satisface la autorización granular solicitada.
+
+### Caja y turnos separada de Informes (17/11/2026)
+
+- Se extrajeron los métodos operativos existentes a `CashOperationsPage`, con
+  card y ruta propias. Los helpers de PDF/moneda se comparten con Informes,
+  conservando también sus comprobantes de anulación y utilidad. No se duplicó
+  una segunda implementación de retiros o cortes.
+- Informes/Caja ya no carga conceptos ni turno ni ofrece altas, retiros o cortes:
+  muestra flujo total, pagos de compras, crédito pendiente de pago, neto de
+  efectivo y cobros por tarjeta/transferencia. No mezcla el fondo de un turno
+  abierto con un periodo de informes arbitrario.
+- Correcciones: importe realmente cobrado sin contar cambio entregado; separación
+  de efectivo y otros medios; compras a crédito fuera de pagos; efectivo de compra
+  según origen caja/cajero; fondo inicial en esperado/diferencia; fechas ISO,
+  offsets y fechas UTC antiguas de SQLite; ventana exacta de apertura/cierre.
+- Abrir turno exige cerrar expresamente el anterior. El corte total muestra
+  diferencia y ofrece cerrar/abrir nuevo con fondo inicial, guardando ambos
+  cambios atómicamente. No acepta importes vacíos, negativos, NaN o infinitos.
+  Un turno ausente, cambiado o duplicado falla explícitamente.
+- El retiro parcial guarda su salida y referencia en una transacción, por lo
+  que se cuenta una vez. Los parciales anteriores guardados solo en JSON se
+  consideran sin reescribirlos. Se excluyen de utilidad los retiros parciales
+  identificados por su referencia, no por el texto libre del concepto.
+- Reimpresión disponible para los movimientos de hoy sin nuevas escrituras.
+  Se mantienen comprobantes de apertura/corte y elección de efectivo, tarjeta
+  o transferencia al registrar gasto. Nuevas entradas de efectivo y pagos de
+  cuentas por pagar todavía no están implementados.
+- Se añadió Caja y turnos al catálogo (ahora diez módulos), **sin habilitarla
+  para personal**. La ruta de personal sigue bloqueada, y Edge rechaza el módulo
+  tanto al crear como al editar cuentas. La ruta administrativa también rechaza
+  cuentas gestionadas y ausencia de sesión. No se modificó SQL ni Edge en esta etapa.
+- Validación final: **11 pruebas Flutter**, **4 pruebas TypeScript** de guardas
+  y análisis de diez archivos aprobados. Se corrigió durante las pruebas el ciclo
+  de vida de los controladores del diálogo para no liberarlos durante su cierre.
+  Los errores contables de Informes ahora muestran error/reintento explícito,
+  no carga infinita. Las pruebas usan datos locales aislados, no cuentas reales.
+- DTD del proyecto seguía sin aplicaciones conectadas. No se compiló/instaló
+  APK ni se comprobó impresora o funcionamiento real entre teléfonos.
+  **Los turnos siguen siendo locales**, sin sincronización remota implementada;
+  no habilitar una caja compartida al personal hasta resolverlo.
