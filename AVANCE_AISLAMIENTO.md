@@ -142,6 +142,23 @@ Después, continuar con Docker Desktop/Supabase local y recién entonces probar
 concurrencia; no usar producción ni habilitar RPC/roles mientras esas pruebas
 sigan pendientes.
 
+**Código validado y publicado (19/11/26, `2d12b24`):** se publicó en
+`origin/master` el conjunto de código, SQL, pruebas y documentación relacionada
+(95 rutas), sin incluir `supabase/.temp/cli-latest`. El snapshot de cobro ahora
+exige que el actor sea dueño del servicio o tenga `*_view_all`; una prueba
+regresión confirma que cobrar sin visibilidad total no permite leer el snapshot
+de otro actor. La prueba de migración SQLite espera la versión vigente 61.
+**Esto solo publica código en GitHub:** no desplegó los RPC de servicio ni
+habilitó permisos o cuentas; sus revocaciones siguen intactas.
+
+Validación: **73 pruebas Flutter** en 26 archivos, **8 pruebas Node** en 7
+archivos y **17 pruebas Deno** pasaron; `deno check` pasó para cuatro archivos de
+`player-admin`. Los 61 archivos Dart modificados están formateados y
+`git diff --check` pasó. El análisis global encontró dos avisos informativos
+preexistentes en `sales_history_page.dart`; el aviso de estilo en
+`reports_repository.dart` se corrigió y su análisis dirigido quedó limpio.
+Estas pruebas PGlite no sustituyen concurrencia en PostgreSQL real.
+
 **Alcance remoto confirmado (19/11/26):** por solicitud explícita se ejecutó
 `staff_role_templates_operational_update.sql` en el proyecto de producción
 `app_integral_complete`. El preflight encontró una membresía de personal, cero
@@ -151,6 +168,10 @@ acciones de Mesas/Comandas, RLS activo, lectura directa denegada y RPC de
 guardado ejecutable por `authenticated` pero no por `anon`. Los conteos de
 membresías y plantillas permanecieron iguales. No se crearon cuentas,
 plantillas ni datos de prueba remotos.
+Ese preflight valida solo este estado: en otra base, permisos legacy de
+`billiard_tables` o `dine_in` sin acciones podrían impedir agregar la constraint.
+Antes de una nueva ejecución, repetir el diagnóstico inmediatamente antes y
+pausar cambios de membresías durante la migración.
 
 **No desplegar ni habilitar todavía los RPC de servicio:** `staff_table_service_partial.sql`,
 `staff_table_checkout_partial.sql` y `staff_table_late_adjustment_partial.sql`
