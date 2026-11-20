@@ -33,6 +33,7 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
   final _ticket = TicketService();
   final _prefs = PreferencesService();
   List<Map<String, dynamic>> _tables = [];
+  Set<int> _conflictingTableIds = {};
   bool _isLoading = true;
   bool _isRefreshingCloud = false;
   String? _loadError;
@@ -59,9 +60,11 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
   Future<void> _load({bool refreshCloud = true}) async {
     try {
       final tables = await _repo.getTables(tableType: widget.tableType);
+      final conflicts = await _repo.getTableSyncConflictIds();
       if (!mounted) return;
       setState(() {
         _tables = tables;
+        _conflictingTableIds = conflicts;
         _isLoading = false;
         _loadError = null;
       });
@@ -88,9 +91,11 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
     try {
       await _repo.refreshTablesFromCloud().timeout(const Duration(seconds: 8));
       final tables = await _repo.getTables(tableType: widget.tableType);
+      final conflicts = await _repo.getTableSyncConflictIds();
       if (mounted) {
         setState(() {
           _tables = tables;
+          _conflictingTableIds = conflicts;
           _loadError = null;
         });
       }
@@ -173,6 +178,24 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
               ? Center(child: CircularProgressIndicator(color: primary))
               : Column(
                 children: [
+                  if (_conflictingTableIds.isNotEmpty)
+                    MaterialBanner(
+                      content: Text(
+                        'Hay ${_conflictingTableIds.length} mesa(s) o comanda(s) '
+                        'con cambios pendientes de revisión. Los datos locales '
+                        'se conservaron; no se pueden cobrar aquí.',
+                      ),
+                      leading: const Icon(
+                        Icons.warning_amber,
+                        color: Colors.orange,
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => _load(refreshCloud: true),
+                          child: const Text('ACTUALIZAR'),
+                        ),
+                      ],
+                    ),
                   if (_loadError != null)
                     MaterialBanner(
                       content: Text(_loadError!),
@@ -250,6 +273,15 @@ class _BilliardTablesPageState extends State<BilliardTablesPage> {
   }
 
   Future<void> _openTable(Map<String, dynamic> tableData) async {
+    if (_conflictingTableIds.contains(tableData['id'])) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Esta mesa tiene cambios pendientes de revisión.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
     final saleData = await Navigator.push<Map<String, dynamic>>(
       context,
       MaterialPageRoute(builder: (_) => _TableDetailPage(tableData: tableData)),
@@ -1090,8 +1122,9 @@ class _TableDetailPageState extends State<_TableDetailPage> {
       '[Checkout] Iniciando checkout para mesa: ${widget.tableData['name']}',
     );
     String method = 'Efectivo';
-    double paid = _grandTotal;
     final ctrl = TextEditingController(text: _grandTotal.toStringAsFixed(2));
+    double? paid = double.tryParse(ctrl.text);
+    String? paymentError;
     final primary = context.read<ThemeProvider>().primaryColor;
 
     final result = await showDialog<(double, String)>(
@@ -1173,7 +1206,11 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                         value: method,
                         dropdownColor: const Color(0xFF1A1A1A),
                         style: const TextStyle(color: Colors.white),
-                        onChanged: (v) => ss(() => method = v!),
+                        onChanged:
+                            (v) => ss(() {
+                              method = v!;
+                              paymentError = null;
+                            }),
                         items:
                             ['Efectivo', 'Tarjeta', 'Transferencia']
                                 .map(
@@ -1196,16 +1233,28 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                             labelText: 'Monto recibido',
                             labelStyle: TextStyle(color: Colors.white38),
                           ),
-                          onTap: () => ctrl.clear(),
+                          onTap:
+                              () => ss(() {
+                                ctrl.clear();
+                                paid = null;
+                                paymentError = null;
+                              }),
                           onChanged:
-                              (v) => ss(
-                                () => paid = double.tryParse(v) ?? _grandTotal,
-                              ),
+                              (v) => ss(() {
+                                paid = double.tryParse(v);
+                                paymentError = null;
+                              }),
                         ),
                         const SizedBox(height: 8),
                         Builder(
                           builder: (_) {
-                            final diff = paid - _grandTotal;
+                            if (paid == null || !paid!.isFinite) {
+                              return const Text(
+                                'Ingresa un importe válido.',
+                                style: TextStyle(color: Colors.redAccent),
+                              );
+                            }
+                            final diff = paid! - _grandTotal;
                             final isShort = diff < 0;
                             return Text(
                               isShort
@@ -1222,6 +1271,11 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                           },
                         ),
                       ],
+                      if (paymentError != null)
+                        Text(
+                          paymentError!,
+                          style: const TextStyle(color: Colors.redAccent),
+                        ),
                     ],
                   ),
                   actions: [
@@ -1234,7 +1288,24 @@ class _TableDetailPageState extends State<_TableDetailPage> {
                     ),
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(backgroundColor: primary),
-                      onPressed: () => Navigator.pop(ctx, (paid, method)),
+                      onPressed: () {
+                        if (method == 'Efectivo' &&
+                            (paid == null ||
+                                !paid!.isFinite ||
+                                paid! < 0 ||
+                                paid! + 0.000000001 < _grandTotal)) {
+                          ss(
+                            () =>
+                                paymentError =
+                                    'El monto recibido debe cubrir el total.',
+                          );
+                          return;
+                        }
+                        Navigator.pop(ctx, (
+                          method == 'Efectivo' ? paid! : _grandTotal,
+                          method,
+                        ));
+                      },
                       child: const Text(
                         'CONFIRMAR',
                         style: TextStyle(color: Colors.white),
@@ -1246,7 +1317,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
     );
 
     if (result == null) return;
-    final (finalPaid, finalMethod) = result;
+    final (received, finalMethod) = result;
 
     if (_isCheckingOut) {
       return; // Doble verificación antes de persistir la venta.
@@ -1262,6 +1333,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
       0,
       (acc, e) => acc + e.price * e.quantity,
     );
+    final finalPaid = finalMethod == 'Efectivo' ? received : finalTotal;
 
     try {
       await _salesRepo.saveSale(
@@ -1271,6 +1343,7 @@ class _TableDetailPageState extends State<_TableDetailPage> {
         paymentMethod: finalMethod,
         saleType: _tableSaleType,
         origin: _isComanda ? SaleOrigin.dineIn : SaleOrigin.billiardTables,
+        tableId: widget.tableData['id'] as int,
       );
     } on SaleScopeException catch (error) {
       _isCheckingOut = false;

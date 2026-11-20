@@ -23,7 +23,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export async function createStaffWithRetry(
   gateway: StaffCreationGateway,
-  temporaryPassword: string,
+  recoverPassword: (userId: string) => Promise<string>,
 ): Promise<Record<string, unknown>> {
   let reservation: RemoteResult<unknown>;
   try {
@@ -104,6 +104,20 @@ export async function createStaffWithRetry(
     throw new StaffCreationError('No se pudo completar la cuenta. Reintenta la misma solicitud.', 503);
   }
   const { can_deliver_password: canDeliverPassword, ...staffInfo } = finalized.data;
+  let temporaryPassword: string | undefined;
+  if (canDeliverPassword) {
+    try {
+      temporaryPassword = await recoverPassword(userId);
+      if (typeof temporaryPassword !== 'string' || temporaryPassword.length === 0) {
+        throw new TypeError('Invalid credential response.');
+      }
+    } catch {
+      console.error('[player-admin] Staff credential recovery was unavailable.');
+      throw new StaffCreationError(
+        'No se pudo recuperar la contraseña. Reintenta la misma solicitud.', 503,
+      );
+    }
+  }
   return {
     staff: staffInfo,
     password_available: canDeliverPassword,

@@ -27,6 +27,17 @@ class AccountAccess {
     this.allowedModules = const {},
     this.username = '',
   });
+
+  bool hasModule(StaffModule module) {
+    final children = StaffModule.values.where(
+      (permission) => permission.parent == module,
+    );
+    if (children.any((permission) => permission.isOperationalPermission)) {
+      return children.any(allowedModules.contains);
+    }
+    return allowedModules.contains(module) ||
+        children.any(allowedModules.contains);
+  }
 }
 
 class AuthAccessRepository {

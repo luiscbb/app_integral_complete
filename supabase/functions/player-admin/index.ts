@@ -1,7 +1,11 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import { canManagePlayers, resolveBusinessRole } from './permissions.ts';
 import { parseStaffDraft, parseStaffUpdate } from './staff_identity.ts';
-import { deriveStaffCreationCredential, normalizeStaffRequestId } from './staff_creation_key.ts';
+import {
+  deriveStaffCreationCredential,
+  normalizeStaffRequestId,
+  parseStaffCredentialVersion,
+} from './staff_creation_key.ts';
 import { createStaffWithRetry, StaffCreationError } from './staff_creation_workflow.ts';
 import { finishTemporaryPasswordChange, PasswordChangeError } from './password_change_workflow.ts';
 
@@ -448,13 +452,16 @@ Deno.serve(async (request) => {
         if (error instanceof TypeError) throw new HttpError(error.message, 400);
         throw error;
       }
+      const creationSecret = Deno.env.get('STAFF_CREATION_HMAC_KEY') ?? '';
+      const credentialVersion = 2;
       let credential: Awaited<ReturnType<typeof deriveStaffCreationCredential>>;
       try {
         credential = await deriveStaffCreationCredential(
-          Deno.env.get('STAFF_CREATION_HMAC_KEY') ?? '',
+          creationSecret,
           requestId,
           caller.id,
           billarId,
+          credentialVersion,
         );
       } catch {
         throw new HttpError('La creación de personal no está configurada en el servidor.', 503);
@@ -486,6 +493,7 @@ Deno.serve(async (request) => {
               account_type: 'staff',
               billar_id: billarId,
               creation_request_id: requestId,
+              staff_credential_version: credentialVersion,
             },
           });
           return { data: data.user?.id ?? null, error };
@@ -496,7 +504,20 @@ Deno.serve(async (request) => {
           p_billar_id: billarId,
           p_user_id: userId,
         }),
-      }, credential.temporaryPassword);
+      }, async (userId) => {
+        const { data, error } = await serviceClient.auth.admin.getUserById(userId);
+        const user = data.user;
+        if (error || !user || user.id !== userId ||
+            user.app_metadata.account_type !== 'staff' ||
+            user.app_metadata.billar_id !== billarId ||
+            user.app_metadata.creation_request_id !== requestId) {
+          throw new Error('No se pudo verificar la cuenta de la solicitud.');
+        }
+        const version = parseStaffCredentialVersion(user.app_metadata.staff_credential_version);
+        return (await deriveStaffCreationCredential(
+          creationSecret, requestId, caller.id, billarId, version,
+        )).temporaryPassword;
+      });
       const response = json(result);
       response.headers.set('Cache-Control', 'no-store');
       return response;

@@ -3,8 +3,16 @@ import 'dart:convert';
 import 'package:app_integral_complete/core/database/database_helper.dart';
 import 'package:app_integral_complete/core/services/sync_service.dart';
 import 'package:app_integral_complete/core/storage/preferences_service.dart';
+import 'package:sqflite/sqflite.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class BilliardTableRepository {
+  BilliardTableRepository({String? Function()? currentActorId})
+    : _currentActorId =
+          currentActorId ??
+          (() => Supabase.instance.client.auth.currentUser?.id);
+
+  final String? Function() _currentActorId;
   final DatabaseHelper _db = DatabaseHelper.instance;
   final SyncService _sync = SyncService();
 
@@ -13,6 +21,22 @@ class BilliardTableRepository {
   void _requireBillar(String billarId) {
     if (PreferencesService().billarId != billarId) {
       throw StateError('El billar cambió durante la operación de mesas.');
+    }
+  }
+
+  String _deletionActor() {
+    final actorId = _currentActorId();
+    if (actorId == null || actorId.isEmpty) {
+      throw StateError('Se requiere una sesión para eliminar mesas.');
+    }
+    return actorId;
+  }
+
+  void _requireDeletionScope(String actorId, String billarId, int generation) {
+    if (_currentActorId() != actorId ||
+        PreferencesService().billarId != billarId ||
+        PreferencesService().scopeGeneration != generation) {
+      throw StateError('La cuenta o el billar cambió al eliminar la mesa.');
     }
   }
 
@@ -78,7 +102,10 @@ class BilliardTableRepository {
     return result;
   }
 
-  Future<Map<String, dynamic>?> _getByIdForBillar(int id, String billarId) async {
+  Future<Map<String, dynamic>?> _getByIdForBillar(
+    int id,
+    String billarId,
+  ) async {
     final db = await _db.database;
     final rows = await db.query(
       'billiard_tables',
@@ -194,29 +221,89 @@ class BilliardTableRepository {
 
   Future<void> free(int id) async {
     final billarId = PreferencesService().billarId;
-    await _updateTable(
-      id,
-      billarId,
-      {'is_occupied': 0, 'start_time': null, 'orders': '[]', 'synced': 0},
-    );
+    await _updateTable(id, billarId, {
+      'is_occupied': 0,
+      'start_time': null,
+      'orders': '[]',
+      'synced': 0,
+    });
     final updated = await _getByIdForBillar(id, billarId);
     if (updated != null) _sync.pushTableToCloud(updated).ignore();
   }
 
+  Future<void> _requireDeletable(
+    DatabaseExecutor db,
+    Map<String, Object?> table,
+    String billarId,
+  ) async {
+    final conflicts = await db.query(
+      'table_sync_conflicts',
+      columns: ['id'],
+      where: 'billar_id = ? AND table_id = ?',
+      whereArgs: [billarId, table['id']],
+      limit: 1,
+    );
+    if (conflicts.isNotEmpty) {
+      throw StateError('La mesa tiene un conflicto pendiente de revisión.');
+    }
+    if (table['is_occupied'] == 1 || table['start_time'] != null) {
+      throw StateError('No se puede eliminar una mesa con servicio activo.');
+    }
+    final orders = table['orders'];
+    if (orders == null || orders == '') return;
+    if (orders is! String) {
+      throw StateError('No se pueden verificar los consumos de la mesa.');
+    }
+    Object? decoded;
+    try {
+      decoded = jsonDecode(orders);
+    } on FormatException {
+      throw StateError('No se pueden verificar los consumos de la mesa.');
+    }
+    if (decoded is! List) {
+      throw StateError('No se pueden verificar los consumos de la mesa.');
+    }
+    if (decoded.isNotEmpty) {
+      throw StateError(
+        'No se puede eliminar una mesa con consumos pendientes.',
+      );
+    }
+  }
+
   Future<void> delete(int id) async {
     final billarId = PreferencesService().billarId;
-    await _updateTable(
-      id,
-      billarId,
-      {
-        'is_deleted': 1,
-        'is_occupied': 0,
-        'start_time': null,
-        'orders': '[]',
-        'synced': 0,
-      },
-    );
+    final generation = PreferencesService().scopeGeneration;
+    final actorId = _deletionActor();
+    final db = await _db.database;
+    await db.transaction((txn) async {
+      _requireDeletionScope(actorId, billarId, generation);
+      final rows = await txn.query(
+        'billiard_tables',
+        where: 'id = ? AND billar_id = ?',
+        whereArgs: [id, billarId],
+        limit: 1,
+      );
+      if (rows.isEmpty) {
+        throw StateError('La mesa no pertenece al billar actual o no existe.');
+      }
+      await _requireDeletable(txn, rows.single, billarId);
+      await txn.update(
+        'billiard_tables',
+        {
+          'is_deleted': 1,
+          'is_occupied': 0,
+          'start_time': null,
+          'orders': '[]',
+          'synced': 0,
+        },
+        where: 'id = ? AND billar_id = ?',
+        whereArgs: [id, billarId],
+      );
+      _requireDeletionScope(actorId, billarId, generation);
+    });
+    _requireDeletionScope(actorId, billarId, generation);
     final deleted = await _getByIdForBillar(id, billarId);
+    _requireDeletionScope(actorId, billarId, generation);
     if (deleted != null) {
       final synced = await _sync.pushTableToCloud(deleted);
       if (!synced) {
@@ -230,10 +317,20 @@ class BilliardTableRepository {
     if (billarId != null && billarId != currentBillarId) {
       throw StateError('El billar solicitado no es el actual.');
     }
+    final generation = PreferencesService().scopeGeneration;
+    final actorId = _deletionActor();
     final db = await _db.database;
     final targetBillarId = currentBillarId;
     await db.transaction((txn) async {
-      _requireBillar(targetBillarId);
+      _requireDeletionScope(actorId, targetBillarId, generation);
+      final tables = await txn.query(
+        'billiard_tables',
+        where: 'billar_id = ?',
+        whereArgs: [targetBillarId],
+      );
+      for (final table in tables) {
+        await _requireDeletable(txn, table, targetBillarId);
+      }
       await txn.update(
         'billiard_tables',
         {
@@ -246,10 +343,12 @@ class BilliardTableRepository {
         where: 'billar_id = ?',
         whereArgs: [targetBillarId],
       );
-      _requireBillar(targetBillarId);
+      _requireDeletionScope(actorId, targetBillarId, generation);
     });
+    _requireDeletionScope(actorId, targetBillarId, generation);
     final rows = await getAll(billarId: targetBillarId, includeDeleted: true);
     for (final row in rows.where((row) => row['is_deleted'] == 1)) {
+      _requireDeletionScope(actorId, targetBillarId, generation);
       await _sync.pushTableToCloud(row);
     }
   }

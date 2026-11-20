@@ -14,14 +14,29 @@ import '../../../home/presentation/pages/staff_home_page.dart';
 import '../../../players/presentation/pages/player_access_pages.dart';
 import '../../../quick_sale/presentation/pages/staff_quick_sale_page.dart';
 import '../../../purchases/presentation/pages/staff_purchases_page.dart';
+import '../../../reports/presentation/pages/staff_reports_page.dart';
+import '../../../sales/presentation/pages/staff_table_service_page.dart';
 import '../../data/auth_access_repository.dart';
 import '../../domain/staff_access.dart';
 import 'managed_account_sign_out.dart';
 
 const _staffModuleRoutes = {
   StaffModule.quickSale: AppRoutes.quickSale,
+  StaffModule.billiardTablesOpen: AppRoutes.billiardTables,
+  StaffModule.billiardTablesConsume: AppRoutes.billiardTables,
+  StaffModule.billiardTablesCharge: AppRoutes.billiardTables,
+  StaffModule.billiardTablesViewAll: AppRoutes.billiardTables,
+  StaffModule.dineInOpen: AppRoutes.dineIn,
+  StaffModule.dineInConsume: AppRoutes.dineIn,
+  StaffModule.dineInCharge: AppRoutes.dineIn,
+  StaffModule.dineInViewAll: AppRoutes.dineIn,
   StaffModule.inventory: AppRoutes.inventory,
   StaffModule.purchases: AppRoutes.purchases,
+  StaffModule.reportsSales: AppRoutes.reports,
+  StaffModule.reportsPurchases: AppRoutes.reports,
+  StaffModule.reportsCashFlow: AppRoutes.reports,
+  StaffModule.reportsKardex: AppRoutes.reports,
+  StaffModule.reportsProfit: AppRoutes.reports,
 };
 
 class StaffRouteGate extends StatefulWidget {
@@ -47,12 +62,10 @@ class _StaffRouteGateState extends State<StaffRouteGate>
   int _request = 0;
   bool _loading = false;
 
-  StaffModule? get _routeModule {
-    for (final entry in _staffModuleRoutes.entries) {
-      if (entry.value == widget.routeName) return entry.key;
-    }
-    return null;
-  }
+  Set<StaffModule> get _routeModules => {
+    for (final entry in _staffModuleRoutes.entries)
+      if (entry.value == widget.routeName) entry.key,
+  };
 
   @override
   void initState() {
@@ -95,12 +108,12 @@ class _StaffRouteGateState extends State<StaffRouteGate>
           'La cuenta de personal no tiene acceso activo a este billar.',
         );
       }
-      final module = _routeModule;
-      if (module != null &&
+      final modules = _routeModules;
+      if (modules.isNotEmpty &&
           !account.mustChangePassword &&
-          !account.allowedModules.contains(module)) {
+          !modules.any(account.hasModule)) {
         throw StateError(
-          'No tienes permiso para usar ${module.label.toLowerCase()}.',
+          'No tienes permiso para usar ${widget.routeName == AppRoutes.reports ? 'informes' : modules.single.label.toLowerCase()}.',
         );
       }
       final portal =
@@ -160,6 +173,20 @@ class _StaffRouteGateState extends State<StaffRouteGate>
     if (account.mustChangePassword) {
       return const ChangeTemporaryPasswordPage(enableStaffForIntegration: true);
     }
+    if (widget.routeName == AppRoutes.billiardTables) {
+      return StaffTableServicePage(
+        tableType: 'Billar',
+        allowedModules: account.allowedModules,
+        enableForIntegration: true,
+      );
+    }
+    if (widget.routeName == AppRoutes.dineIn) {
+      return StaffTableServicePage(
+        tableType: 'Comanda',
+        allowedModules: account.allowedModules,
+        enableForIntegration: true,
+      );
+    }
     if (widget.routeName == AppRoutes.quickSale) {
       return const StaffQuickSalePage(enableForIntegration: true);
     }
@@ -168,6 +195,15 @@ class _StaffRouteGateState extends State<StaffRouteGate>
     }
     if (widget.routeName == AppRoutes.purchases) {
       return const StaffPurchasesPage(enableForIntegration: true);
+    }
+    if (widget.routeName == AppRoutes.reports) {
+      return StaffReportsPage(
+        enableForIntegration: true,
+        allowedReports:
+            account.allowedModules
+                .where((module) => module.parent == StaffModule.reports)
+                .toSet(),
+      );
     }
     if (widget.routeName == AppRoutes.staffPortal ||
         widget.routeName == AppRoutes.changeTemporaryPassword) {
@@ -210,7 +246,7 @@ class _StaffRouteGateState extends State<StaffRouteGate>
       username: account.username,
       allowedRoutes: {
         for (final entry in _staffModuleRoutes.entries)
-          if (account.allowedModules.contains(entry.key)) entry.value,
+          if (account.hasModule(entry.key)) entry.value,
       },
       onRefresh: _verify,
       onSignOut: () => signOutManagedAccount(context),

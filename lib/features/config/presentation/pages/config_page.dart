@@ -1157,9 +1157,17 @@ class _BillarSectionState extends State<_BillarSection> {
           ),
     );
     if (confirmed != true) return;
-    await _repo.delete(id);
-    setState(() {});
-    await _syncCount();
+    try {
+      await _repo.delete(id);
+      if (!mounted) return;
+      setState(() {});
+      await _syncCount();
+    } on StateError catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(error.message), backgroundColor: Colors.orange),
+      );
+    }
   }
 
   Future<void> _editTableName(int id, String currentName) async {

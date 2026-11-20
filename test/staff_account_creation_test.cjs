@@ -53,10 +53,10 @@ test('staff creation reserves and recovers requests without duplicating audit or
     const request = (n) => `10000000-0000-4000-8000-${n.toString().padStart(12, '0')}`;
     const email = '63616a65726f2e2e3031@staff.baumar.invalid';
     const fingerprint = 'a'.repeat(64);
-    const reserve = (req = 1, actor = 1, name = 'Ana', modules = '{quick_sale}', key = fingerprint, address = email) =>
+    const reserve = (req = 1, actor = 1, name = 'Ana', modules = '{quick_sale}', key = fingerprint, address = email, username = 'cajero..01') =>
       db.query(
         'select public.reserve_staff_account($1, $2, $3, $4, $5, $6, $7::text[], $8, $9) as result',
-        [request(req), id(actor), 'A', 'cajero..01', name, 'Caja', modules, address, key],
+        [request(req), id(actor), 'A', username, name, 'Caja', modules, address, key],
       );
     const lookup = (req = 1, actor = 1) => db.query(
       'select public.find_staff_creation_auth_user($1, $2, $3) as user_id',
@@ -92,7 +92,25 @@ test('staff creation reserves and recovers requests without duplicating audit or
       await assert.rejects(reserve(1, actor), /administrador activo/i);
     }
     await assert.rejects(reserve(1, 1, 'Ana', '{admin}'), /inválidos/i);
+    await assert.rejects(
+      reserve(1, 1, 'Ana', '{billiard_tables_open}'),
+      /inválidos/i,
+    );
     await assert.rejects(reserve(1, 1, 'Ana', '{quick_sale}', fingerprint, 'other@example.com'), /identificador/i);
+    assert.equal(
+      (
+        await reserve(
+          3,
+          1,
+          'Mesero',
+          '{billiard_tables,billiard_tables_open,billiard_tables_consume}',
+          fingerprint,
+          '6d657365726f2e2e3031@staff.baumar.invalid',
+          'mesero..01',
+        )
+      ).rows[0].result.completed,
+      false,
+    );
     assert.equal((await reserve()).rows[0].result.completed, false);
     assert.equal((await reserve()).rows[0].result.completed, false);
     await assert.rejects(reserve(1, 5), /otros datos/i);

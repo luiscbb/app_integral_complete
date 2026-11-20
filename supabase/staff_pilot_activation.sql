@@ -1,6 +1,7 @@
 -- Ejecutar COMPLETO solo despues de desplegar player-admin y configurar el
 -- secreto HMAC de creacion. Preparar el cliente con STAFF_PILOT_ENABLED=true.
--- No crea cuentas. Solo abre los endpoints de los tres modulos del piloto.
+-- No crea cuentas. Habilita el piloto base; los RPC de Mesas/Comandas requieren
+-- despliegue separado aunque sus permisos ya se acepten en las cuentas.
 begin;
 set local lock_timeout = '3s';
 set local statement_timeout = '30s';
@@ -13,7 +14,27 @@ begin
     if exists (select 1 from public.business_memberships
         where username is not null and (
             role <> 'manager' or cardinality(allowed_modules) = 0
-            or not allowed_modules <@ array['quick_sale', 'inventory', 'purchases']::text[]
+            or not allowed_modules <@ array[
+                'quick_sale',
+                'billiard_tables', 'billiard_tables_open', 'billiard_tables_consume',
+                'billiard_tables_charge', 'billiard_tables_view_all',
+                'dine_in', 'dine_in_open', 'dine_in_consume',
+                'dine_in_charge', 'dine_in_view_all',
+                'inventory', 'purchases', 'reports_purchases','reports_sales',
+                'reports_cash_flow','reports_kardex','reports_profit'
+            ]::text[]
+            or ('billiard_tables' = any(allowed_modules)) is distinct from (
+                allowed_modules && array[
+                    'billiard_tables_open', 'billiard_tables_consume',
+                    'billiard_tables_charge', 'billiard_tables_view_all'
+                ]::text[]
+            )
+            or ('dine_in' = any(allowed_modules)) is distinct from (
+                allowed_modules && array[
+                    'dine_in_open', 'dine_in_consume',
+                    'dine_in_charge', 'dine_in_view_all'
+                ]::text[]
+            )
         )) then
         raise exception 'Hay cuentas con modulos fuera del piloto. Revisarlas antes de activar.';
     end if;
@@ -62,6 +83,16 @@ grant execute on function public.record_staff_purchase(uuid, text, bigint, text,
 grant execute on function public.resolve_staff_purchase_request(uuid, text, text, jsonb) to authenticated;
 grant execute on function public.list_staff_accounts(text) to authenticated;
 grant execute on function public.staff_business_profile(text) to authenticated;
+revoke all on function public.staff_purchase_report(text, timestamptz, timestamptz, bigint) from public, anon;
+grant execute on function public.staff_purchase_report(text, timestamptz, timestamptz, bigint) to authenticated;
+revoke all on function public.staff_read_report(text,text,timestamptz,timestamptz,bigint) from public, anon;
+revoke all on function public.cash_shared_state(text,timestamptz,timestamptz,bigint,bigint) from public, anon;
+revoke all on function public.cash_shared_apply(text,uuid,text,jsonb) from public, anon;
+revoke all on function public.cash_shared_request_status(text,uuid) from public, anon;
+grant execute on function public.staff_read_report(text,text,timestamptz,timestamptz,bigint) to authenticated;
+grant execute on function public.cash_shared_state(text,timestamptz,timestamptz,bigint,bigint) to authenticated;
+grant execute on function public.cash_shared_apply(text,uuid,text,jsonb) to authenticated;
+grant execute on function public.cash_shared_request_status(text,uuid) to authenticated;
 
 revoke all on function public.reserve_staff_account(uuid, uuid, text, text, text, text, text[], text, text) from public, anon, authenticated;
 revoke all on function public.find_staff_creation_auth_user(uuid, uuid, text) from public, anon, authenticated;
@@ -87,5 +118,6 @@ where pronamespace = 'public'::regnamespace and proname in (
     'apply_staff_provider_operation', 'record_staff_purchase', 'resolve_staff_purchase_request',
     'list_staff_accounts', 'reserve_staff_account', 'find_staff_creation_auth_user',
     'finalize_staff_account', 'stop_staff_password_recovery',
-    'complete_staff_password_change', 'update_staff_account', 'staff_business_profile'
+    'complete_staff_password_change', 'update_staff_account', 'staff_business_profile', 'staff_purchase_report',
+    'staff_read_report','cash_shared_state','cash_shared_apply','cash_shared_request_status'
 );

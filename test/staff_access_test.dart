@@ -1,3 +1,4 @@
+import 'package:app_integral_complete/features/auth/data/auth_access_repository.dart';
 import 'package:app_integral_complete/features/auth/domain/staff_access.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -62,4 +63,92 @@ void main() {
       throwsFormatException,
     );
   });
+
+  test(
+    'service permissions require their module and remain separate actions',
+    () {
+      expect(
+        parseStaffModules([
+          'billiard_tables',
+          'billiard_tables_open',
+          'billiard_tables_consume',
+        ]),
+        {
+          StaffModule.billiardTables,
+          StaffModule.billiardTablesOpen,
+          StaffModule.billiardTablesConsume,
+        },
+      );
+      expect(
+        () => parseStaffModules(['billiard_tables_open']),
+        throwsFormatException,
+      );
+      expect(
+        () => parseStaffModules(['billiard_tables']),
+        throwsFormatException,
+      );
+      expect(
+        () => parseStaffModules([
+          'billiard_tables',
+          'billiard_tables_open',
+          'billiard_tables_open',
+        ]),
+        throwsFormatException,
+      );
+    },
+  );
+
+  test('service module access requires an operational child permission', () {
+    final incomplete = AccountAccess(
+      kind: AccountKind.staff,
+      billarId: 'A',
+      allowedModules: {StaffModule.billiardTables},
+    );
+    expect(incomplete.hasModule(StaffModule.billiardTables), isFalse);
+
+    final waiter = AccountAccess(
+      kind: AccountKind.staff,
+      billarId: 'A',
+      allowedModules: {
+        StaffModule.billiardTables,
+        StaffModule.billiardTablesOpen,
+        StaffModule.billiardTablesConsume,
+      },
+    );
+    expect(waiter.hasModule(StaffModule.billiardTables), isTrue);
+    expect(waiter.hasModule(StaffModule.billiardTablesCharge), isFalse);
+  });
+
+  test(
+    'role recommendations keep service permissions within their pilot scope',
+    () {
+      final waiter = StaffRoleRecommendation.waiter.modules;
+      expect(
+        waiter,
+        containsAll({
+          StaffModule.billiardTablesOpen,
+          StaffModule.billiardTablesConsume,
+          StaffModule.dineInOpen,
+          StaffModule.dineInConsume,
+        }),
+      );
+      expect(waiter, isNot(contains(StaffModule.billiardTablesCharge)));
+      expect(waiter, isNot(contains(StaffModule.dineInViewAll)));
+
+      final cashier = StaffRoleRecommendation.cashier.modules;
+      expect(
+        cashier,
+        containsAll({
+          StaffModule.quickSale,
+          StaffModule.billiardTablesCharge,
+          StaffModule.billiardTablesViewAll,
+          StaffModule.dineInCharge,
+          StaffModule.dineInViewAll,
+        }),
+      );
+      expect(cashier, isNot(contains(StaffModule.billiardTablesOpen)));
+      expect(cashier, isNot(contains(StaffModule.dineInConsume)));
+      expect(StaffRoleRecommendation.supervisor.modules, cashier);
+    },
+  );
 }

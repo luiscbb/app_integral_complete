@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../../../core/database/database_helper.dart';
 import '../../../../core/services/sync_service.dart';
+import '../../../../core/services/table_sync_conflicts.dart';
 import '../../../../core/storage/preferences_service.dart';
 import '../../../inventory/data/repositories/product_repository.dart';
 import '../../../inventory/domain/entities/product_entity.dart';
@@ -62,8 +63,21 @@ class SalesRepository {
     required String paymentMethod,
     required String saleType,
     required SaleOrigin origin,
+    int? tableId,
     String? customerKey,
   }) async {
+    if ((origin == SaleOrigin.billiardTables || origin == SaleOrigin.dineIn) &&
+        (tableId == null || tableId <= 0)) {
+      throw SaleScopeException('Se requiere identificar la mesa para cobrar.');
+    }
+    if ((origin == SaleOrigin.billiardTables || origin == SaleOrigin.dineIn) &&
+        (!total.isFinite ||
+            !paid.isFinite ||
+            total < 0 ||
+            paid < 0 ||
+            paid + 0.000000001 < total)) {
+      throw SaleScopeException('El monto recibido debe cubrir el total.');
+    }
     final actorId = _currentActorId();
     if (actorId == null || actorId.isEmpty) {
       throw SaleScopeException(
@@ -93,6 +107,12 @@ class SalesRepository {
             'Hay una venta pendiente que debe recuperarse antes de cobrar.',
           );
         }
+      }
+      if (tableId != null &&
+          await TableSyncConflicts.contains(txn, actorId, billarId, tableId)) {
+        throw SaleScopeException(
+          'Esta mesa tiene cambios en conflicto. No se puede cobrar hasta revisarlos.',
+        );
       }
       final id = await txn.insert('sales_history', {
         'billar_id': billarId,
@@ -610,6 +630,16 @@ class SalesRepository {
           ? type?.trim() == 'Comanda'
           : _isBillarType(type);
     }).toList();
+  }
+
+  Future<Set<int>> getTableSyncConflictIds() async {
+    final actorId = _captureActorId();
+    final billarId = _prefs.billarId;
+    final db = await _db.database;
+    _requireTableScope(actorId, billarId);
+    final ids = await TableSyncConflicts.tableIds(db, actorId, billarId);
+    _requireTableScope(actorId, billarId);
+    return ids;
   }
 
   Future<void> refreshTablesFromCloud() =>

@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../domain/staff_access.dart';
 import 'staff_account_request_store.dart';
+import 'staff_role_template_repository.dart';
 
 class StaffAccountCreationResult {
   const StaffAccountCreationResult._({
@@ -75,6 +76,16 @@ class StaffAccountCreationRepository {
   bool Function() guardCurrentSession() {
     final session = _session();
     return () => _sameSession(session);
+  }
+
+  StaffRoleTemplateStore roleTemplatesForCurrentSession() {
+    final session = _session();
+    return StaffRoleTemplateRepository(
+      client: _client,
+      billarId: session.billarId,
+      token: session.token,
+      sessionUnchanged: () => _sameSession(session),
+    );
   }
 
   Future<List<StaffAccount>> listStaff() async {

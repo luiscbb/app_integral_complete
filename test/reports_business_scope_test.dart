@@ -136,16 +136,20 @@ void main() {
         expect(profit['expenses'], 10);
         expect(profit['costOfGoodsSold'], 2);
         await db.update(
-          'sale_details', {'cost_available': 0},
-          where: 'sale_id = ?', whereArgs: [saleIds['A']],
+          'sale_details',
+          {'cost_available': 0},
+          where: 'sale_id = ?',
+          whereArgs: [saleIds['A']],
         );
         final incomplete = await repo.getProfitSummary(start, end);
         expect(incomplete['costsAvailable'], isFalse);
         expect(incomplete['costOfGoodsSold'], isNull);
         expect(incomplete['profit'], isNull);
         await db.update(
-          'sale_details', {'cost_available': 1},
-          where: 'sale_id = ?', whereArgs: [saleIds['A']],
+          'sale_details',
+          {'cost_available': 1},
+          where: 'sale_id = ?',
+          whereArgs: [saleIds['A']],
         );
 
         await PreferencesService().setBillarId('B');
@@ -298,19 +302,33 @@ void main() {
           currentActorId: () => currentActorId,
         );
         await db.insert('pending_staff_sales', {
-          'actor_id': currentActorId, 'billar_id': 'A',
-          'request_id': 'pending-test', 'payload': '{}',
+          'actor_id': currentActorId,
+          'billar_id': 'A',
+          'request_id': 'pending-test',
+          'payload': '{}',
         });
-        await expectLater(reservations.clearQuickSaleReservation(), throwsStateError);
+        await expectLater(
+          reservations.clearQuickSaleReservation(),
+          throwsStateError,
+        );
         await expectLater(
           salesRepo.saveSale(
-            items: [SaleItemEntity(productId: 51, productName: 'Producto', price: 10)],
-            total: 10, paid: 10, paymentMethod: 'Efectivo',
-            saleType: 'Venta Rápida', origin: SaleOrigin.quickSale,
+            items: [
+              SaleItemEntity(productId: 51, productName: 'Producto', price: 10),
+            ],
+            total: 10,
+            paid: 10,
+            paymentMethod: 'Efectivo',
+            saleType: 'Venta Rápida',
+            origin: SaleOrigin.quickSale,
           ),
           throwsA(isA<SaleScopeException>()),
         );
-        await db.delete('pending_staff_sales', where: 'request_id = ?', whereArgs: ['pending-test']);
+        await db.delete(
+          'pending_staff_sales',
+          where: 'request_id = ?',
+          whereArgs: ['pending-test'],
+        );
         expect(
           await reservations.getReservedQuantities(includeSource: 'quick_sale'),
           {51: 1.0},
@@ -632,7 +650,9 @@ void main() {
         );
         final interruptedSale = await saleWithItems([(51, 1)]);
 
-        final tableRepo = BilliardTableRepository();
+        final tableRepo = BilliardTableRepository(
+          currentActorId: () => currentActorId,
+        );
         expect(await tableRepo.getAll(), isEmpty);
         expect(await tableRepo.getById(42), isNull);
         await expectLater(tableRepo.getAll(billarId: 'B'), throwsStateError);

@@ -1069,7 +1069,7 @@ void main() {
   );
 
   test('migration preserves owner data and sale requests', () async {
-    expect(await database.getVersion(), 53);
+    expect(await database.getVersion(), 61);
     expect(await database.query('products'), [
       {'id': 1, 'stock': 100.0, 'cost': 77.0},
     ]);

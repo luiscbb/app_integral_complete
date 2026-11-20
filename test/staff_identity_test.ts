@@ -18,7 +18,7 @@ test('staff identity is normalized, valid and consistent with Flutter login', ()
 });
 
 test('pilot rejects unsupported modules for both creation and update', () => {
-  for (const module of ['billiard_tables', 'dine_in', 'personal_account', 'reports', 'players', 'settings']) {
+  for (const module of ['personal_account', 'cash_operations', 'reports', 'players', 'settings']) {
     const details = { full_name: 'Ana', job_title: 'Caja', modules: ['quick_sale', module] };
     assert.throws(() => parseStaffDraft({ ...details, username: 'pilot' }), /piloto/i);
     assert.throws(() => parseStaffUpdate({
@@ -30,6 +30,25 @@ test('pilot rejects unsupported modules for both creation and update', () => {
     username: 'pilot', full_name: 'Ana', job_title: 'Caja',
     modules: ['quick_sale', 'inventory', 'purchases'],
   }).modules, ['quick_sale', 'inventory', 'purchases']);
+  assert.deepEqual(parseStaffDraft({
+    username: 'mesero', full_name: 'Ana', job_title: 'Mesero',
+    modules: [
+      'billiard_tables', 'billiard_tables_open', 'billiard_tables_consume',
+      'dine_in', 'dine_in_open', 'dine_in_consume',
+    ],
+  }).modules, [
+    'billiard_tables', 'billiard_tables_open', 'billiard_tables_consume',
+    'dine_in', 'dine_in_open', 'dine_in_consume',
+  ]);
+  for (const modules of [
+    ['quick_sale', 'billiard_tables'],
+    ['quick_sale', 'billiard_tables_open'],
+    ['quick_sale', 'dine_in_charge'],
+  ]) {
+    assert.throws(() => parseStaffDraft({
+      username: 'mesero', full_name: 'Ana', job_title: 'Mesero', modules,
+    }), /módulo de servicio/i);
+  }
 });
 
 test('staff updates require a valid identity, state and revision', () => {
@@ -59,6 +78,48 @@ test('staff updates require a valid identity, state and revision', () => {
   ]) {
     assert.throws(() => parseStaffUpdate(invalid), TypeError);
   }
+});
+
+test('purchases reporting can be assigned independently of all operational modules', () => {
+  for (const modules of [
+    ['reports_purchases'], ['purchases', 'reports_purchases'],
+    ['reports_sales'], ['reports_cash_flow'], ['reports_kardex'], ['reports_profit'],
+    ['reports_sales','reports_purchases','reports_cash_flow','reports_kardex','reports_profit'],
+  ]) {
+    const details = { username: 'consulta', full_name: 'Ana', job_title: 'Consulta', modules };
+    assert.deepEqual(parseStaffDraft(details).modules, modules);
+    assert.deepEqual(parseStaffUpdate({
+      ...details, user_id: '12345678-1234-1234-1234-123456789012',
+      is_active: true, staff_revision: 0,
+    }).modules, modules);
+  }
+});
+
+test('table-operation permissions require their parent module and stay independent', () => {
+  const modules = [
+    'quick_sale',
+    'billiard_tables',
+    'billiard_tables_open',
+    'billiard_tables_consume',
+  ];
+  assert.deepEqual(parseStaffDraft({
+    username: 'mesero',
+    full_name: 'Ana',
+    job_title: 'Mesero',
+    modules,
+  }).modules, modules);
+  assert.throws(() => parseStaffDraft({
+    username: 'mesero',
+    full_name: 'Ana',
+    job_title: 'Mesero',
+    modules: ['quick_sale', 'billiard_tables'],
+  }), /piloto/i);
+  assert.throws(() => parseStaffDraft({
+    username: 'mesero',
+    full_name: 'Ana',
+    job_title: 'Mesero',
+    modules: ['quick_sale', 'billiard_tables_open'],
+  }), /piloto/i);
 });
 
 test('rejects invalid usernames, identity fields and modules', () => {

@@ -47,7 +47,7 @@ void main() {
     await old.close();
     final db = await DatabaseHelper.instance.database;
     try {
-      expect(await db.getVersion(), 53);
+      expect(await db.getVersion(), 61);
       expect((await db.query('pending_staff_sales')).single, {
         'request_id': 'staff-pending',
         'payload': '{"total":10}',

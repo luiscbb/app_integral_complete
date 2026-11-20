@@ -20,7 +20,7 @@ Future<void> requireStaffModuleAccess({
   if (account.kind != AccountKind.staff ||
       account.billarId != session.billarId ||
       account.mustChangePassword ||
-      !account.allowedModules.contains(module)) {
+      !account.hasModule(module)) {
     throw StateError(
       'La cuenta no tiene permiso activo para usar ${module.label}.',
     );

@@ -89,9 +89,26 @@ begin
        or p_modules is null or cardinality(p_modules) = 0
        or array_position(p_modules, null) is not null
        or not p_modules <@ array[
-           'quick_sale', 'billiard_tables', 'dine_in', 'personal_account',
-           'inventory', 'purchases', 'reports', 'players', 'settings'
+           'quick_sale', 'billiard_tables', 'billiard_tables_open',
+           'billiard_tables_consume', 'billiard_tables_charge',
+           'billiard_tables_view_all', 'dine_in', 'dine_in_open',
+           'dine_in_consume', 'dine_in_charge', 'dine_in_view_all',
+           'personal_account',
+           'inventory', 'purchases', 'reports', 'reports_purchases', 'reports_sales',
+           'reports_cash_flow', 'reports_kardex', 'reports_profit', 'players', 'settings'
        ]::text[]
+       or ('billiard_tables' = any(p_modules)) is distinct from (
+           p_modules && array[
+               'billiard_tables_open', 'billiard_tables_consume',
+               'billiard_tables_charge', 'billiard_tables_view_all'
+           ]::text[]
+       )
+       or ('dine_in' = any(p_modules)) is distinct from (
+           p_modules && array[
+               'dine_in_open', 'dine_in_consume',
+               'dine_in_charge', 'dine_in_view_all'
+           ]::text[]
+       )
        or p_key_fingerprint is null or p_key_fingerprint !~ '^[a-f0-9]{64}$' then
         raise exception 'Datos de personal inválidos.' using errcode = '22023';
     end if;
@@ -378,9 +395,26 @@ begin
        or p_modules is null or cardinality(p_modules) = 0
        or array_position(p_modules, null) is not null
        or not p_modules <@ array[
-           'quick_sale', 'billiard_tables', 'dine_in', 'personal_account',
-           'inventory', 'purchases', 'reports', 'players', 'settings'
+           'quick_sale', 'billiard_tables', 'billiard_tables_open',
+           'billiard_tables_consume', 'billiard_tables_charge',
+           'billiard_tables_view_all', 'dine_in', 'dine_in_open',
+           'dine_in_consume', 'dine_in_charge', 'dine_in_view_all',
+           'personal_account',
+           'inventory', 'purchases', 'reports', 'reports_purchases', 'reports_sales',
+           'reports_cash_flow', 'reports_kardex', 'reports_profit', 'players', 'settings'
        ]::text[]
+       or ('billiard_tables' = any(p_modules)) is distinct from (
+           p_modules && array[
+               'billiard_tables_open', 'billiard_tables_consume',
+               'billiard_tables_charge', 'billiard_tables_view_all'
+           ]::text[]
+       )
+       or ('dine_in' = any(p_modules)) is distinct from (
+           p_modules && array[
+               'dine_in_open', 'dine_in_consume',
+               'dine_in_charge', 'dine_in_view_all'
+           ]::text[]
+       )
        or p_is_active is null or p_expected_revision is null or p_expected_revision < 0 then
         raise exception 'Datos de personal inválidos.' using errcode = '22023';
     end if;

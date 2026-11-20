@@ -126,7 +126,7 @@ void main() {
       await old.close();
       final db = await DatabaseHelper.instance.database;
       try {
-        expect(await db.getVersion(), 53);
+        expect(await db.getVersion(), 61);
         final provider = (await db.query('providers')).single;
         expect(provider['name'], 'Archivado');
         expect(provider['is_active'], 0);

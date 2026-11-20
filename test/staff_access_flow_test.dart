@@ -15,6 +15,9 @@ import 'package:app_integral_complete/core/widgets/module_card.dart';
 import 'package:app_integral_complete/features/inventory/presentation/pages/staff_inventory_page.dart';
 import 'package:app_integral_complete/features/quick_sale/presentation/pages/staff_quick_sale_page.dart';
 import 'package:app_integral_complete/features/purchases/presentation/pages/staff_purchases_page.dart';
+import 'package:app_integral_complete/features/reports/presentation/pages/staff_reports_page.dart';
+import 'package:app_integral_complete/features/sales/presentation/pages/billiard_tables_page.dart';
+import 'package:app_integral_complete/features/sales/presentation/pages/staff_table_service_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -29,7 +32,7 @@ void main() {
   testWidgets(
     'staff integration enforces password, portal permissions and default route gates',
     (tester) async {
-      const actor = '00000000-0000-0000-0000-000000000001';
+      const actor = '00000000-0000-4000-8000-000000000001';
       const pathChannel = MethodChannel('plugins.flutter.io/path_provider');
       final messenger =
           TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
@@ -59,6 +62,15 @@ void main() {
       var denyInventory = false;
       var invalidInventoryResponse = false;
       var brandingBillar = 'A';
+      var reportCalls = 0;
+      var serviceOpenCalls = 0;
+      var serviceConsumptionCalls = 0;
+      var conflictListCalls = 0;
+      var conflictConsumptionCalls = 0;
+      var openingReviewCalls = 0;
+      var activeServiceId = '';
+      var activeServiceOpenedAt = '';
+      var serviceItems = <Map<String, dynamic>>[];
       final navigator = GlobalKey<NavigatorState>();
       Database? database;
       final transport = MockClient((request) async {
@@ -127,9 +139,155 @@ void main() {
             'logo_url': '',
             'primary_color': 0x1565C0,
           };
+        } else if (request.url.path == '/rest/v1/rpc/staff_purchase_report') {
+          reportCalls++;
+          data = {
+            'billar_id': 'A',
+            'count': 0,
+            'total': 0,
+            'paid': 0,
+            'balance': 0,
+            'items': [],
+            'has_more': false,
+          };
         } else if (request.url.path == '/rest/v1/rpc/staff_sale_products') {
           catalogCalls++;
           data = [];
+        } else if (request.url.path ==
+            '/rest/v1/rpc/staff_table_visible_tables') {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          expectSync(body['requested_billar_id'], 'A');
+          expectSync(body['requested_table_type'], 'Billar');
+          data = {
+            'billar_id': 'A',
+            'table_type': 'Billar',
+            'items': [
+              {
+                'id': 17,
+                'billar_id': 'A',
+                'name': 'Mesa de personal',
+                'table_type': 'Billar',
+                'is_occupied': activeServiceId.isEmpty ? 0 : 1,
+                'start_time':
+                    activeServiceId.isEmpty ? null : activeServiceOpenedAt,
+                'orders': jsonEncode(serviceItems),
+                'is_deleted': 0,
+                'service_id': activeServiceId.isEmpty ? null : activeServiceId,
+                'service_actor_id': activeServiceId.isEmpty ? null : actor,
+                'service_state': activeServiceId.isEmpty ? null : 'active',
+                'service_items': serviceItems,
+              },
+            ],
+          };
+        } else if (request.url.path == '/rest/v1/rpc/staff_table_open') {
+          serviceOpenCalls++;
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          activeServiceId = body['requested_service_id'] as String;
+          activeServiceOpenedAt = body['requested_opened_at'] as String;
+          data = {
+            'service_id': activeServiceId,
+            'actor_id': actor,
+            'billar_id': 'A',
+            'table_id': 17,
+            'table_type': 'Billar',
+            'opened_at': activeServiceOpenedAt,
+            'state': 'active',
+          };
+        } else if (request.url.path ==
+            '/rest/v1/rpc/staff_table_add_consumption') {
+          serviceConsumptionCalls++;
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          final item = {
+            'request_id': body['requested_request_id'],
+            'productId': body['requested_product_id'],
+            'productName': body['requested_product_name'],
+            'price': body['requested_price'],
+            'quantity': body['requested_quantity'],
+            'recorded_at': body['requested_recorded_at'],
+          };
+          serviceItems = [...serviceItems, item];
+          data = {
+            'request_id': item['request_id'],
+            'service_id': activeServiceId,
+            'billar_id': 'A',
+            'actor_id': actor,
+            'product_id': item['productId'],
+            'product_name': item['productName'],
+            'quantity': item['quantity'],
+            'price': item['price'],
+            'recorded_at': item['recorded_at'],
+            'service_state': 'active',
+            'late': false,
+          };
+        } else if (request.url.path == '/rest/v1/rpc/staff_table_conflicts') {
+          conflictListCalls++;
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          expectSync(body['requested_billar_id'], 'A');
+          expectSync(body['requested_table_type'], 'Billar');
+          data = {
+            'billar_id': 'A',
+            'table_type': 'Billar',
+            'has_more': false,
+            'items': [
+              {
+                'ordinal': 2,
+                'service_id': activeServiceId,
+                'actor_id': actor,
+                'table_id': 17,
+                'table_type': 'Billar',
+                'billar_id': 'A',
+                'opened_at': activeServiceOpenedAt,
+                'reason': 'late_consumption',
+              },
+              {
+                'ordinal': 1,
+                'service_id': '00000000-0000-4000-8000-000000000022',
+                'actor_id': actor,
+                'table_id': 19,
+                'table_type': 'Billar',
+                'billar_id': 'A',
+                'opened_at': activeServiceOpenedAt,
+                'reason': 'opening',
+              },
+            ],
+          };
+        } else if (request.url.path ==
+            '/rest/v1/rpc/staff_table_conflict_consumptions') {
+          conflictConsumptionCalls++;
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          final serviceId = body['requested_service_id'] as String;
+          data = {
+            'billar_id': 'A',
+            'table_type': 'Billar',
+            'service_id': serviceId,
+            'has_more': false,
+            'items':
+                serviceId == activeServiceId
+                    ? [
+                      {
+                        'ordinal': 3,
+                        'request_id': serviceItems.single['request_id'],
+                        'product_id': 12,
+                        'product_name': 'Agua',
+                        'quantity': 2,
+                        'price': 12,
+                        'recorded_at': serviceItems.single['recorded_at'],
+                      },
+                    ]
+                    : [],
+          };
+        } else if (request.url.path ==
+            '/rest/v1/rpc/staff_table_review_opening_conflict') {
+          openingReviewCalls++;
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          data = {
+            'service_id': body['requested_service_id'],
+            'billar_id': 'A',
+            'table_type': 'Billar',
+            'state': 'conflict',
+            'reviewed_at': '2026-11-19T20:00:00Z',
+            'reviewed_by': actor,
+          };
         } else if (request.url.path == '/rest/v1/products') {
           expectSync(request.method, 'GET');
           expectSync(request.url.queryParameters['billar_id'], 'eq.A');
@@ -275,6 +433,16 @@ void main() {
         database = await tester.runAsync(
           () => DatabaseHelper.instance.database,
         );
+        await tester.runAsync(
+          () => database!.insert('products', {
+            'id': 12,
+            'billar_id': 'A',
+            'name': 'Agua',
+            'price': 12.0,
+            'cost': 5.0,
+            'stock': 10.0,
+          }),
+        );
 
         navigator.currentState!.pushNamed(AppRoutes.home);
         await waitFor(
@@ -325,6 +493,114 @@ void main() {
               .map((c) => c.label),
           ['VENTA\nRÁPIDA', 'INVENTARIO', 'COMPRAS'],
         );
+        modules = ['quick_sale', 'reports'];
+        await tester.tap(find.byTooltip('Actualizar permisos'));
+        await waitFor(() => find.byType(ModuleCard).evaluate().length == 1);
+        modules = [
+          'billiard_tables',
+          'billiard_tables_open',
+          'billiard_tables_consume',
+        ];
+        await tester.tap(find.byTooltip('Actualizar permisos'));
+        await waitFor(() => find.text('MESAS\nBILLAR').evaluate().isNotEmpty);
+        await tester.tap(find.text('MESAS\nBILLAR'));
+        await waitFor(
+          () => find.byType(StaffTableServicePage).evaluate().isNotEmpty,
+        );
+        await waitFor(
+          () => find.text('Mesa de personal').evaluate().isNotEmpty,
+        );
+        expect(find.byType(BilliardTablesPage), findsNothing);
+        await tester.tap(find.byTooltip('Iniciar servicio'));
+        await waitFor(
+          () =>
+              serviceOpenCalls == 1 &&
+              find.byTooltip('Anotar consumo').evaluate().isNotEmpty,
+        );
+        await tester.tap(find.byTooltip('Anotar consumo'));
+        await tester.pumpAndSettle();
+        await tester.enterText(find.byType(TextField).last, '2');
+        await tester.tap(find.text('GUARDAR').last);
+        await waitFor(
+          () =>
+              serviceConsumptionCalls == 1 &&
+              find.textContaining('Agua × 2.0').evaluate().isNotEmpty,
+        );
+        expect(find.byTooltip('Revisar conflictos'), findsNothing);
+        navigator.currentState!.pop();
+        await waitFor(() => find.byType(StaffHomePage).evaluate().isNotEmpty);
+        await tester.runAsync(
+          () => database!.delete('products', where: 'id = ?', whereArgs: [12]),
+        );
+        modules = [
+          'billiard_tables',
+          'billiard_tables_open',
+          'billiard_tables_consume',
+          'billiard_tables_view_all',
+        ];
+        await tester.tap(find.byTooltip('Actualizar permisos'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('MESAS\nBILLAR'));
+        await waitFor(
+          () => find.byType(StaffTableServicePage).evaluate().isNotEmpty,
+        );
+        await waitFor(
+          () => find.text('Mesa de personal').evaluate().isNotEmpty,
+        );
+        await tester.tap(find.byTooltip('Revisar conflictos'));
+        await waitFor(
+          () =>
+              conflictListCalls == 1 &&
+              find.text('Consumo tardío · Mesa 17').evaluate().isNotEmpty,
+        );
+        await tester.tap(find.text('Consumo tardío · Mesa 17'));
+        await waitFor(
+          () =>
+              conflictConsumptionCalls == 1 &&
+              find.text('Agua × 2.0').evaluate().isNotEmpty,
+        );
+        expect(
+          find.textContaining(
+            'Se requiere permiso de cobro para crear un ajuste separado.',
+          ),
+          findsOneWidget,
+        );
+        await tester.tap(find.text('CERRAR').last);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Apertura rechazada · Mesa 19'));
+        await waitFor(
+          () =>
+              conflictConsumptionCalls == 2 &&
+              find
+                  .text('No hay consumos asociados a este conflicto.')
+                  .evaluate()
+                  .isNotEmpty,
+        );
+        await tester.tap(find.text('MARCAR REVISADO'));
+        await waitFor(
+          () =>
+              openingReviewCalls == 1 &&
+              find.text('Apertura rechazada · Mesa 19').evaluate().isEmpty,
+        );
+        await tester.tap(find.text('CERRAR'));
+        await tester.pumpAndSettle();
+        navigator.currentState!.pop();
+        await waitFor(() => find.byType(StaffHomePage).evaluate().isNotEmpty);
+        modules = ['billiard_tables', 'billiard_tables_charge'];
+        await tester.tap(find.byTooltip('Actualizar permisos'));
+        await waitFor(() => find.text('MESAS\nBILLAR').evaluate().isNotEmpty);
+        await tester.tap(find.text('MESAS\nBILLAR'));
+        await waitFor(
+          () => find.byType(StaffTableServicePage).evaluate().isNotEmpty,
+        );
+        await waitFor(
+          () => find.text('Mesa de personal').evaluate().isNotEmpty,
+        );
+        expect(find.byTooltip('Revisar conflictos'), findsNothing);
+        expect(find.byTooltip('Iniciar servicio'), findsNothing);
+        expect(find.byTooltip('Cobrar servicio'), findsOneWidget);
+        navigator.currentState!.pop();
+        await waitFor(() => find.byType(StaffHomePage).evaluate().isNotEmpty);
         modules = ['quick_sale', 'reports'];
         await tester.tap(find.byTooltip('Actualizar permisos'));
         await waitFor(() => find.byType(ModuleCard).evaluate().length == 1);
@@ -462,16 +738,67 @@ void main() {
         expect(find.text('GESTIONAR PROVEEDORES'), findsNothing);
         navigator.currentState!.pop();
         await tester.pumpAndSettle();
-        navigator.currentState!.pushNamed('/ruta_desconocida');
+        for (final route in ['/ruta_desconocida', AppRoutes.cashOperations]) {
+          navigator.currentState!.pushNamed(route);
+          await waitFor(
+            () =>
+                find
+                    .text('Esta ruta aún no está habilitada para personal.')
+                    .evaluate()
+                    .isNotEmpty,
+          );
+          expect(find.text('CAJA Y TURNOS'), findsNothing);
+          navigator.currentState!.pop();
+          await tester.pumpAndSettle();
+        }
+        modules = ['reports_purchases'];
+        await tester.tap(find.byTooltip('Actualizar permisos'));
+        await waitFor(() => find.text('INFORMES').evaluate().isNotEmpty);
+        expect(find.byType(ModuleCard), findsOneWidget);
+        expect(find.text('COMPRAS'), findsNothing);
+        expect(find.text('VENTA\nRÁPIDA'), findsNothing);
+        final beforeReportPurchases = purchaseReads;
+        navigator.currentState!.pushNamed(AppRoutes.purchases);
         await waitFor(
           () =>
               find
-                  .text('Esta ruta aún no está habilitada para personal.')
+                  .textContaining('No tienes permiso para usar compras.')
                   .evaluate()
                   .isNotEmpty,
         );
+        expect(find.byType(StaffPurchasesPage), findsNothing);
         navigator.currentState!.pop();
         await tester.pumpAndSettle();
+        await tester.tap(find.text('INFORMES'));
+        await waitFor(
+          () =>
+              find.text('No hay compras en este rango.').evaluate().isNotEmpty,
+        );
+        expect(find.byType(StaffReportsPage), findsOneWidget);
+        expect(find.text('ANULAR'), findsNothing);
+        expect(find.text('CAJA Y TURNOS'), findsNothing);
+        expect(reportCalls, greaterThan(0));
+        expect(purchaseReads, beforeReportPurchases);
+        modules = ['quick_sale'];
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.inactive,
+        );
+        tester.binding.handleAppLifecycleStateChanged(
+          AppLifecycleState.resumed,
+        );
+        await waitFor(
+          () =>
+              find
+                  .textContaining('No tienes permiso para usar informes.')
+                  .evaluate()
+                  .isNotEmpty,
+        );
+        expect(find.byType(StaffReportsPage), findsNothing);
+        expect(find.text('No hay compras en este rango.'), findsNothing);
+        navigator.currentState!.pop();
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('Actualizar permisos'));
+        await waitFor(() => find.text('VENTA\nRÁPIDA').evaluate().isNotEmpty);
         await tester.tap(find.text('VENTA\nRÁPIDA'));
         await waitFor(
           () => find.text('Sin productos de venta.').evaluate().isNotEmpty,

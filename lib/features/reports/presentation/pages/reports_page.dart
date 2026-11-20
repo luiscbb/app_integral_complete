@@ -17,20 +17,25 @@ import '../../../../core/routes/app_routes.dart';
 import '../../../../core/services/sync_service.dart';
 import '../../../../core/services/business_logo_loader.dart';
 import '../../../../core/theme/theme_provider.dart';
+import '../services/report_receipt_service.dart';
 import '../../../../core/storage/preferences_service.dart';
 import '../../../../core/widgets/admin_pin_dialog.dart';
+import '../../../cash/data/repositories/shared_cash_repository.dart';
 
 class ReportsPage extends StatefulWidget {
-  const ReportsPage({super.key});
+  const ReportsPage({super.key, this.repository});
+
+  final ReportsRepository? repository;
 
   @override
   State<ReportsPage> createState() => _ReportsPageState();
 }
 
-class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStateMixin {
+class _ReportsPageState extends State<ReportsPage>
+    with SingleTickerProviderStateMixin {
   final _salesRepo = SalesRepository();
   final _purchasesRepo = PurchasesRepository();
-  final _reportsRepo = ReportsRepository();
+  late final ReportsRepository _reportsRepo;
   final _productRepo = ProductRepository();
 
   late TabController _tabCtrl;
@@ -39,22 +44,24 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   DateTime _end = DateTime.now();
 
   bool _isLoading = true;
+  Object? _loadError;
+  bool _sharedCashCurrent = true;
   List<Map<String, dynamic>> _sales = [];
   List<Map<String, dynamic>> _purchases = [];
   Map<String, double> _cashFlow = {};
   List<ProductEntity> _products = [];
   int? _selectedProductId;
   List<Map<String, dynamic>> _movements = [];
-  Map<String, dynamic>? _openSession;
-  List<String> _concepts = [];
 
-  List<Map<String, String>> _profitExpenses = []; // pares concepto/monto ordenados
+  List<Map<String, String>> _profitExpenses =
+      []; // pares concepto/monto ordenados
   Map<String, dynamic> _profit = {};
 
   @override
   void initState() {
     super.initState();
     _tabCtrl = TabController(length: 5, vsync: this);
+    _reportsRepo = widget.repository ?? ReportsRepository();
     _load();
   }
 
@@ -65,56 +72,94 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   }
 
   Future<void> _load() async {
-    setState(() => _isLoading = true);
-    final sales = await _salesRepo.getSalesByDateRange(_start, _end);
-    final purchases = await _purchasesRepo.getHistory();
-    final cashFlow = await _reportsRepo.getCashFlowSummary(_start, _end);
-    final products = await _productRepo.getAll(includeArchived: true);
-    final openSession = await _reportsRepo.getOpenSession();
-    final concepts = await _reportsRepo.getConcepts();
-    final profit = await _reportsRepo.getProfitSummary(_start, _end);
-    List<Map<String, String>> profitExpenses = [];
-    final byConcept = profit['expensesByConcept'] as Map<String, double>;
-    final entries = byConcept.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
-    for (final e in entries) {
-      profitExpenses.add({'concept': e.key, 'amount': e.value.toString()});
-    }
-    List<Map<String, dynamic>> movements = [];
-    if (_selectedProductId != null) {
-      movements = await _reportsRepo.getInventoryMovements(_selectedProductId!);
-    }
-    if (mounted) {
+    setState(() {
+      _isLoading = true;
+      _loadError = null;
+    });
+    final start = _start;
+    final end = _end;
+    try {
+      final sharedCashCurrent =
+          widget.repository != null ||
+          await SharedCashRepository().syncMovements(
+            DateTime(start.year, start.month, start.day),
+            DateTime(end.year, end.month, end.day + 1),
+          );
+      final cashFlow = await _reportsRepo.getCashFlowSummary(start, end);
+      final sales = await _salesRepo.getSalesByDateRange(start, end);
+      final purchases = await _purchasesRepo.getHistory();
+      final products = await _productRepo.getAll(includeArchived: true);
+      final profit = await _reportsRepo.getProfitSummary(start, end);
+      List<Map<String, String>> profitExpenses = [];
+      final byConcept = profit['expensesByConcept'] as Map<String, double>;
+      final entries =
+          byConcept.entries.toList()
+            ..sort((a, b) => b.value.compareTo(a.value));
+      for (final e in entries) {
+        profitExpenses.add({'concept': e.key, 'amount': e.value.toString()});
+      }
+      List<Map<String, dynamic>> movements = [];
+      if (_selectedProductId != null) {
+        movements = await _reportsRepo.getInventoryMovements(
+          _selectedProductId!,
+        );
+      }
+      if (!mounted || start != _start || end != _end) return;
       setState(() {
         _sales = sales;
         _purchases = purchases;
         _cashFlow = cashFlow;
+        _sharedCashCurrent = sharedCashCurrent;
         _products = products;
         _movements = movements;
-        _openSession = openSession;
-        _concepts = concepts;
         _profit = profit;
         _profitExpenses = profitExpenses;
         _isLoading = false;
       });
+      unawaited(_refreshOutflowsAfterPull(start, end));
+    } catch (error, stack) {
+      if (start == _start && end == _end) _reportLoadError(error, stack);
     }
-    unawaited(_refreshOutflowsAfterPull(_start, _end));
+  }
+
+  void _reportLoadError(Object error, StackTrace stack) {
+    debugPrint('[Reports] No se pudieron cargar los informes: $error\n$stack');
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+        _loadError = error;
+      });
+    }
   }
 
   Future<void> _refreshOutflowsAfterPull(DateTime start, DateTime end) async {
-    await SyncService().pullOutflowsFromCloud();
-    if (!mounted || start != _start || end != _end) return;
-    final cashFlow = await _reportsRepo.getCashFlowSummary(start, end);
-    final profit = await _reportsRepo.getProfitSummary(start, end);
-    final byConcept = profit['expensesByConcept'] as Map<String, double>;
-    final entries = byConcept.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
-    final expenses =
-        entries.map((entry) => {'concept': entry.key, 'amount': entry.value.toString()}).toList();
-    if (!mounted) return;
-    setState(() {
-      _cashFlow = cashFlow;
-      _profit = profit;
-      _profitExpenses = expenses;
-    });
+    try {
+      await SyncService().pullOutflowsFromCloud();
+      if (!mounted || start != _start || end != _end) return;
+      final cashFlow = await _reportsRepo.getCashFlowSummary(start, end);
+      final profit = await _reportsRepo.getProfitSummary(start, end);
+      final byConcept = profit['expensesByConcept'] as Map<String, double>;
+      final entries =
+          byConcept.entries.toList()
+            ..sort((a, b) => b.value.compareTo(a.value));
+      final expenses =
+          entries
+              .map(
+                (entry) => {
+                  'concept': entry.key,
+                  'amount': entry.value.toString(),
+                },
+              )
+              .toList();
+      if (!mounted || start != _start || end != _end) return;
+      setState(() {
+        _cashFlow = cashFlow;
+        _profit = profit;
+        _profitExpenses = expenses;
+      });
+    } catch (error, stack) {
+      if (start == _start && end == _end) _reportLoadError(error, stack);
+    }
   }
 
   Future<void> _pickDateRange() async {
@@ -126,9 +171,9 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       builder:
           (context, child) => Theme(
             data: Theme.of(context).copyWith(
-              colorScheme: Theme.of(
-                context,
-              ).colorScheme.copyWith(primary: Theme.of(context).colorScheme.primary),
+              colorScheme: Theme.of(context).colorScheme.copyWith(
+                primary: Theme.of(context).colorScheme.primary,
+              ),
             ),
             child: child!,
           ),
@@ -220,12 +265,18 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                           Expanded(
                             child: Text(
                               d['product_name'] ?? '',
-                              style: const TextStyle(color: Colors.white70, fontSize: 13),
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                              ),
                             ),
                           ),
                           Text(
                             '${d['quantity']} x \$${(d['price_at_sale'] as num).toStringAsFixed(2)}',
-                            style: const TextStyle(color: Colors.white38, fontSize: 12),
+                            style: const TextStyle(
+                              color: Colors.white38,
+                              fontSize: 12,
+                            ),
                           ),
                           const SizedBox(width: 12),
                           Text(
@@ -246,13 +297,18 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                     child: ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: color,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                         padding: const EdgeInsets.symmetric(vertical: 14),
                       ),
                       icon: const Icon(Icons.receipt_long, color: Colors.white),
                       label: const Text(
                         'REIMPRIMIR / REENVIAR TICKET',
-                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                       onPressed: () {
                         Navigator.pop(context);
@@ -273,13 +329,21 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                     child: ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.redAccent,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                         padding: const EdgeInsets.symmetric(vertical: 14),
                       ),
-                      icon: const Icon(Icons.cancel_outlined, color: Colors.white),
+                      icon: const Icon(
+                        Icons.cancel_outlined,
+                        color: Colors.white,
+                      ),
                       label: const Text(
                         'ANULAR VENTA',
-                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                       onPressed: () {
                         Navigator.pop(context);
@@ -303,7 +367,10 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
 
     if (!isAdmin) {
       if (prefs.adminPin.isNotEmpty) {
-        final authorized = await AdminPinDialog.authorize(context, accion: 'ANULAR VENTA');
+        final authorized = await AdminPinDialog.authorize(
+          context,
+          accion: 'ANULAR VENTA',
+        );
         if (!authorized || !mounted) return;
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -325,7 +392,11 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
             backgroundColor: const Color(0xFF1A1A1A),
             title: const Text(
               'ANULAR VENTA',
-              style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 15),
+              style: TextStyle(
+                color: Colors.redAccent,
+                fontWeight: FontWeight.bold,
+                fontSize: 15,
+              ),
             ),
             content: Text(
               'Se anulará la venta de \$${(sale['total'] as num).toStringAsFixed(2)}.\n\n'
@@ -335,12 +406,20 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
+                child: const Text(
+                  'Cancelar',
+                  style: TextStyle(color: Colors.white38),
+                ),
               ),
               ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.redAccent,
+                ),
                 onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('ANULAR', style: TextStyle(color: Colors.white)),
+                child: const Text(
+                  'ANULAR',
+                  style: TextStyle(color: Colors.white),
+                ),
               ),
             ],
           ),
@@ -362,7 +441,9 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          ok ? 'Venta anulada. Stock devuelto al inventario.' : 'No se pudo anular la venta.',
+          ok
+              ? 'Venta anulada. Stock devuelto al inventario.'
+              : 'No se pudo anular la venta.',
         ),
         backgroundColor: ok ? Colors.green : Colors.red,
       ),
@@ -378,7 +459,9 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   Future<void> _showCancelSalePdf(Map<String, dynamic> sale) async {
     final prefs = PreferencesService();
     final businessName =
-        prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
+        prefs.businessName.trim().isEmpty
+            ? 'MI NEGOCIO'
+            : prefs.businessName.trim();
     final primaryColor = PdfColor.fromInt(prefs.primaryColorValue);
 
     pw.MemoryImage? logoImage;
@@ -421,30 +504,51 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                 pw.Center(
                   child: pw.Text(
                     'VENTA ANULADA',
-                    style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10),
+                    style: pw.TextStyle(
+                      fontWeight: pw.FontWeight.bold,
+                      fontSize: 10,
+                    ),
                   ),
                 ),
                 pw.SizedBox(height: 2),
                 pw.Center(
                   child: pw.Text(
                     dateStr,
-                    style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+                    style: const pw.TextStyle(
+                      fontSize: 8,
+                      color: PdfColors.grey700,
+                    ),
                   ),
                 ),
                 pw.SizedBox(height: 2),
                 pw.Divider(color: primaryColor, thickness: 0.8),
-                pw.Text('Venta: $type', style: const pw.TextStyle(fontSize: 9.5)),
-                pw.Text('Fecha original: $saleDateStr', style: const pw.TextStyle(fontSize: 9.5)),
-                pw.Text('Anuló: ${prefs.userName}', style: const pw.TextStyle(fontSize: 9.5)),
+                pw.Text(
+                  'Venta: $type',
+                  style: const pw.TextStyle(fontSize: 9.5),
+                ),
+                pw.Text(
+                  'Fecha original: $saleDateStr',
+                  style: const pw.TextStyle(fontSize: 9.5),
+                ),
+                pw.Text(
+                  'Anuló: ${prefs.userName}',
+                  style: const pw.TextStyle(fontSize: 9.5),
+                ),
                 pw.Divider(color: primaryColor, thickness: 0.8),
                 pw.Text(
                   'Monto anulado: \$${total.toStringAsFixed(2)}',
-                  style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10),
+                  style: pw.TextStyle(
+                    fontWeight: pw.FontWeight.bold,
+                    fontSize: 10,
+                  ),
                 ),
                 pw.SizedBox(height: 2),
                 pw.Text(
                   'El stock de los productos fue devuelto al inventario.',
-                  style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+                  style: const pw.TextStyle(
+                    fontSize: 8,
+                    color: PdfColors.grey700,
+                  ),
                 ),
                 pw.SizedBox(height: 10),
                 pw.Center(
@@ -468,14 +572,19 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       builder:
           (ctx) => Dialog(
             backgroundColor: const Color(0xFF1A1A1A),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24),
+            ),
             child: SizedBox(
               width: 420,
               height: 560,
               child: Column(
                 children: [
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 10,
+                    ),
                     child: Row(
                       children: [
                         const Text(
@@ -488,13 +597,22 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                         ),
                         IconButton(
                           icon: const Icon(Icons.share, color: Colors.blue),
-                          onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
+                          onPressed:
+                              () => Printing.sharePdf(
+                                bytes: bytes,
+                                filename: fileName,
+                              ),
                         ),
                         IconButton(
-                          icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
+                          icon: Icon(
+                            Icons.print,
+                            color: Theme.of(ctx).colorScheme.primary,
+                          ),
                           onPressed:
-                              () =>
-                                  Printing.layoutPdf(onLayout: (_) async => bytes, name: fileName),
+                              () => Printing.layoutPdf(
+                                onLayout: (_) async => bytes,
+                                name: fileName,
+                              ),
                         ),
                         IconButton(
                           icon: const Icon(Icons.close, color: Colors.white54),
@@ -524,7 +642,9 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   }
 
   Future<void> _showPurchaseDetail(Map<String, dynamic> purchase) async {
-    final details = await _purchasesRepo.getPurchaseDetails(purchase['id'] as int);
+    final details = await _purchasesRepo.getPurchaseDetails(
+      purchase['id'] as int,
+    );
     if (!mounted) return;
     showModalBottomSheet(
       context: context,
@@ -548,7 +668,11 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                 children: [
                   Row(
                     children: [
-                      const Icon(Icons.shopping_cart, color: Colors.orangeAccent, size: 22),
+                      const Icon(
+                        Icons.shopping_cart,
+                        color: Colors.orangeAccent,
+                        size: 22,
+                      ),
                       const SizedBox(width: 8),
                       Text(
                         'COMPRA',
@@ -578,7 +702,10 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                   if ((purchase['provider_name'] ?? '').toString().isNotEmpty)
                     Text(
                       'Proveedor: ${purchase['provider_name']}',
-                      style: const TextStyle(color: Colors.white38, fontSize: 12),
+                      style: const TextStyle(
+                        color: Colors.white38,
+                        fontSize: 12,
+                      ),
                     ),
                   const Divider(color: Colors.white10, height: 20),
                   ...details.map(
@@ -589,12 +716,18 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                           Expanded(
                             child: Text(
                               d['product_name'] ?? '',
-                              style: const TextStyle(color: Colors.white70, fontSize: 13),
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 13,
+                              ),
                             ),
                           ),
                           Text(
                             '${d['quantity']} x \$${(d['cost_per_unit'] as num).toStringAsFixed(2)}',
-                            style: const TextStyle(color: Colors.white38, fontSize: 12),
+                            style: const TextStyle(
+                              color: Colors.white38,
+                              fontSize: 12,
+                            ),
                           ),
                           const SizedBox(width: 12),
                           Text(
@@ -615,13 +748,21 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                     child: ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.redAccent,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
                         padding: const EdgeInsets.symmetric(vertical: 14),
                       ),
-                      icon: const Icon(Icons.cancel_outlined, color: Colors.white),
+                      icon: const Icon(
+                        Icons.cancel_outlined,
+                        color: Colors.white,
+                      ),
                       label: const Text(
                         'ANULAR COMPRA',
-                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                       onPressed: () {
                         Navigator.pop(context);
@@ -644,7 +785,10 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
 
     if (!isAdmin) {
       if (prefs.adminPin.isNotEmpty) {
-        final authorized = await AdminPinDialog.authorize(context, accion: 'ANULAR COMPRA');
+        final authorized = await AdminPinDialog.authorize(
+          context,
+          accion: 'ANULAR COMPRA',
+        );
         if (!authorized || !mounted) return;
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -667,7 +811,11 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
             backgroundColor: const Color(0xFF1A1A1A),
             title: const Text(
               'ANULAR COMPRA',
-              style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 15),
+              style: TextStyle(
+                color: Colors.redAccent,
+                fontWeight: FontWeight.bold,
+                fontSize: 15,
+              ),
             ),
             content: Text(
               'Se anulará la compra de \$${(purchase['total'] as num).toStringAsFixed(2)}.\n\n'
@@ -677,12 +825,20 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
+                child: const Text(
+                  'Cancelar',
+                  style: TextStyle(color: Colors.white38),
+                ),
               ),
               ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.redAccent,
+                ),
                 onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('ANULAR', style: TextStyle(color: Colors.white)),
+                child: const Text(
+                  'ANULAR',
+                  style: TextStyle(color: Colors.white),
+                ),
               ),
             ],
           ),
@@ -694,7 +850,9 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          ok ? 'Compra anulada. Stock descontado del inventario.' : 'No se pudo anular la compra.',
+          ok
+              ? 'Compra anulada. Stock descontado del inventario.'
+              : 'No se pudo anular la compra.',
         ),
         backgroundColor: ok ? Colors.green : Colors.red,
       ),
@@ -710,7 +868,9 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   Future<void> _showCancelPurchasePdf(Map<String, dynamic> purchase) async {
     final prefs = PreferencesService();
     final businessName =
-        prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
+        prefs.businessName.trim().isEmpty
+            ? 'MI NEGOCIO'
+            : prefs.businessName.trim();
     final primaryColor = PdfColor.fromInt(prefs.primaryColorValue);
 
     pw.MemoryImage? logoImage;
@@ -722,7 +882,8 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final dateStr =
         '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}  ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
     final purchaseDate = DateTime.tryParse(purchase['date'] ?? '') ?? now;
-    final purchaseDateStr = '${purchaseDate.day}/${purchaseDate.month}/${purchaseDate.year}';
+    final purchaseDateStr =
+        '${purchaseDate.day}/${purchaseDate.month}/${purchaseDate.year}';
     final total = (purchase['total'] as num?)?.toDouble() ?? 0;
 
     pdf.addPage(
@@ -751,14 +912,20 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                 pw.Center(
                   child: pw.Text(
                     'COMPRA ANULADA',
-                    style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10),
+                    style: pw.TextStyle(
+                      fontWeight: pw.FontWeight.bold,
+                      fontSize: 10,
+                    ),
                   ),
                 ),
                 pw.SizedBox(height: 2),
                 pw.Center(
                   child: pw.Text(
                     dateStr,
-                    style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+                    style: const pw.TextStyle(
+                      fontSize: 8,
+                      color: PdfColors.grey700,
+                    ),
                   ),
                 ),
                 pw.SizedBox(height: 2),
@@ -771,16 +938,25 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                   'Fecha original: $purchaseDateStr',
                   style: const pw.TextStyle(fontSize: 9.5),
                 ),
-                pw.Text('Anuló: ${prefs.userName}', style: const pw.TextStyle(fontSize: 9.5)),
+                pw.Text(
+                  'Anuló: ${prefs.userName}',
+                  style: const pw.TextStyle(fontSize: 9.5),
+                ),
                 pw.Divider(color: primaryColor, thickness: 0.8),
                 pw.Text(
                   'Monto anulado: \$${total.toStringAsFixed(2)}',
-                  style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10),
+                  style: pw.TextStyle(
+                    fontWeight: pw.FontWeight.bold,
+                    fontSize: 10,
+                  ),
                 ),
                 pw.SizedBox(height: 2),
                 pw.Text(
                   'El stock de los productos fue descontado del inventario.',
-                  style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700),
+                  style: const pw.TextStyle(
+                    fontSize: 8,
+                    color: PdfColors.grey700,
+                  ),
                 ),
                 pw.SizedBox(height: 10),
                 pw.Center(
@@ -804,14 +980,19 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
       builder:
           (ctx) => Dialog(
             backgroundColor: const Color(0xFF1A1A1A),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24),
+            ),
             child: SizedBox(
               width: 420,
               height: 560,
               child: Column(
                 children: [
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 10,
+                    ),
                     child: Row(
                       children: [
                         const Text(
@@ -825,13 +1006,22 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                         const Spacer(),
                         IconButton(
                           icon: const Icon(Icons.share, color: Colors.blue),
-                          onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
+                          onPressed:
+                              () => Printing.sharePdf(
+                                bytes: bytes,
+                                filename: fileName,
+                              ),
                         ),
                         IconButton(
-                          icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
+                          icon: Icon(
+                            Icons.print,
+                            color: Theme.of(ctx).colorScheme.primary,
+                          ),
                           onPressed:
-                              () =>
-                                  Printing.layoutPdf(onLayout: (_) async => bytes, name: fileName),
+                              () => Printing.layoutPdf(
+                                onLayout: (_) async => bytes,
+                                name: fileName,
+                              ),
                         ),
                         IconButton(
                           icon: const Icon(Icons.close, color: Colors.white54),
@@ -860,792 +1050,6 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     );
   }
 
-  Future<void> _addOutflow() async {
-    final prefs = PreferencesService();
-    String type = _concepts.isNotEmpty ? _concepts.first : 'GASTO';
-    final descCtrl = TextEditingController();
-    final amountCtrl = TextEditingController();
-    await showDialog(
-      context: context,
-      builder:
-          (ctx) => AlertDialog(
-            backgroundColor: const Color(0xFF1A1A1A),
-            title: const Text(
-              'REGISTRAR RETIRO / GASTO',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
-            ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: DropdownButtonFormField<String>(
-                        initialValue: type,
-                        dropdownColor: const Color(0xFF1A1A1A),
-                        style: const TextStyle(color: Colors.white),
-                        decoration: const InputDecoration(
-                          labelText: 'Concepto',
-                          labelStyle: TextStyle(color: Colors.white38),
-                        ),
-                        items: [
-                          if (_concepts.isEmpty)
-                            const DropdownMenuItem(value: 'GASTO', child: Text('GASTO')),
-                          ..._concepts.map((c) => DropdownMenuItem(value: c, child: Text(c))),
-                        ],
-                        onChanged: (v) => type = v!,
-                      ),
-                    ),
-                    IconButton(
-                      icon: Icon(Icons.add_circle, color: Theme.of(ctx).colorScheme.primary),
-                      tooltip: 'Agregar concepto',
-                      onPressed: () async {
-                        await _showAddConceptDialog(ctx);
-                        await _reloadConceptsOnly();
-                        if (ctx.mounted && _concepts.isNotEmpty) {
-                          type = _concepts.first;
-                        }
-                      },
-                    ),
-                  ],
-                ),
-                TextField(
-                  controller: amountCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    labelText: 'Monto',
-                    labelStyle: TextStyle(color: Colors.white38),
-                  ),
-                ),
-                TextField(
-                  controller: descCtrl,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    labelText: 'Descripción (opcional)',
-                    labelStyle: TextStyle(color: Colors.white38),
-                  ),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  final amount = double.tryParse(amountCtrl.text) ?? 0;
-                  if (amount <= 0) {
-                    if (ctx.mounted) {
-                      ScaffoldMessenger.of(ctx).showSnackBar(
-                        const SnackBar(
-                          content: Text('Ingresa un monto válido mayor a 0'),
-                          backgroundColor: Colors.red,
-                        ),
-                      );
-                    }
-                    return;
-                  }
-                  if (type.isEmpty) {
-                    if (ctx.mounted) {
-                      ScaffoldMessenger.of(ctx).showSnackBar(
-                        const SnackBar(
-                          content: Text('Selecciona un concepto'),
-                          backgroundColor: Colors.red,
-                        ),
-                      );
-                    }
-                    return;
-                  }
-                  await _reportsRepo.addCashOutflow(
-                    outflowType: type,
-                    amount: amount,
-                    description: descCtrl.text.trim(),
-                    createdBy: prefs.userName,
-                  );
-                  // Disparar subida inmediata del retiro a Supabase (mismo
-                  // patrón que ventas: sin esto el retiro queda local hasta
-                  // el próximo ciclo automático y el otro dispositivo no lo ve).
-                  SyncService().schedulePendingSync();
-                  if (ctx.mounted) Navigator.pop(ctx);
-                  await _load();
-                  if (mounted) {
-                    await _showCashReceiptPdf(
-                      title: 'COMPROBANTE DE RETIRO / GASTO',
-                      subtitle: 'Concepto: $type',
-                      bodyLines: [
-                        'Monto: ${_fmt(amount)}',
-                        if (descCtrl.text.trim().isNotEmpty) 'Descripción: ${descCtrl.text.trim()}',
-                        'Registrado por: ${prefs.userName}',
-                      ],
-                      boldLabel: 'Total en caja',
-                      boldAmount: _currentCashTotal(),
-                    );
-                  }
-                },
-                child: const Text('GUARDAR', style: TextStyle(color: Colors.white)),
-              ),
-            ],
-          ),
-    );
-  }
-
-  Future<void> _reloadConceptsOnly() async {
-    final concepts = await _reportsRepo.getConcepts();
-    if (mounted) setState(() => _concepts = concepts);
-  }
-
-  Future<void> _showAddConceptDialog(BuildContext parentCtx) async {
-    final ctrl = TextEditingController();
-    await showDialog(
-      context: parentCtx,
-      builder:
-          (ctx) => AlertDialog(
-            backgroundColor: const Color(0xFF1A1A1A),
-            title: const Text(
-              'NUEVO CONCEPTO',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
-            ),
-            content: TextField(
-              controller: ctrl,
-              autofocus: true,
-              textCapitalization: TextCapitalization.characters,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                labelText: 'Nombre del concepto',
-                labelStyle: TextStyle(color: Colors.white38),
-              ),
-              inputFormatters: [
-                TextInputFormatter.withFunction(
-                  (oldValue, newValue) => newValue.copyWith(text: newValue.text.toUpperCase()),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  final name = ctrl.text.trim();
-                  if (name.isNotEmpty) {
-                    await _reportsRepo.addConcept(name);
-                    if (ctx.mounted) Navigator.pop(ctx);
-                  }
-                },
-                child: const Text('CREAR', style: TextStyle(color: Colors.white)),
-              ),
-            ],
-          ),
-    );
-  }
-
-  Future<void> _showConceptManager() async {
-    await _reloadConceptsOnly();
-    if (!mounted) return;
-    await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFF1A1A1A),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder:
-              (ctx, setSheetState) => DraggableScrollableSheet(
-                expand: false,
-                initialChildSize: 0.8,
-                maxChildSize: 0.95,
-                builder:
-                    (_, ctrl) => Column(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                          decoration: const BoxDecoration(
-                            color: Color(0xFF1A1A1A),
-                            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-                          ),
-                          child: Row(
-                            children: [
-                              const Text(
-                                'CONCEPTOS DE RETIRO / GASTO',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 13,
-                                ),
-                              ),
-                              const Spacer(),
-                              IconButton(
-                                icon: Icon(Icons.add, color: Theme.of(ctx).colorScheme.primary),
-                                tooltip: 'Agregar concepto',
-                                onPressed: () async {
-                                  await _showAddConceptDialog(ctx);
-                                  final concepts = await _reportsRepo.getConcepts();
-                                  setSheetState(() => _concepts = concepts);
-                                },
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.close, color: Colors.white54),
-                                onPressed: () => Navigator.pop(ctx),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const Divider(color: Colors.white10, height: 1),
-                        Expanded(
-                          child:
-                              _concepts.isEmpty
-                                  ? const Center(
-                                    child: Text(
-                                      'Sin conceptos. Agrega uno con el +',
-                                      style: TextStyle(color: Colors.white24),
-                                    ),
-                                  )
-                                  : ListView.builder(
-                                    controller: ctrl,
-                                    padding: const EdgeInsets.symmetric(vertical: 8),
-                                    itemCount: _concepts.length,
-                                    itemBuilder: (_, i) {
-                                      final c = _concepts[i];
-                                      return ListTile(
-                                        leading: const Icon(
-                                          Icons.label,
-                                          color: Colors.orangeAccent,
-                                        ),
-                                        title: Text(
-                                          c,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                        trailing: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            IconButton(
-                                              icon: const Icon(Icons.edit, color: Colors.white54),
-                                              tooltip: 'Renombrar',
-                                              onPressed: () async {
-                                                await _showRenameConceptDialog(ctx, c);
-                                                final concepts = await _reportsRepo.getConcepts();
-                                                setSheetState(() => _concepts = concepts);
-                                              },
-                                            ),
-                                            IconButton(
-                                              icon: const Icon(
-                                                Icons.delete,
-                                                color: Colors.redAccent,
-                                              ),
-                                              tooltip: 'Eliminar',
-                                              onPressed: () async {
-                                                final ok = await showDialog<bool>(
-                                                  context: ctx,
-                                                  builder:
-                                                      (dctx) => AlertDialog(
-                                                        backgroundColor: const Color(0xFF1A1A1A),
-                                                        title: const Text(
-                                                          'ELIMINAR CONCEPTO',
-                                                          style: TextStyle(
-                                                            color: Colors.white,
-                                                            fontWeight: FontWeight.bold,
-                                                            fontSize: 15,
-                                                          ),
-                                                        ),
-                                                        content: Text(
-                                                          '¿Eliminar "$c"?',
-                                                          style: const TextStyle(
-                                                            color: Colors.white70,
-                                                          ),
-                                                        ),
-                                                        actions: [
-                                                          TextButton(
-                                                            onPressed:
-                                                                () => Navigator.pop(dctx, false),
-                                                            child: const Text(
-                                                              'Cancelar',
-                                                              style: TextStyle(
-                                                                color: Colors.white38,
-                                                              ),
-                                                            ),
-                                                          ),
-                                                          ElevatedButton(
-                                                            onPressed:
-                                                                () => Navigator.pop(dctx, true),
-                                                            child: const Text(
-                                                              'ELIMINAR',
-                                                              style: TextStyle(color: Colors.white),
-                                                            ),
-                                                          ),
-                                                        ],
-                                                      ),
-                                                );
-                                                if (ok == true) {
-                                                  await _reportsRepo.deleteConcept(c);
-                                                  final concepts = await _reportsRepo.getConcepts();
-                                                  setSheetState(() => _concepts = concepts);
-                                                }
-                                              },
-                                            ),
-                                          ],
-                                        ),
-                                      );
-                                    },
-                                  ),
-                        ),
-                      ],
-                    ),
-              ),
-        );
-      },
-    );
-  }
-
-  Future<void> _showRenameConceptDialog(BuildContext parentCtx, String current) async {
-    final ctrl = TextEditingController(text: current);
-    await showDialog(
-      context: parentCtx,
-      builder:
-          (ctx) => AlertDialog(
-            backgroundColor: const Color(0xFF1A1A1A),
-            title: const Text(
-              'RENOMBRAR CONCEPTO',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
-            ),
-            content: TextField(
-              controller: ctrl,
-              autofocus: true,
-              textCapitalization: TextCapitalization.characters,
-              style: const TextStyle(color: Colors.white),
-              decoration: const InputDecoration(
-                labelText: 'Nuevo nombre',
-                labelStyle: TextStyle(color: Colors.white38),
-              ),
-              inputFormatters: [
-                TextInputFormatter.withFunction(
-                  (oldValue, newValue) => newValue.copyWith(text: newValue.text.toUpperCase()),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  final name = ctrl.text.trim();
-                  if (name.isNotEmpty) {
-                    await _reportsRepo.renameConcept(current, name);
-                    if (ctx.mounted) Navigator.pop(ctx);
-                  }
-                },
-                child: const Text('GUARDAR', style: TextStyle(color: Colors.white)),
-              ),
-            ],
-          ),
-    );
-  }
-
-  Future<void> _openTurn() async {
-    final prefs = PreferencesService();
-    final nameCtrl = TextEditingController(text: prefs.userName);
-    final amountCtrl = TextEditingController();
-    await showDialog(
-      context: context,
-      builder:
-          (ctx) => AlertDialog(
-            backgroundColor: const Color(0xFF1A1A1A),
-            title: const Text(
-              'ABRIR TURNO',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
-            ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: nameCtrl,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    labelText: 'Cajero (quien abre)',
-                    labelStyle: TextStyle(color: Colors.white38),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: amountCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    labelText: 'Monto inicial en caja',
-                    labelStyle: TextStyle(color: Colors.white38),
-                  ),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  final amount = double.tryParse(amountCtrl.text) ?? 0;
-                  if (amount >= 0) {
-                    final cashier =
-                        nameCtrl.text.trim().isEmpty ? prefs.userName : nameCtrl.text.trim();
-                    await _reportsRepo.openSession(openingAmount: amount, createdBy: cashier);
-                    if (ctx.mounted) Navigator.pop(ctx);
-                    await _load();
-                    if (mounted) {
-                      await _showCashReceiptPdf(
-                        title: 'COMPROBANTE DE APERTURA',
-                        subtitle: 'Cajero que abre: $cashier',
-                        bodyLines: ['Monto inicial en caja: ${_fmt(amount)}'],
-                        boldLabel: 'Total en caja',
-                        boldAmount: _currentCashTotal(),
-                      );
-                    }
-                  }
-                },
-                child: const Text('ABRIR', style: TextStyle(color: Colors.white)),
-              ),
-            ],
-          ),
-    );
-  }
-
-  Future<void> _partialCutoff() async {
-    final amountCtrl = TextEditingController();
-    final notesCtrl = TextEditingController();
-    await showDialog(
-      context: context,
-      builder:
-          (ctx) => AlertDialog(
-            backgroundColor: const Color(0xFF1A1A1A),
-            title: const Text(
-              'CORTE PARCIAL',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
-            ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: amountCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    labelText: 'Monto retirado',
-                    labelStyle: TextStyle(color: Colors.white38),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: notesCtrl,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    labelText: 'Notas (opcional)',
-                    labelStyle: TextStyle(color: Colors.white38),
-                  ),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  final amount = double.tryParse(amountCtrl.text) ?? 0;
-                  if (amount > 0) {
-                    await _reportsRepo.addPartialClosure(
-                      amount: amount,
-                      notes: notesCtrl.text.trim(),
-                    );
-                    if (ctx.mounted) Navigator.pop(ctx);
-                    await _load();
-                    if (mounted) {
-                      final summary = await _reportsRepo.getCashFlowSummary(_start, _end);
-                      final session = _openSession;
-                      await _showCutoffPdf(
-                        openingAmount: (session?['opening_amount'] as num?)?.toDouble() ?? 0,
-                        openedBy: (session?['created_by'] ?? '').toString(),
-                        closingAmount: amount,
-                        closedBy: '',
-                        summary: summary,
-                        isPartial: true,
-                      );
-                    }
-                  }
-                },
-                child: const Text('GUARDAR', style: TextStyle(color: Colors.white)),
-              ),
-            ],
-          ),
-    );
-  }
-
-  Future<void> _totalCutoff() async {
-    final prefs = PreferencesService();
-    final closedByCtrl = TextEditingController(text: prefs.userName);
-    final closingCtrl = TextEditingController();
-    final session = _openSession;
-    if (session == null) return;
-
-    await showDialog(
-      context: context,
-      builder:
-          (ctx) => AlertDialog(
-            backgroundColor: const Color(0xFF1A1A1A),
-            title: const Text(
-              'CORTE TOTAL',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
-            ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Abrió: ${session['created_by'] ?? '?'}  con  ${_fmt(((session['opening_amount'] as num?) ?? 0).toDouble())}',
-                  style: const TextStyle(color: Colors.white54, fontSize: 12),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: closedByCtrl,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    labelText: 'Cajero que cierra',
-                    labelStyle: TextStyle(color: Colors.white38),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: closingCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    labelText: 'Efectivo contado',
-                    labelStyle: TextStyle(color: Colors.white38),
-                  ),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancelar', style: TextStyle(color: Colors.white38)),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  final closing = double.tryParse(closingCtrl.text) ?? 0;
-                  final closedBy =
-                      closedByCtrl.text.trim().isEmpty ? prefs.userName : closedByCtrl.text.trim();
-                  await _reportsRepo.closeSession(closingAmount: closing, closedBy: closedBy);
-                  if (ctx.mounted) Navigator.pop(ctx);
-                  await _load();
-                  if (mounted) {
-                    final summary = await _reportsRepo.getCashFlowSummary(_start, _end);
-                    await _showCutoffPdf(
-                      openingAmount: (session['opening_amount'] as num?)?.toDouble() ?? 0,
-                      openedBy: (session['created_by'] ?? '').toString(),
-                      closingAmount: closing,
-                      closedBy: closedBy,
-                      summary: summary,
-                      isPartial: false,
-                    );
-                  }
-                },
-                child: const Text('CERRAR TURNO', style: TextStyle(color: Colors.white)),
-              ),
-            ],
-          ),
-    );
-  }
-
-  Future<void> _showCutoffPdf({
-    required double openingAmount,
-    required String openedBy,
-    required double closingAmount,
-    required String closedBy,
-    required Map<String, double> summary,
-    required bool isPartial,
-  }) async {
-    final prefs = PreferencesService();
-    final businessName =
-        prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
-    final primaryColor = PdfColor.fromInt(prefs.primaryColorValue);
-
-    pw.MemoryImage? logoImage;
-    final logoBytes = await _loadLogoBytes();
-    if (logoBytes != null) {
-      logoImage = pw.MemoryImage(logoBytes);
-    }
-
-    final pdf = pw.Document();
-    final now = DateTime.now();
-    final dateStr =
-        '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}  ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
-
-    final titleStyle = pw.TextStyle(
-      fontWeight: pw.FontWeight.bold,
-      fontSize: 12,
-      color: PdfColors.black,
-      letterSpacing: 1,
-    );
-    final normalStyle = pw.TextStyle(fontSize: 9.5, color: PdfColors.black);
-    final boldStyle = pw.TextStyle(
-      fontWeight: pw.FontWeight.bold,
-      fontSize: 10,
-      color: PdfColors.black,
-    );
-    final smallStyle = pw.TextStyle(fontSize: 8, color: PdfColors.grey700);
-
-    final sales = summary['sales'] ?? 0;
-    final purchases = summary['purchases'] ?? 0;
-    final outflows = summary['outflows'] ?? 0;
-    final net = summary['netCash'] ?? 0;
-    final expected = openingAmount + net;
-    final difference = closingAmount - expected;
-
-    pdf.addPage(
-      pw.Page(
-        pageFormat: PdfPageFormat.roll80,
-        build: (pw.Context ctx) {
-          return pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.center,
-            children: [
-              pw.SizedBox(height: 4),
-              if (logoImage != null) ...[
-                pw.Center(child: pw.Image(logoImage, width: 56, height: 56)),
-                pw.SizedBox(height: 4),
-              ],
-              pw.Center(child: pw.Text(businessName.toUpperCase(), style: titleStyle)),
-              pw.SizedBox(height: 2),
-              pw.Center(
-                child: pw.Text(
-                  isPartial ? 'CORTE PARCIAL DE CAJA' : 'CORTE TOTAL DE CAJA',
-                  style: boldStyle,
-                ),
-              ),
-              pw.SizedBox(height: 2),
-              pw.Center(child: pw.Text(dateStr, style: smallStyle)),
-              pw.SizedBox(height: 2),
-              pw.Divider(color: primaryColor, thickness: 0.8),
-              pw.Text('Abrió: $openedBy', style: normalStyle),
-              pw.Text('Monto inicial: ${_fmt(openingAmount)}', style: normalStyle),
-              if (!isPartial) ...[
-                pw.SizedBox(height: 2),
-                pw.Text('Cerró: $closedBy', style: normalStyle),
-              ],
-              pw.Divider(color: primaryColor, thickness: 0.8),
-              pw.Text('Ventas: ${_fmt(sales)}', style: normalStyle),
-              pw.Text('Compras (caja): ${_fmt(purchases)}', style: normalStyle),
-              pw.Text('Retiros/Gastos: ${_fmt(outflows)}', style: normalStyle),
-              pw.SizedBox(height: 2),
-              pw.Divider(color: primaryColor, thickness: 0.8),
-              pw.Text('Total en caja: ${_fmt(expected)}', style: boldStyle),
-              pw.SizedBox(height: 2),
-              pw.Divider(color: primaryColor, thickness: 0.8),
-              if (isPartial) ...[
-                pw.Text('Retiro parcial: ${_fmt(closingAmount)}', style: boldStyle),
-              ] else ...[
-                pw.Text('Efectivo esperado: ${_fmt(expected)}', style: boldStyle),
-                pw.Text('Efectivo contado: ${_fmt(closingAmount)}', style: normalStyle),
-                pw.Text('Diferencia: ${_fmt(difference)}', style: boldStyle),
-              ],
-              pw.SizedBox(height: 10),
-              pw.Center(
-                child: pw.Text(
-                  'Documento interno / control de caja',
-                  style: const pw.TextStyle(fontSize: 7),
-                ),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-
-    final bytes = await pdf.save();
-    if (!context.mounted) return;
-
-    // Vista previa dentro de la app (igual que venta rápida), con opciones
-    // de imprimir y compartir el PDF.
-    final fileName = 'corte_${now.millisecondsSinceEpoch}.pdf';
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFF1A1A1A),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder:
-          (ctx) => DraggableScrollableSheet(
-            expand: false,
-            initialChildSize: 0.9,
-            maxChildSize: 0.95,
-            builder:
-                (_, ctrl) => Column(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      decoration: const BoxDecoration(
-                        color: Color(0xFF1A1A1A),
-                        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-                      ),
-                      child: Row(
-                        children: [
-                          Text(
-                            isPartial ? 'CORTE PARCIAL' : 'CORTE TOTAL',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14,
-                            ),
-                          ),
-                          const Spacer(),
-                          IconButton(
-                            icon: const Icon(Icons.share, color: Colors.blue),
-                            onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
-                          ),
-                          IconButton(
-                            icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
-                            onPressed:
-                                () => Printing.layoutPdf(
-                                  onLayout: (_) async => bytes,
-                                  name: fileName,
-                                ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.close, color: Colors.white54),
-                            onPressed: () => Navigator.pop(ctx),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Expanded(
-                      child: PdfPreview(
-                        padding: const EdgeInsets.all(12),
-                        build: (_) => Future.value(bytes),
-                        allowSharing: false,
-                        allowPrinting: false,
-                        initialPageFormat: const PdfPageFormat(
-                          80 * PdfPageFormat.mm,
-                          200 * PdfPageFormat.mm,
-                        ),
-                        pageFormats: const {},
-                      ),
-                    ),
-                  ],
-                ),
-          ),
-    );
-  }
-
   Future<Uint8List?> _loadLogoBytes() => loadBusinessLogo(PreferencesService());
 
   // ─────────────────────────────────────────────────────────────
@@ -1660,7 +1064,11 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final profit = _profit['profit'];
     final salesCount = (_profit['salesCount'] ?? 0).toInt();
     final profitColor =
-        !costsAvailable ? Colors.white38 : profit >= 0 ? Colors.greenAccent : Colors.redAccent;
+        !costsAvailable || !_sharedCashCurrent
+            ? Colors.white38
+            : profit >= 0
+            ? Colors.greenAccent
+            : Colors.redAccent;
 
     return Column(
       children: [
@@ -1674,28 +1082,34 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
               children: [
                 _StatsCard(
                   label: 'Ventas ($salesCount)',
-                  value: _fmt(sales),
+                  value: formatReportMoney(sales),
                   icon: Icons.arrow_upward,
                   color: Colors.greenAccent,
                 ),
                 const SizedBox(height: 12),
                 _StatsCard(
                   label: 'Costo de lo vendido',
-                  value: costsAvailable ? '-${_fmt(cost)}' : 'No disponible',
+                  value:
+                      costsAvailable
+                          ? '-${formatReportMoney(cost)}'
+                          : 'No disponible',
                   icon: Icons.inventory,
                   color: Colors.orangeAccent,
                 ),
                 const SizedBox(height: 12),
                 _StatsCard(
                   label: 'Retiros/Gastos',
-                  value: '-${_fmt(expenses)}',
+                  value: '-${formatReportMoney(expenses)}',
                   icon: Icons.arrow_downward,
                   color: Colors.redAccent,
                 ),
                 const SizedBox(height: 12),
                 _StatsCard(
                   label: 'UTILIDAD NETA',
-                  value: costsAvailable ? _fmt(profit) : 'No disponible',
+                  value:
+                      costsAvailable && _sharedCashCurrent
+                          ? formatReportMoney(profit)
+                          : 'No disponible',
                   icon: Icons.trending_up,
                   color: profitColor,
                 ),
@@ -1706,6 +1120,11 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                       'Faltan costos de una o más ventas. Actualiza la información antes de consultar la utilidad.',
                       style: TextStyle(color: Colors.orangeAccent),
                     ),
+                  ),
+                if (!_sharedCashCurrent)
+                  const Text(
+                    'Sin conexión: pueden faltar gastos de caja compartida. Actualiza para consultar la utilidad.',
+                    style: TextStyle(color: Colors.orangeAccent),
                   ),
                 const SizedBox(height: 20),
                 Text(
@@ -1732,12 +1151,17 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                     final amount = double.tryParse(e['amount'] ?? '0') ?? 0;
                     return Card(
                       color: const Color(0xFF1A1A1A),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                       child: ListTile(
                         leading: Icon(Icons.receipt, color: Colors.redAccent),
-                        title: Text(concept, style: const TextStyle(color: Colors.white)),
+                        title: Text(
+                          concept,
+                          style: const TextStyle(color: Colors.white),
+                        ),
                         trailing: Text(
-                          _fmt(amount),
+                          formatReportMoney(amount),
                           style: const TextStyle(
                             color: Colors.redAccent,
                             fontWeight: FontWeight.bold,
@@ -1755,7 +1179,10 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                   ),
                   icon: const Icon(Icons.picture_as_pdf),
                   label: const Text('TICKET DE UTILIDAD'),
-                  onPressed: costsAvailable ? _showProfitPdf : null,
+                  onPressed:
+                      costsAvailable && _sharedCashCurrent
+                          ? _showProfitPdf
+                          : null,
                 ),
               ],
             ),
@@ -1767,8 +1194,10 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
 
   /// Ticket (vista previa en app) del informe de utilidad del periodo.
   Future<void> _showProfitPdf() async {
-    if (_profit['costsAvailable'] != true) {
-      throw StateError('No se puede generar utilidad sin costos completos.');
+    if (_profit['costsAvailable'] != true || !_sharedCashCurrent) {
+      throw StateError(
+        'No se puede generar utilidad sin costos completos y gastos sincronizados.',
+      );
     }
     final sales = _profit['sales'] ?? 0;
     final cost = _profit['costOfGoodsSold'] ?? 0;
@@ -1782,18 +1211,19 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     final bodyLines = <String>[
       'Periodo: $dateStr',
       '--------------------------------',
-      'Ventas ($salesCount): ${_fmt(sales)}',
-      'Costo de lo vendido: -${_fmt(cost)}',
-      'Retiros/Gastos: -${_fmt(expenses)}',
+      'Ventas ($salesCount): ${formatReportMoney(sales)}',
+      'Costo de lo vendido: -${formatReportMoney(cost)}',
+      'Retiros/Gastos: -${formatReportMoney(expenses)}',
       '--------------------------------',
     ];
     for (final e in _profitExpenses) {
       final amount = double.tryParse(e['amount'] ?? '0') ?? 0;
-      bodyLines.add('  ${e['concept']}: ${_fmt(amount)}');
+      bodyLines.add('  ${e['concept']}: ${formatReportMoney(amount)}');
     }
     if (_profitExpenses.isEmpty) bodyLines.add('  (sin gastos)');
 
-    await _showCashReceiptPdf(
+    await showReportReceipt(
+      context,
       title: 'INFORME DE UTILIDAD',
       subtitle: '',
       bodyLines: bodyLines,
@@ -1802,194 +1232,15 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     );
   }
 
-  /// Formatea un monto como moneda con separador de miles: $1,234.56
-  String _fmt(double v) {
-    final fixed = v.toStringAsFixed(2);
-    final neg = fixed.startsWith('-');
-    final body = neg ? fixed.substring(1) : fixed;
-    final parts = body.split('.');
-    final intPart = parts[0];
-    final buf = StringBuffer();
-    for (var i = 0; i < intPart.length; i++) {
-      if (i > 0 && (intPart.length - i) % 3 == 0) buf.write(',');
-      buf.write(intPart[i]);
-    }
-    return '${neg ? '-' : ''}\$${buf.toString()}.${parts[1]}';
-  }
-
-  /// Total en caja actual = monto inicial del turno abierto + flujo neto del periodo.
-  double _currentCashTotal() {
-    final net = _cashFlow['netCash'] ?? 0;
-    final opening = (_openSession?['opening_amount'] as num?)?.toDouble() ?? 0;
-    return opening + net;
-  }
-
-  /// Vista previa reutilizable de un PDF con opciones imprimir/compartir/cerrar.
-  Future<void> _showPdfPreview(Uint8List bytes, String title, String fileName) async {
-    if (!context.mounted) return;
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFF1A1A1A),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder:
-          (ctx) => DraggableScrollableSheet(
-            expand: false,
-            initialChildSize: 0.9,
-            maxChildSize: 0.95,
-            builder:
-                (_, ctrl) => Column(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      decoration: const BoxDecoration(
-                        color: Color(0xFF1A1A1A),
-                        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-                      ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 14,
-                              ),
-                            ),
-                          ),
-                          const Spacer(),
-                          IconButton(
-                            icon: const Icon(Icons.share, color: Colors.blue),
-                            visualDensity: VisualDensity.compact,
-                            onPressed: () => Printing.sharePdf(bytes: bytes, filename: fileName),
-                          ),
-                          IconButton(
-                            icon: Icon(Icons.print, color: Theme.of(ctx).colorScheme.primary),
-                            visualDensity: VisualDensity.compact,
-                            onPressed:
-                                () => Printing.layoutPdf(
-                                  onLayout: (_) async => bytes,
-                                  name: fileName,
-                                ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.close, color: Colors.white54),
-                            visualDensity: VisualDensity.compact,
-                            onPressed: () => Navigator.pop(ctx),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Expanded(
-                      child: PdfPreview(
-                        padding: const EdgeInsets.all(12),
-                        build: (_) => Future.value(bytes),
-                        allowSharing: false,
-                        allowPrinting: false,
-                        initialPageFormat: const PdfPageFormat(
-                          80 * PdfPageFormat.mm,
-                          200 * PdfPageFormat.mm,
-                        ),
-                        pageFormats: const {},
-                      ),
-                    ),
-                  ],
-                ),
-          ),
-    );
-  }
-
-  /// Comprobante genérico de caja (retiro/gasto o apertura de turno).
-  Future<void> _showCashReceiptPdf({
-    required String title,
-    required String subtitle,
-    required List<String> bodyLines,
-    required String boldLabel,
-    required double boldAmount,
-  }) async {
-    final prefs = PreferencesService();
-    final businessName =
-        prefs.businessName.trim().isEmpty ? 'MI NEGOCIO' : prefs.businessName.trim();
-    final primaryColor = PdfColor.fromInt(prefs.primaryColorValue);
-
-    pw.MemoryImage? logoImage;
-    final logoBytes = await _loadLogoBytes();
-    if (logoBytes != null) {
-      logoImage = pw.MemoryImage(logoBytes);
-    }
-
-    final pdf = pw.Document();
-    final now = DateTime.now();
-    final dateStr =
-        '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}  ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
-
-    final titleStyle = pw.TextStyle(
-      fontWeight: pw.FontWeight.bold,
-      fontSize: 12,
-      color: PdfColors.black,
-      letterSpacing: 1,
-    );
-    final normalStyle = pw.TextStyle(fontSize: 9.5, color: PdfColors.black);
-    final boldStyle = pw.TextStyle(
-      fontWeight: pw.FontWeight.bold,
-      fontSize: 10,
-      color: PdfColors.black,
-    );
-    final smallStyle = pw.TextStyle(fontSize: 8, color: PdfColors.grey700);
-
-    pdf.addPage(
-      pw.Page(
-        pageFormat: PdfPageFormat.roll80,
-        build: (pw.Context ctx) {
-          return pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.center,
-            children: [
-              pw.SizedBox(height: 4),
-              if (logoImage != null) ...[
-                pw.Center(child: pw.Image(logoImage, width: 56, height: 56)),
-                pw.SizedBox(height: 4),
-              ],
-              pw.Center(child: pw.Text(businessName.toUpperCase(), style: titleStyle)),
-              pw.SizedBox(height: 2),
-              pw.Center(child: pw.Text(title, style: boldStyle)),
-              pw.SizedBox(height: 2),
-              pw.Center(child: pw.Text(dateStr, style: smallStyle)),
-              pw.SizedBox(height: 2),
-              pw.Divider(color: primaryColor, thickness: 0.8),
-              if (subtitle.isNotEmpty) pw.Text(subtitle, style: normalStyle),
-              pw.Divider(color: primaryColor, thickness: 0.8),
-              ...bodyLines.map((l) => pw.Text(l, style: normalStyle)),
-              pw.Divider(color: primaryColor, thickness: 0.8),
-              pw.Text('$boldLabel: ${_fmt(boldAmount)}', style: boldStyle),
-              pw.SizedBox(height: 10),
-              pw.Center(
-                child: pw.Text(
-                  'Documento interno / control de caja',
-                  style: const pw.TextStyle(fontSize: 7),
-                ),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-
-    final bytes = await pdf.save();
-    if (!context.mounted) return;
-    await _showPdfPreview(bytes, title, 'caja_${now.millisecondsSinceEpoch}.pdf');
-  }
-
   @override
   Widget build(BuildContext context) {
     final primary = Theme.of(context).colorScheme.primary;
     return Scaffold(
       appBar: AppBar(
-        title: Text('INFORMES', style: TextStyle(color: primary, fontWeight: FontWeight.bold)),
+        title: Text(
+          'INFORMES',
+          style: TextStyle(color: primary, fontWeight: FontWeight.bold),
+        ),
         bottom: TabBar(
           controller: _tabCtrl,
           indicatorColor: primary,
@@ -2008,13 +1259,27 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
           IconButton(
             icon: const Icon(Icons.history),
             tooltip: 'Historial de ventas',
-            onPressed: () => Navigator.pushNamed(context, AppRoutes.salesHistory),
+            onPressed:
+                () => Navigator.pushNamed(context, AppRoutes.salesHistory),
           ),
         ],
       ),
       body:
           _isLoading
               ? Center(child: CircularProgressIndicator(color: primary))
+              : _loadError != null
+              ? Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('No se pudieron cargar los informes: $_loadError'),
+                    TextButton(
+                      onPressed: _load,
+                      child: const Text('REINTENTAR'),
+                    ),
+                  ],
+                ),
+              )
               : TabBarView(
                 controller: _tabCtrl,
                 children: [
@@ -2032,7 +1297,9 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
     return Padding(
       padding: const EdgeInsets.all(12),
       child: ElevatedButton.icon(
-        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1A1A1A)),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: const Color(0xFF1A1A1A),
+        ),
         icon: const Icon(Icons.date_range, color: Colors.white70),
         label: Text(
           '${_start.day.toString().padLeft(2, '0')}/${_start.month.toString().padLeft(2, '0')} - ${_end.day.toString().padLeft(2, '0')}/${_end.month.toString().padLeft(2, '0')}',
@@ -2044,7 +1311,10 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   }
 
   Widget _buildSalesTab(Color primary) {
-    final summary = _sales.fold<double>(0, (a, s) => a + (s['total'] as num).toDouble());
+    final summary = _sales.fold<double>(
+      0,
+      (a, s) => a + (s['total'] as num).toDouble(),
+    );
     return Column(
       children: [
         _buildDateFilter(),
@@ -2076,13 +1346,17 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                     itemCount: _sales.length,
                     itemBuilder: (_, i) {
                       final s = _sales[i];
-                      final date = DateTime.tryParse(s['date'] ?? '') ?? DateTime.now();
+                      final date =
+                          DateTime.tryParse(s['date'] ?? '') ?? DateTime.now();
                       final isMesa = (s['type'] as String).contains('Mesa');
                       final color = isMesa ? const Color(0xFF1E88E5) : primary;
                       return Card(
                         margin: const EdgeInsets.only(bottom: 8),
                         child: ListTile(
-                          leading: Icon(isMesa ? Icons.table_bar : Icons.sell, color: color),
+                          leading: Icon(
+                            isMesa ? Icons.table_bar : Icons.sell,
+                            color: color,
+                          ),
                           title: Text(
                             s['type'] ?? 'Venta',
                             style: const TextStyle(
@@ -2092,7 +1366,10 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                           ),
                           subtitle: Text(
                             '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')} | ${s['payment_method']}',
-                            style: const TextStyle(color: Colors.white38, fontSize: 12),
+                            style: const TextStyle(
+                              color: Colors.white38,
+                              fontSize: 12,
+                            ),
                           ),
                           trailing: Text(
                             '\$${(s['total'] as num).toStringAsFixed(2)}',
@@ -2112,7 +1389,10 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   }
 
   Widget _buildPurchasesTab() {
-    final summary = _purchases.fold<double>(0, (a, p) => a + (p['total'] as num).toDouble());
+    final summary = _purchases.fold<double>(
+      0,
+      (a, p) => a + (p['total'] as num).toDouble(),
+    );
     return Column(
       children: [
         _StatsCard(
@@ -2133,18 +1413,25 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
           child:
               _purchases.isEmpty
                   ? const Center(
-                    child: Text('Sin compras registradas', style: TextStyle(color: Colors.white24)),
+                    child: Text(
+                      'Sin compras registradas',
+                      style: TextStyle(color: Colors.white24),
+                    ),
                   )
                   : ListView.builder(
                     padding: const EdgeInsets.all(16),
                     itemCount: _purchases.length,
                     itemBuilder: (_, i) {
                       final p = _purchases[i];
-                      final date = DateTime.tryParse(p['date'] ?? '') ?? DateTime.now();
+                      final date =
+                          DateTime.tryParse(p['date'] ?? '') ?? DateTime.now();
                       return Card(
                         margin: const EdgeInsets.only(bottom: 8),
                         child: ListTile(
-                          leading: const Icon(Icons.shopping_cart, color: Colors.orangeAccent),
+                          leading: const Icon(
+                            Icons.shopping_cart,
+                            color: Colors.orangeAccent,
+                          ),
                           title: Text(
                             p['provider_name'] ?? 'Compra',
                             style: const TextStyle(
@@ -2154,7 +1441,10 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                           ),
                           subtitle: Text(
                             '${date.day.toString().padLeft(2, '0')}/${date.month.toString().padLeft(2, '0')} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}',
-                            style: const TextStyle(color: Colors.white38, fontSize: 12),
+                            style: const TextStyle(
+                              color: Colors.white38,
+                              fontSize: 12,
+                            ),
                           ),
                           trailing: Text(
                             '\$${(p['total'] as num).toStringAsFixed(2)}',
@@ -2174,169 +1464,15 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   }
 
   Widget _buildCashFlowTab(Color primary) {
-    final sales = _cashFlow['sales'] ?? 0;
-    final purchases = _cashFlow['purchases'] ?? 0;
-    final outflows = _cashFlow['outflows'] ?? 0;
-    final net = _cashFlow['netCash'] ?? 0;
-    final session = _openSession;
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+    return CashFlowReport(
+      summary: _cashFlow,
+      dateFilter: Column(
         children: [
           _buildDateFilter(),
-          const SizedBox(height: 8),
-          _StatsCard(
-            label: 'Ingresos (ventas)',
-            value: _fmt(sales),
-            icon: Icons.arrow_upward,
-            color: Colors.greenAccent,
-          ),
-          const SizedBox(height: 12),
-          _StatsCard(
-            label: 'Compras',
-            value: _fmt(purchases),
-            icon: Icons.shopping_cart,
-            color: Colors.orangeAccent,
-          ),
-          const SizedBox(height: 12),
-          _StatsCard(
-            label: 'Retiros/Gastos',
-            value: _fmt(outflows),
-            icon: Icons.arrow_downward,
-            color: Colors.redAccent,
-          ),
-          const SizedBox(height: 12),
-          _StatsCard(
-            label: 'Efectivo neto',
-            value: _fmt(net),
-            icon: Icons.account_balance_wallet,
-            color: primary,
-          ),
-          const SizedBox(height: 12),
-          _StatsCard(
-            label: 'Total en caja',
-            value: _fmt(_currentCashTotal()),
-            icon: Icons.payments,
-            color: Colors.tealAccent,
-          ),
-          const SizedBox(height: 12),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.redAccent,
-              padding: const EdgeInsets.symmetric(vertical: 14),
+          if (!_sharedCashCurrent)
+            const Text(
+              'Sin conexión: movimientos compartidos guardados en este teléfono; pueden faltar operaciones.',
             ),
-            icon: const Icon(Icons.money_off, color: Colors.white),
-            label: const Text(
-              'REGISTRAR RETIRO / GASTO',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-            onPressed: _addOutflow,
-          ),
-          const SizedBox(height: 8),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF2A2A2A),
-              padding: const EdgeInsets.symmetric(vertical: 14),
-            ),
-            icon: Icon(Icons.category, color: Colors.orangeAccent),
-            label: const Text(
-              'CONCEPTOS (catalogo)',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-            onPressed: _showConceptManager,
-          ),
-          const Divider(color: Colors.white10, height: 32),
-          // ── Sección de TURNO / CORTE DE CAJA ──
-          if (session == null) ...[
-            Text(
-              'SIN TURNO ABIERTO',
-              style: TextStyle(color: primary, fontWeight: FontWeight.bold, letterSpacing: 1),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 8),
-            ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: primary,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-              ),
-              icon: const Icon(Icons.play_circle, color: Colors.white),
-              label: const Text(
-                'ABRIR TURNO',
-                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-              ),
-              onPressed: _openTurn,
-            ),
-          ] else ...[
-            Text(
-              'TURNO ABIERTO',
-              style: TextStyle(
-                color: Colors.greenAccent,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1,
-              ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 8),
-            _TurnInfoRow(
-              icon: Icons.person,
-              label: 'Abrió',
-              value: (session['created_by'] ?? '?').toString(),
-            ),
-            _TurnInfoRow(
-              icon: Icons.payments,
-              label: 'Monto inicial',
-              value: _fmt(((session['opening_amount'] as num?) ?? 0).toDouble()),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.orangeAccent,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                    icon: const Icon(Icons.content_cut, color: Colors.white, size: 18),
-                    label: const Text(
-                      'CORTE PARCIAL',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
-                      ),
-                    ),
-                    onPressed: _partialCutoff,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.redAccent,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                    icon: const Icon(Icons.stop_circle, color: Colors.white, size: 18),
-                    label: const Text(
-                      'CORTE TOTAL',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 12,
-                      ),
-                    ),
-                    onPressed: _totalCutoff,
-                  ),
-                ),
-              ],
-            ),
-          ],
-          const SizedBox(height: 8),
-          Text(
-            'El corte de caja permite registrar quién abre y quién cierra la caja, y cuánto dinero se entrega entre turnos.',
-            style: const TextStyle(color: Colors.white24, fontSize: 11),
-            textAlign: TextAlign.center,
-          ),
         ],
       ),
     );
@@ -2359,12 +1495,18 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
             items: [
               const DropdownMenuItem(
                 value: null,
-                child: Text('Selecciona...', style: TextStyle(color: Colors.white54)),
+                child: Text(
+                  'Selecciona...',
+                  style: TextStyle(color: Colors.white54),
+                ),
               ),
               ..._products.map(
                 (p) => DropdownMenuItem(
                   value: p.id,
-                  child: Text(p.name, style: const TextStyle(color: Colors.white)),
+                  child: Text(
+                    p.name,
+                    style: const TextStyle(color: Colors.white),
+                  ),
                 ),
               ),
             ],
@@ -2400,8 +1542,13 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                         margin: const EdgeInsets.only(bottom: 8),
                         child: ListTile(
                           leading: Icon(
-                            type == 'sale' ? Icons.arrow_downward : Icons.arrow_upward,
-                            color: type == 'sale' ? Colors.redAccent : Colors.greenAccent,
+                            type == 'sale'
+                                ? Icons.arrow_downward
+                                : Icons.arrow_upward,
+                            color:
+                                type == 'sale'
+                                    ? Colors.redAccent
+                                    : Colors.greenAccent,
                           ),
                           title: Text(
                             type.toUpperCase(),
@@ -2412,12 +1559,18 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
                           ),
                           subtitle: Text(
                             '${m['created_at']}',
-                            style: const TextStyle(color: Colors.white38, fontSize: 12),
+                            style: const TextStyle(
+                              color: Colors.white38,
+                              fontSize: 12,
+                            ),
                           ),
                           trailing: Text(
                             '${isNegative ? '' : '+'}${qty.toStringAsFixed(2)}',
                             style: TextStyle(
-                              color: isNegative ? Colors.redAccent : Colors.greenAccent,
+                              color:
+                                  isNegative
+                                      ? Colors.redAccent
+                                      : Colors.greenAccent,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
@@ -2431,26 +1584,46 @@ class _ReportsPageState extends State<ReportsPage> with SingleTickerProviderStat
   }
 }
 
-class _TurnInfoRow extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-  const _TurnInfoRow({required this.icon, required this.label, required this.value});
+class CashFlowReport extends StatelessWidget {
+  const CashFlowReport({
+    super.key,
+    required this.summary,
+    this.dateFilter = const SizedBox.shrink(),
+  });
+
+  final Map<String, double> summary;
+  final Widget dateFilter;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
+    final primary = Theme.of(context).colorScheme.primary;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Icon(icon, color: Colors.white54, size: 18),
-          const SizedBox(width: 8),
-          Text('$label:', style: const TextStyle(color: Colors.white54, fontSize: 13)),
-          const Spacer(),
-          Text(
-            value,
-            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
-          ),
+          dateFilter,
+          const Text('FLUJO DE CAJA · SOLO CONSULTA'),
+          const Text('Los movimientos y turnos se operan desde Caja y turnos.'),
+          for (final (label, key) in [
+            ('Cobros (todos los medios)', 'totalSales'),
+            ('Pagos de compras (todos los orígenes)', 'totalPurchases'),
+            ('Retiros/Gastos (todos los medios)', 'totalOutflows'),
+            ('Aportes manuales (no son ventas)', 'inflows'),
+            ('Flujo neto total', 'netFlow'),
+            ('Movimiento neto de efectivo', 'netCash'),
+            ('Cobros con tarjeta', 'cardSales'),
+            ('Cobros por transferencia', 'transferSales'),
+            ('Compras a crédito (no son pagos)', 'creditPurchases'),
+          ]) ...[
+            const SizedBox(height: 12),
+            _StatsCard(
+              label: label,
+              value: formatReportMoney(summary[key] ?? 0),
+              icon: Icons.account_balance_wallet,
+              color: primary,
+            ),
+          ],
         ],
       ),
     );
@@ -2486,7 +1659,10 @@ class _StatsCard extends StatelessWidget {
                 : LinearGradient(
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
-                  colors: [color.withValues(alpha: 0.18), const Color(0xFF1A1A1A)],
+                  colors: [
+                    color.withValues(alpha: 0.18),
+                    const Color(0xFF1A1A1A),
+                  ],
                 ),
         border: Border.all(
           color:
@@ -2506,14 +1682,21 @@ class _StatsCard extends StatelessWidget {
               Text(
                 label,
                 style: TextStyle(
-                  color: solid ? Colors.white.withValues(alpha: 0.75) : Colors.white38,
+                  color:
+                      solid
+                          ? Colors.white.withValues(alpha: 0.75)
+                          : Colors.white38,
                   fontSize: 13,
                   letterSpacing: 1,
                 ),
               ),
               Text(
                 value,
-                style: TextStyle(color: contentColor, fontSize: 28, fontWeight: FontWeight.bold),
+                style: TextStyle(
+                  color: contentColor,
+                  fontSize: 28,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ],
           ),

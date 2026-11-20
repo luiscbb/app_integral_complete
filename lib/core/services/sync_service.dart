@@ -19,6 +19,7 @@ import '../utils/uuid_v4.dart';
 import 'app_services.dart';
 import 'business_image_paths.dart';
 import 'sync_session.dart';
+import 'table_sync_conflicts.dart';
 
 /// Servicio central de sincronización con Supabase.
 /// Gestiona cola de reintentos, estados sync y merge bidireccional.
@@ -102,24 +103,31 @@ class SyncService {
       final db = await _db.database;
       final outbox = OwnerTransactionOutbox(db, _requireSyncSession);
       final request = await outbox.prepare(
-        session: session, kind: 'sale', localId: localSaleId,
+        session: session,
+        kind: 'sale',
+        localId: localSaleId,
       );
       _requireSyncSession(session);
-      final response = await _sup.rpc(
-        'sync_owner_sale',
-        params: {
-          'p_request_id': request.requestId,
-          'p_billar_id': billarId,
-          ...request.payload,
-        },
-      ).setHeader('Authorization', 'Bearer $accessToken');
+      final response = await _sup
+          .rpc(
+            'sync_owner_sale',
+            params: {
+              'p_request_id': request.requestId,
+              'p_billar_id': billarId,
+              ...request.payload,
+            },
+          )
+          .setHeader('Authorization', 'Bearer $accessToken');
       if (response is! int || response <= 0) {
         throw StateError('La respuesta de la venta no es válida.');
       }
       final cloudId = response.toString();
       final unchanged = await outbox.acknowledge(
-        session: session, kind: 'sale', localId: localSaleId,
-        request: request, cloudId: cloudId,
+        session: session,
+        kind: 'sale',
+        localId: localSaleId,
+        request: request,
+        cloudId: cloudId,
       );
       if (!unchanged) schedulePendingSync();
       debugPrint('[SyncService] Venta $localSaleId sync OK cloudId=$cloudId');
@@ -172,29 +180,37 @@ class SyncService {
       final db = await _db.database;
       final outbox = OwnerTransactionOutbox(db, _requireSyncSession);
       final request = await outbox.prepare(
-        session: session, kind: 'purchase', localId: localPurchaseId,
+        session: session,
+        kind: 'purchase',
+        localId: localPurchaseId,
       );
       _requireSyncSession(session);
       final header = request.payload['p_purchase'];
       if (header is! Map<String, dynamic>) {
         throw StateError('La cabecera de compra pendiente no es válida.');
       }
-      final response = await _sup.rpc(
-        header.containsKey('payment_condition')
-            ? 'sync_owner_purchase_with_payment' : 'sync_owner_purchase',
-        params: {
-          'p_request_id': request.requestId,
-          'p_billar_id': billarId,
-          ...request.payload,
-        },
-      ).setHeader('Authorization', 'Bearer $accessToken');
+      final response = await _sup
+          .rpc(
+            header.containsKey('payment_condition')
+                ? 'sync_owner_purchase_with_payment'
+                : 'sync_owner_purchase',
+            params: {
+              'p_request_id': request.requestId,
+              'p_billar_id': billarId,
+              ...request.payload,
+            },
+          )
+          .setHeader('Authorization', 'Bearer $accessToken');
       if (response is! int || response <= 0) {
         throw StateError('La respuesta de la compra no es válida.');
       }
       final cloudId = response.toString();
       final unchanged = await outbox.acknowledge(
-        session: session, kind: 'purchase', localId: localPurchaseId,
-        request: request, cloudId: cloudId,
+        session: session,
+        kind: 'purchase',
+        localId: localPurchaseId,
+        request: request,
+        cloudId: cloudId,
       );
       if (!unchanged) schedulePendingSync();
       debugPrint(
@@ -218,7 +234,9 @@ class SyncService {
       final session = guard.capture();
       final billarId = session.billarId;
       if (player.billarId != billarId) {
-        throw StateError('El jugador no pertenece a la sesión o al billar actual.');
+        throw StateError(
+          'El jugador no pertenece a la sesión o al billar actual.',
+        );
       }
       void requireSameSession() => guard.require(session);
       final hasNet = await AppServices.connectivityService.isOnline;
@@ -232,7 +250,9 @@ class SyncService {
         if (await file.exists()) {
           requireSameSession();
           final fileName = businessImagePath(
-            billarId, 'avatars', '${newUuidV4()}.jpg',
+            billarId,
+            'avatars',
+            '${newUuidV4()}.jpg',
           );
           await _sup.storage
               .from('player_avatars')
@@ -312,13 +332,10 @@ class SyncService {
 
   SyncSession captureProviderSession() => _syncSession();
 
-  void requireProviderSession(
-    SyncSession session,
-  ) => _requireSyncSession(session);
+  void requireProviderSession(SyncSession session) =>
+      _requireSyncSession(session);
 
-  void _requireSyncSession(
-    SyncSession expected,
-  ) {
+  void _requireSyncSession(SyncSession expected) {
     SyncSessionGuard(_sup, _prefs).require(expected);
   }
 
@@ -327,13 +344,14 @@ class SyncService {
     SyncSession session,
   ) async {
     _requireSyncSession(session);
-    final provider = await _sup
-        .from('providers')
-        .setHeader('Authorization', 'Bearer ${session.token}')
-        .select('id')
-        .eq('id', providerId)
-        .eq('billar_id', session.billarId)
-        .maybeSingle();
+    final provider =
+        await _sup
+            .from('providers')
+            .setHeader('Authorization', 'Bearer ${session.token}')
+            .select('id')
+            .eq('id', providerId)
+            .eq('billar_id', session.billarId)
+            .maybeSingle();
     _requireSyncSession(session);
     if (provider == null) {
       throw StateError('El proveedor no está disponible en este billar.');
@@ -373,20 +391,13 @@ class SyncService {
     }
   }
 
-  Future<bool> pushProviderToCloud(
-    Map<String, dynamic> map,
-    int localId,
-  ) {
+  Future<bool> pushProviderToCloud(Map<String, dynamic> map, int localId) {
     return _queueProviderOperation(localId, 'pushProvider', (session) async {
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) return false;
       _requireSyncSession(session);
 
-      final payload = {
-        ...map,
-        'id': localId,
-        'billar_id': session.billarId,
-      };
+      final payload = {...map, 'id': localId, 'billar_id': session.billarId};
       final updated = await _sup
           .from('providers')
           .setHeader('Authorization', 'Bearer ${session.token}')
@@ -410,18 +421,22 @@ class SyncService {
     int providerId, {
     List<int>? products,
   }) {
-    return _queueProviderOperation(providerId, 'pushProviderProducts', (session) async {
+    return _queueProviderOperation(providerId, 'pushProviderProducts', (
+      session,
+    ) async {
       final hasNet = await AppServices.connectivityService.isOnline;
       if (!hasNet) return false;
       _requireSyncSession(session);
 
       final db = await _db.database;
-      final productIds = products ?? (await db.query(
-        'provider_products',
-        columns: ['product_id'],
-        where: 'provider_id = ?',
-        whereArgs: [providerId],
-      )).map((r) => r['product_id'] as int).toList();
+      final productIds =
+          products ??
+          (await db.query(
+            'provider_products',
+            columns: ['product_id'],
+            where: 'provider_id = ?',
+            whereArgs: [providerId],
+          )).map((r) => r['product_id'] as int).toList();
       for (final productId in productIds) {
         final products = await db.query(
           'products',
@@ -446,10 +461,7 @@ class SyncService {
         await _sup
             .from('provider_products')
             .setHeader('Authorization', 'Bearer ${session.token}')
-            .insert({
-              'provider_id': providerId,
-              'product_id': productId,
-            });
+            .insert({'provider_id': providerId, 'product_id': productId});
         _requireSyncSession(session);
       }
       return true;
@@ -462,11 +474,14 @@ class SyncService {
       if (!hasNet) return false;
       _requireSyncSession(session);
       final response = await _sup
-          .rpc('archive_provider_idempotent', params: {
-            'p_request_id': requestId,
-            'p_billar_id': session.billarId,
-            'p_provider_id': localId,
-          })
+          .rpc(
+            'archive_provider_idempotent',
+            params: {
+              'p_request_id': requestId,
+              'p_billar_id': session.billarId,
+              'p_provider_id': localId,
+            },
+          )
           .setHeader('Authorization', 'Bearer ${session.token}');
       _requireSyncSession(session);
       if (response is! Map ||
@@ -499,20 +514,24 @@ class SyncService {
       final providerIds = <int>{};
       for (final provider in remoteProviders) {
         if (provider['billar_id'] != billarId || provider['id'] is! int) {
-          throw StateError('La respuesta contiene un proveedor de otro billar.');
+          throw StateError(
+            'La respuesta contiene un proveedor de otro billar.',
+          );
         }
-        if (provider.containsKey('is_active') && provider['is_active'] is! bool) {
+        if (provider.containsKey('is_active') &&
+            provider['is_active'] is! bool) {
           throw StateError('El estado del proveedor recibido no es válido.');
         }
         providerIds.add(provider['id'] as int);
       }
-      final remoteProducts = providerIds.isEmpty
-          ? <Map<String, dynamic>>[]
-          : await _sup
-              .from('provider_products')
-              .setHeader('Authorization', 'Bearer ${session.token}')
-              .select()
-              .inFilter('provider_id', providerIds.toList());
+      final remoteProducts =
+          providerIds.isEmpty
+              ? <Map<String, dynamic>>[]
+              : await _sup
+                  .from('provider_products')
+                  .setHeader('Authorization', 'Bearer ${session.token}')
+                  .select()
+                  .inFilter('provider_id', providerIds.toList());
       _requireSyncSession(session);
 
       debugPrint(
@@ -525,7 +544,8 @@ class SyncService {
           columns: ['provider_id'],
           distinct: true,
         );
-        final pendingProviderIds = pending.map((row) => row['provider_id'] as int).toSet();
+        final pendingProviderIds =
+            pending.map((row) => row['provider_id'] as int).toSet();
         for (final p in remoteProviders) {
           _requireSyncSession(session);
           final id = p['id'] as int;
@@ -546,7 +566,8 @@ class SyncService {
             'notes': p['notes'] ?? '',
             'category': p['category'] ?? 'General',
             'visit_days': p['visit_days'] ?? '',
-            if (p.containsKey('credit_days')) 'credit_days': provider.creditDays,
+            if (p.containsKey('credit_days'))
+              'credit_days': provider.creditDays,
             if (p.containsKey('preferred_payment_method'))
               'preferred_payment_method': provider.preferredPaymentMethod,
             'is_active': p['is_active'] == false ? 0 : 1,
@@ -614,13 +635,23 @@ class SyncService {
       if (blockedProviders.contains(providerId)) continue;
       final payload = jsonDecode(row['payload'] as String);
       final success = switch (row['operation']) {
-        'save' when payload is Map =>
-          await pushProviderToCloud(Map<String, dynamic>.from(payload), providerId),
-        'products' when payload is List =>
-          await pushProviderProductsToCloud(providerId, products: payload.cast<int>()),
+        'save' when payload is Map => await pushProviderToCloud(
+          Map<String, dynamic>.from(payload),
+          providerId,
+        ),
+        'products' when payload is List => await pushProviderProductsToCloud(
+          providerId,
+          products: payload.cast<int>(),
+        ),
         'delete' when payload is Map && payload['request_id'] is String =>
-          await archiveProviderInCloud(providerId, payload['request_id'] as String),
-        _ => throw StateError('La operación pendiente del proveedor no es válida.'),
+          await archiveProviderInCloud(
+            providerId,
+            payload['request_id'] as String,
+          ),
+        _ =>
+          throw StateError(
+            'La operación pendiente del proveedor no es válida.',
+          ),
       };
       _requireSyncSession(session);
       if (!success) {
@@ -653,7 +684,9 @@ class SyncService {
 
     try {
       if (_sup.auth.currentSession == null) {
-        debugPrint('[SyncService] Sin sesión activa; se conservan los pendientes.');
+        debugPrint(
+          '[SyncService] Sin sesión activa; se conservan los pendientes.',
+        );
         return;
       }
       final scope = _syncSession();
@@ -662,7 +695,9 @@ class SyncService {
           _requireSyncSession(scope);
           return true;
         } on StateError {
-          debugPrint('[SyncService] La sesión cambió; se detiene la sincronización.');
+          debugPrint(
+            '[SyncService] La sesión cambió; se detiene la sincronización.',
+          );
           return false;
         }
       }
@@ -895,7 +930,9 @@ class SyncService {
         '${table == 'products' ? ' AND stock_conflict = 0' : ''}'
         '${table == 'purchases' ? ' AND ${purchaseBusinessScope()}' : ''}'
         '${businessScoped.contains(table) ? ' AND billar_id = ?' : ''}',
-        businessScoped.contains(table) || table == 'purchases' ? [_prefs.billarId] : null,
+        businessScoped.contains(table) || table == 'purchases'
+            ? [_prefs.billarId]
+            : null,
       );
       if ((result.first['count'] as int? ?? 0) > 0) return true;
     }
@@ -997,12 +1034,17 @@ class SyncService {
         for (final o in response) {
           _requireSyncSession(session);
           if (o['billar_id'] != session.billarId || o['id'] == null) {
-            throw StateError('El retiro recibido no pertenece al billar actual.');
+            throw StateError(
+              'El retiro recibido no pertenece al billar actual.',
+            );
           }
           final cid = o['id'].toString();
           final existing = await txn.query(
-            'cash_outflows', columns: ['id'],
-            where: 'cloud_id = ?', whereArgs: [cid], limit: 1,
+            'cash_outflows',
+            columns: ['id'],
+            where: 'cloud_id = ?',
+            whereArgs: [cid],
+            limit: 1,
           );
           if (existing.isNotEmpty) continue;
 
@@ -1057,7 +1099,9 @@ class SyncService {
         for (final sale in response) {
           _requireSyncSession(session);
           if (sale['billar_id'] != session.billarId || sale['id'] == null) {
-            throw StateError('La venta recibida no pertenece al billar actual.');
+            throw StateError(
+              'La venta recibida no pertenece al billar actual.',
+            );
           }
           final cid = sale['id'].toString();
           final requestId = sale['sync_client_id']?.toString();
@@ -1065,18 +1109,23 @@ class SyncService {
             final pending = await txn.query(
               'pending_owner_transactions',
               columns: ['local_id'],
-              where: 'request_id = ? AND actor_id = ? AND billar_id = ? AND kind = ?',
+              where:
+                  'request_id = ? AND actor_id = ? AND billar_id = ? AND kind = ?',
               whereArgs: [requestId, session.actorId, session.billarId, 'sale'],
               limit: 1,
             );
             if (pending.isNotEmpty) continue;
           }
           final local = await txn.query(
-            'sales_history', columns: ['id', 'cancelled'],
-            where: 'cloud_id = ?', whereArgs: [cid], limit: 1,
+            'sales_history',
+            columns: ['id', 'cancelled'],
+            where: 'cloud_id = ?',
+            whereArgs: [cid],
+            limit: 1,
           );
           if (local.isNotEmpty) {
-            final cloudCancelled = sale['cancelled'] == true || sale['cancelled'] == 1;
+            final cloudCancelled =
+                sale['cancelled'] == true || sale['cancelled'] == 1;
             if (cloudCancelled &&
                 (local.first['cancelled'] as int? ?? 0) == 0) {
               await txn.update(
@@ -1165,8 +1214,11 @@ class SyncService {
       await db.transaction((txn) async {
         for (final purchase in response) {
           _requireSyncSession(session);
-          if (purchase['billar_id'] != session.billarId || purchase['id'] == null) {
-            throw StateError('La compra recibida no pertenece al billar actual.');
+          if (purchase['billar_id'] != session.billarId ||
+              purchase['id'] == null) {
+            throw StateError(
+              'La compra recibida no pertenece al billar actual.',
+            );
           }
           final cid = purchase['id'].toString();
           final requestId = purchase['sync_client_id']?.toString();
@@ -1174,8 +1226,14 @@ class SyncService {
             final pending = await txn.query(
               'pending_owner_transactions',
               columns: ['local_id'],
-              where: 'request_id = ? AND actor_id = ? AND billar_id = ? AND kind = ?',
-              whereArgs: [requestId, session.actorId, session.billarId, 'purchase'],
+              where:
+                  'request_id = ? AND actor_id = ? AND billar_id = ? AND kind = ?',
+              whereArgs: [
+                requestId,
+                session.actorId,
+                session.billarId,
+                'purchase',
+              ],
               limit: 1,
             );
             if (pending.isNotEmpty) continue;
@@ -1201,12 +1259,14 @@ class SyncService {
             if (purchase['cancelled'] == true &&
                 (local.first['cancelled'] as int? ?? 0) == 0) {
               await txn.update(
-                'purchases', {'cancelled': 1},
+                'purchases',
+                {'cancelled': 1},
                 where: 'id = ? AND billar_id = ?',
                 whereArgs: [local.first['id'], session.billarId],
               );
               await txn.update(
-                'purchase_details', {'cancelled': 1},
+                'purchase_details',
+                {'cancelled': 1},
                 where: 'purchase_id = ?',
                 whereArgs: [local.first['id']],
               );
@@ -1221,12 +1281,19 @@ class SyncService {
             'date': purchase['date'],
             'reference': purchase['reference'] ?? '',
             'created_by': purchase['created_by'] ?? '',
-            'cash_source': purchase['payment_condition'] == 'credito'
-                ? null : purchase['cash_source'] ?? 'caja',
+            'cash_source':
+                purchase['payment_condition'] == 'credito'
+                    ? null
+                    : purchase['cash_source'] ?? 'caja',
             for (final field in [
-              'payment_condition', 'payment_method', 'credit_days',
-              'due_date', 'paid_amount', 'balance_due',
-            ]) field: purchase[field],
+              'payment_condition',
+              'payment_method',
+              'credit_days',
+              'due_date',
+              'paid_amount',
+              'balance_due',
+            ])
+              field: purchase[field],
             'cancelled': (purchase['cancelled'] ?? false) == true ? 1 : 0,
             'synced': 1,
             'cloud_id': cid,
@@ -1282,6 +1349,17 @@ class SyncService {
         throw StateError('La mesa no pertenece al billar actual.');
       }
       final id = table['id'] as int;
+      final db = await _db.database;
+      _requireSyncSession(session);
+      if (await TableSyncConflicts.contains(
+        db,
+        session.actorId,
+        session.billarId,
+        id,
+      )) {
+        return false;
+      }
+      _requireSyncSession(session);
       final map = {
         'id': id,
         'billar_id': session.billarId,
@@ -1293,13 +1371,44 @@ class SyncService {
         'is_deleted': table['is_deleted'] ?? 0,
       };
 
-      await _sup.from('billiard_tables')
-          .setHeader('Authorization', 'Bearer ${session.token}')
-          .upsert(map);
+      try {
+        await _sup
+            .from('billiard_tables')
+            .setHeader('Authorization', 'Bearer ${session.token}')
+            .upsert(map);
+      } on PostgrestException catch (error) {
+        if (error.code != 'PST01') rethrow;
+        await db.transaction((txn) async {
+          _requireSyncSession(session);
+          await TableSyncConflicts.record(
+            txn,
+            session.actorId,
+            session.billarId,
+            id,
+            map,
+          );
+          await txn.update(
+            'billiard_tables',
+            {'synced': 0},
+            where: 'id = ? AND billar_id = ?',
+            whereArgs: [id, session.billarId],
+          );
+          _requireSyncSession(session);
+        });
+        debugPrint('[SyncService] Mesa $id requiere revisión por conflicto.');
+        return false;
+      }
       _requireSyncSession(session);
-      final db = await _db.database;
-      await db.transaction((txn) async {
+      final applied = await db.transaction((txn) async {
         _requireSyncSession(session);
+        if (await TableSyncConflicts.contains(
+          txn,
+          session.actorId,
+          session.billarId,
+          id,
+        )) {
+          return false;
+        }
         final currentRows = await txn.query(
           'billiard_tables',
           where: 'id = ? AND billar_id = ?',
@@ -1321,7 +1430,9 @@ class SyncService {
           );
         }
         _requireSyncSession(session);
+        return true;
       });
+      if (!applied) return false;
       debugPrint('[SyncService] pushTableToCloud id=$id OK');
       return true;
     } catch (e, st) {
@@ -1332,7 +1443,7 @@ class SyncService {
   }
 
   /// Descarga mesas de Supabase y las fusiona con las locales.
-  /// La eliminación se propaga como tombstone para que no reaparezca offline.
+  /// La eliminación remota se propaga salvo que existan cambios locales pendientes.
   /// Cuando [forceApply] es `true` (usado por Realtime), se sobreescribe también
   /// la mesa si está ocupada localmente, porque la nube es la fuente de verdad
   /// para propagar en tiempo real el estado entre dispositivos.
@@ -1372,24 +1483,59 @@ class SyncService {
       for (final table in pendingTables) {
         _requireSyncSession(session);
         final id = (table['id'] as num).toInt();
+        if (await TableSyncConflicts.contains(
+          db,
+          session.actorId,
+          billarId,
+          id,
+        )) {
+          continue;
+        }
+        _requireSyncSession(session);
         final remote = remoteById[id];
         if (remote != null &&
             (remote['is_deleted'] as num?)?.toInt() == 1 &&
             (table['is_deleted'] as num?)?.toInt() != 1) {
           await db.transaction((txn) async {
             _requireSyncSession(session);
-            await txn.update(
-              'billiard_tables',
-              {
-                'is_deleted': 1,
-                'is_occupied': 0,
-                'start_time': null,
-                'orders': '[]',
-                'synced': 1,
-              },
-              where: 'id = ? AND billar_id = ? AND synced = 0',
-              whereArgs: [id, billarId],
+            if (await TableSyncConflicts.contains(
+              txn,
+              session.actorId,
+              billarId,
+              id,
+            )) {
+              return;
+            }
+            await TableSyncConflicts.recordRemoteDeletion(
+              txn,
+              session.actorId,
+              billarId,
+              id,
+              table,
+              remote,
             );
+            final current = await txn.query(
+              'billiard_tables',
+              where: 'id = ? AND billar_id = ?',
+              whereArgs: [id, billarId],
+              limit: 1,
+            );
+            if (current.isNotEmpty) {
+              await TableSyncConflicts.recordRemoteDeletion(
+                txn,
+                session.actorId,
+                billarId,
+                id,
+                current.first,
+                remote,
+              );
+              await txn.update(
+                'billiard_tables',
+                {'synced': 0},
+                where: 'id = ? AND billar_id = ?',
+                whereArgs: [id, billarId],
+              );
+            }
             _requireSyncSession(session);
           });
           continue;
@@ -1416,6 +1562,14 @@ class SyncService {
             throw StateError('La mesa recibida no pertenece al billar actual.');
           }
           final id = (t['id'] as num).toInt();
+          if (await TableSyncConflicts.contains(
+            txn,
+            session.actorId,
+            billarId,
+            id,
+          )) {
+            continue;
+          }
           final existing = await txn.query(
             'billiard_tables',
             where: 'id = ? AND billar_id = ?',
@@ -1444,7 +1598,20 @@ class SyncService {
             });
           } else {
             final local = existing.first;
-            if ((local['synced'] as int? ?? 1) == 0) continue;
+            if ((local['synced'] as int? ?? 1) == 0) {
+              if (cloudDeleted == 1 &&
+                  (local['is_deleted'] as num?)?.toInt() != 1) {
+                await TableSyncConflicts.recordRemoteDeletion(
+                  txn,
+                  session.actorId,
+                  billarId,
+                  id,
+                  local,
+                  Map<String, dynamic>.from(t as Map),
+                );
+              }
+              continue;
+            }
             final localOccupied = (local['is_occupied'] as num?)?.toInt() ?? 0;
             // Por defecto no sobreescribir mesa ocupada localmente para evitar
             // perder ordenes/tiempo. Con forceApply (Realtime) la nube manda.
@@ -1468,10 +1635,13 @@ class SyncService {
         _requireSyncSession(session);
       });
 
-      final activeTableCount = Sqflite.firstIntValue(await db.rawQuery(
-        'SELECT COUNT(*) FROM billiard_tables WHERE billar_id = ? AND is_deleted = 0',
-        [billarId],
-      ))!;
+      final activeTableCount =
+          Sqflite.firstIntValue(
+            await db.rawQuery(
+              'SELECT COUNT(*) FROM billiard_tables WHERE billar_id = ? AND is_deleted = 0',
+              [billarId],
+            ),
+          )!;
       _requireSyncSession(session);
       await _prefs.setTableCount(activeTableCount);
     } catch (e, st) {

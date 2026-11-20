@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { test } = require('node:test');
 const { PGlite } = require('@electric-sql/pglite');
-const { buildStaffRollout } = require('../supabase/build_staff_rollout.cjs');
+const { buildStaffRollout, buildStaffPurchaseReportsUpdate, buildStaffReportsUpdate } = require('../supabase/build_staff_rollout.cjs');
 
 test('grouped rollout rolls back failures and preserves owner access, data and private storage', async () => {
   const db = new PGlite();
@@ -202,6 +202,15 @@ test('grouped rollout rolls back failures and preserves owner access, data and p
       update public.business_memberships set allowed_modules = '{quick_sale,inventory,purchases}' where username = 'pilot'`);
     await db.exec(activation);
     await db.exec(activation);
+    await db.exec(`update public.business_memberships
+      set allowed_modules = '{billiard_tables,billiard_tables_open,billiard_tables_consume,dine_in,dine_in_open,dine_in_consume}'
+      where username = 'pilot'`);
+    await db.exec(activation);
+    await db.exec(`update public.business_memberships
+      set allowed_modules = '{billiard_tables}' where username = 'pilot'`);
+    await assert.rejects(db.exec(activation), /fuera del piloto/i);
+    await db.exec(`rollback;
+      update public.business_memberships set allowed_modules = '{quick_sale,inventory,purchases}' where username = 'pilot'`);
     const permissions = (await db.query(fs.readFileSync(
       path.join(__dirname, '..', 'supabase', 'staff_rollout_diagnostic.sql'), 'utf8',
     ))).rows[0].diagnostic.staff_functions;
@@ -213,6 +222,43 @@ test('grouped rollout rolls back failures and preserves owner access, data and p
     assert.ok(permissions.filter(fn => serviceOnly.has(fn.name)).every(fn =>
       !fn.authenticated_execute && fn.service_role_execute));
     assert.ok(permissions.filter(fn => !serviceOnly.has(fn.name)).every(fn => fn.authenticated_execute));
+    const beforeUpdate = (await db.query('select * from public.business_memberships order by user_id')).rows;
+    await db.exec(buildStaffPurchaseReportsUpdate());
+    await db.exec(buildStaffPurchaseReportsUpdate());
+    assert.equal(fs.readFileSync(path.join(__dirname,'..','supabase','staff_reports_update.sql'),'utf8'),
+      buildStaffReportsUpdate());
+    await db.exec(buildStaffReportsUpdate());
+    await db.exec(buildStaffReportsUpdate());
+    assert.deepEqual((await db.query('select * from public.business_memberships order by user_id')).rows, beforeUpdate);
+    await db.exec(`update public.business_memberships
+      set allowed_modules = '{billiard_tables,billiard_tables_open,billiard_tables_consume}'
+      where username = 'pilot'`);
+    await assert.rejects(db.exec(`update public.business_memberships
+      set allowed_modules = '{billiard_tables}' where username = 'pilot'`), /check constraint/i);
+    await db.exec(`update public.business_memberships
+      set allowed_modules = '{quick_sale,inventory,purchases}' where username = 'pilot'`);
+    assert.deepEqual((await db.query(fs.readFileSync(
+      path.join(__dirname, '..', 'supabase', 'staff_purchase_reports_diagnostic.sql'), 'utf8',
+    ))).rows[0].diagnostic, {
+      report_installed: true, report_authenticated_execute: true, report_anon_execute: false,
+      report_security_definer: true, membership_constraint_supports_report: true,
+      report_only_added_to_direct_purchase_policies: false, account_mutations_service_only: true,
+    });
+    await db.exec("update public.business_memberships set allowed_modules = '{reports_purchases}' where username = 'pilot'");
+    await db.exec(`set role authenticated;
+      select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000003', false)`);
+    const report = (await db.query(
+      "select public.staff_purchase_report('A', '2026-01-01', '2026-02-01') as report",
+    )).rows[0].report;
+    assert.equal(report.count, 2);
+    assert.equal(report.total, 10);
+    assert.equal(report.balance, 5);
+    assert.deepEqual((await db.query('select id from public.purchases')).rows, []);
+    assert.deepEqual((await db.query('select id from public.providers')).rows, []);
+    assert.deepEqual((await db.query('select id from public.purchase_details')).rows, []);
+    await assert.rejects(db.exec("insert into public.providers (id, billar_id) values (3, 'A')"), /row-level security/i);
+    await db.exec(`reset role;
+      update public.business_memberships set allowed_modules = '{quick_sale,inventory,purchases}' where username = 'pilot'`);
     await db.exec(`set role authenticated;
       select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000003', false)`);
     const catalog = (await db.query("select * from public.staff_sale_products('A')")).rows;

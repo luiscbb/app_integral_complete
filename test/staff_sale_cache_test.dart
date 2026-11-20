@@ -115,7 +115,7 @@ void main() {
       var cache = StaffSaleCache(db, requireSession);
       var session = capture();
       try {
-        expect(await db.getVersion(), 53);
+        expect(await db.getVersion(), 61);
         expect((await db.query('products')).single, {
           'id': 1,
           'stock': 100.0,

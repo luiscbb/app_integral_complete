@@ -39,9 +39,28 @@ begin
             check (
                 allowed_modules <@ array[
                     'quick_sale', 'billiard_tables', 'dine_in',
+                    'billiard_tables_open', 'billiard_tables_consume',
+                    'billiard_tables_charge', 'billiard_tables_view_all',
+                    'dine_in_open', 'dine_in_consume',
+                    'dine_in_charge', 'dine_in_view_all',
                     'personal_account', 'inventory', 'purchases',
-                    'reports', 'players', 'settings'
+                    'reports', 'reports_sales', 'reports_purchases',
+                    'reports_cash_flow', 'reports_kardex', 'reports_profit',
+                    'players', 'settings'
                 ]::text[]
+                and array_position(allowed_modules, null) is null
+                and ('billiard_tables' = any(allowed_modules)) is not distinct from (
+                    allowed_modules && array[
+                        'billiard_tables_open', 'billiard_tables_consume',
+                        'billiard_tables_charge', 'billiard_tables_view_all'
+                    ]::text[]
+                )
+                and ('dine_in' = any(allowed_modules)) is not distinct from (
+                    allowed_modules && array[
+                        'dine_in_open', 'dine_in_consume',
+                        'dine_in_charge', 'dine_in_view_all'
+                    ]::text[]
+                )
             );
     end if;
 end;

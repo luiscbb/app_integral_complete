@@ -254,6 +254,121 @@ La creación recuperable usa un secreto de servidor: rotarlo con solicitudes
 pendientes impide recuperarlas y requiere un procedimiento de resolución antes
 de habilitar la función. No compartas ese secreto por chat ni lo guardes en la app.
 
+Las altas nuevas de personal reciben una contraseña temporal de **14 caracteres**,
+con mayúsculas, minúsculas, números y símbolos, sin `0/O` ni `1/I/l`.
+El primer cambio de contraseña sigue siendo obligatorio. El servidor guarda
+`staff_credential_version: 2` en los metadatos de aplicación de Auth; al recuperar
+una solicitud consulta la versión de la cuenta existente, sin cambiar su contraseña.
+Las cuentas anteriores sin ese dato conservan la derivación original de 47 caracteres.
+Una versión desconocida o un fallo de consulta bloquea la entrega con error
+reintentable; no se sustituye por una contraseña nueva. No requiere migración SQL,
+rotación del secreto ni actualizar la app instalada.
+
+En Agregar/Editar usuario se muestra el catálogo de diez módulos con
+subcategorías desplegables. Pueden asignarse Venta rápida, Inventario de consulta,
+Compras/proveedores y cada subcategoría de **Informes**. La casilla de Informes
+selecciona o desmarca sus cinco permisos hijos; no guarda el permiso amplio
+legacy `reports`. Los demás módulos, incluida Caja para personal, siguen
+bloqueados. Ver una opción en el catálogo no concede acceso.
+
+#### Informes: permisos independientes
+
+Se pueden asignar Ventas (`reports_sales`), Compras (`reports_purchases`),
+Flujo de caja (`reports_cash_flow`), Kardex (`reports_kardex`) y Utilidad
+(`reports_profit`), individualmente o todos desde la casilla del módulo.
+La misma página de consulta carga únicamente el informe seleccionado y
+autorizado; no monta pantallas administrativas ni sus acciones.
+
+[`staff_reports.sql`](supabase/staff_reports.sql) implementa las cuatro consultas
+nuevas con membresía vigente, aislamiento por billar, campos limitados,
+rango máximo de 366 días y páginas de 50 para Ventas/Kardex. Flujo y Utilidad
+devuelven resúmenes completos. Kardex no revela costos. Utilidad requiere costos
+históricos disponibles; si hay salidas antiguas sin clasificación, no calcula
+una utilidad ficticia. Aportes y retiros de capital no se consideran ganancias
+ni gastos. Los datos son los sincronizados, no operaciones pendientes de otro teléfono.
+
+La casilla **Informes > Compras** persiste `reports_purchases` en `allowed_modules`.
+No implica `purchases` ni `reports`: una cuenta puede consultar este informe sin
+operar compras ni ver otros informes. La card original Informes abre una página
+dedicada de solo consulta, no la página administrativa.
+
+La consulta requiere conexión y muestra compras no anuladas, totales de todo el
+rango, importes pagados/saldos registrados y páginas de 50 registros por ID
+descendente. El rango máximo es de 366 días; el total comprado no equivale a
+salida de efectivo y una compra a crédito no se presenta como pagada.
+El informe no anula, registra pagos ni abre proveedores completos.
+
+La RPC [`staff_purchase_report.sql`](supabase/staff_purchase_report.sql) limita
+billar, campos, fechas y paginación. Comprueba la membresía activa y el permiso;
+el cliente confirma nuevamente sesión/permiso antes de publicar resultados.
+No se amplían las políticas SELECT directas de compras/proveedores.
+
+Para instalaciones existentes, el generador produce
+[`staff_reports_update.sql`](supabase/staff_reports_update.sql): amplía la
+constraint/reserva/edición desde fuentes canónicas e instala informes y Caja
+compartida administrativa. No modifica cuentas ni solicitudes existentes.
+**No usar la instalación inicial con personal existente.** Verificar primero
+[`staff_reports_diagnostic.sql`](supabase/staff_reports_diagnostic.sql)
+y el estado vigente de [`AVANCE_AISLAMIENTO.md`](AVANCE_AISLAMIENTO.md) para no
+repetir despliegues confirmados. Actualizar el cliente de ambos dispositivos
+conservando sus datos y desplegar `player-admin` antes de asignar permisos.
+Ningún permiso nuevo se asigna automáticamente.
+
+#### Caja y turnos
+
+El inicio administrativo tiene una card **Caja y turnos**. Ahí están los
+retiros/gastos, conceptos, apertura, corte parcial y cierre; **Informes > Caja**
+queda solo para consultar el flujo, sus totales y medios de cobro.
+
+El efectivo esperado incluye el fondo inicial y solo los cobros/pagos en efectivo
+de ese turno. Tarjeta y transferencia participan en el flujo total, no en el cajón;
+las compras a crédito no se cuentan como pagos. Las compras de efectivo pagadas
+directamente por el cajero tampoco salen del cajón.
+
+Hay **una caja compartida por negocio**, con apertura/cierre y movimientos en
+línea. [`shared_cash.sql`](supabase/shared_cash.sql) mantiene un único turno
+abierto, identidad de Auth, movimientos clasificados y solicitudes idempotentes.
+Los aportes manuales aumentan el efectivo, pero no ventas/utilidad. Las salidas
+distinguen gasto del negocio, retiro de capital y corte parcial; solamente el
+gasto afecta utilidad. No se duplican en la tabla de retiros legacy.
+
+Abrir un turno no cierra otro automáticamente. El corte total pide efectivo
+contado, muestra la diferencia y permite elegir **Cerrar y abrir nuevo turno** con
+fondo inicial explícito. Ambos cambios se guardan en una sola transacción remota.
+Los retiros parciales descuentan una sola vez y no se convierten en gasto de
+utilidad por el hecho de retirar efectivo.
+
+Antes de abrir/cerrar se bloquean las operaciones locales pendientes; al cerrar
+también se exige confirmar que los demás teléfonos estén sincronizados.
+El servidor no puede conocer ventas aún desconectadas de otro dispositivo:
+el cierre conserva una fotografía inmutable y el histórico marca **requiere
+conciliación** si posteriormente cambian sus operaciones. No se presenta ese
+corte como garantía de efectivo físico ni se reescribe su diferencia.
+
+Una respuesta perdida conserva la solicitud en SQLite por actor/billar.
+Reintentar usa el mismo UUID. Resolver/cancelar no revierte un movimiento ya
+aplicado y bloquea la ejecución futura de una solicitud cancelada. No registrar
+otra vez manualmente la operación mientras su resultado siga pendiente.
+
+La pantalla reutiliza las operaciones/comprobantes administrativos, con histórico
+paginado de turnos y movimientos. Se pueden reimprimir los cierres compartidos
+del histórico y los movimientos del día sin registrar nada otra vez.
+Informes administrativos integra una caché separada de movimientos compartidos,
+sin mezclarlos con el cierre de un turno local antiguo. Sin conexión advierte
+que esa caché puede estar incompleta y no permite emitir utilidad como actualizada.
+
+Los movimientos de hoy permiten reimprimir su comprobante sin registrarlos de
+nuevo. Se conservan las vistas previas PDF de apertura y cortes. La impresión
+física todavía requiere prueba con la impresora real.
+
+**Límites actuales:** Caja no está habilitada para personal; su permiso remoto
+independiente sigue pendiente. Los turnos locales anteriores se conservan:
+si hay uno abierto se debe cerrar explícitamente antes de pasar a la caja
+compartida; no se importan ni duplican automáticamente. Faltan pagos/abonos
+vinculados de cuentas por pagar y la prueba física de impresora/entrega de caja.
+No volver a registrar como gasto manual una
+compra ya pagada: su pago ya está incluido en el flujo.
+
 #### Activación del piloto de personal
 
 Solo después de confirmar el diagnóstico de instalación:

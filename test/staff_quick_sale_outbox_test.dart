@@ -141,7 +141,7 @@ void main() {
         12,
       );
       expect(await db.query('reconciled_staff_sales'), isEmpty);
-      expect(await db.getVersion(), 53);
+      expect(await db.getVersion(), 61);
       await client.auth.signInWithPassword(
         email: 'a@example.com',
         password: 'test',

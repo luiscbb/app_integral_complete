@@ -46,7 +46,9 @@ class DatabaseHelper {
   }
 
   void activateAccountDatabase(ScopedDatabase database) {
-    if (!_requiresAccountScope || _activeScopedDatabase != null || !database.isOpen) {
+    if (!_requiresAccountScope ||
+        _activeScopedDatabase != null ||
+        !database.isOpen) {
       throw StateError('No se puede activar la base de la cuenta.');
     }
     _activeScopedDatabase = database;
@@ -56,16 +58,22 @@ class DatabaseHelper {
       File(await _databasePath('integral_pos_v1.db')).exists();
 
   Future<Database> get legacyDatabaseForMigration async {
-    if (_legacyMigrationInProgress || _legacyClosedForMigration ||
+    if (_legacyMigrationInProgress ||
+        _legacyClosedForMigration ||
         _activeScopedDatabase != null) {
-      throw StateError('La base local anterior está cerrada para la migración.');
+      throw StateError(
+        'La base local anterior está cerrada para la migración.',
+      );
     }
     if (_database != null) return _database!;
     final db = await _initDB('integral_pos_v1.db');
-    if (_legacyMigrationInProgress || _legacyClosedForMigration ||
+    if (_legacyMigrationInProgress ||
+        _legacyClosedForMigration ||
         _activeScopedDatabase != null) {
       await db.close();
-      throw StateError('La base local anterior está cerrada para la migración.');
+      throw StateError(
+        'La base local anterior está cerrada para la migración.',
+      );
     }
     _database = db;
     return db;
@@ -79,7 +87,9 @@ class DatabaseHelper {
         base64Url.encode(utf8.encode(value)).replaceAll('=', '');
     final fileName = 'integral_pos_${encode(actorId)}.${encode(billarId)}.db';
     if (utf8.encode(fileName).length > 200) {
-      throw ArgumentError('Los identificadores del ámbito local son demasiado largos.');
+      throw ArgumentError(
+        'Los identificadores del ámbito local son demasiado largos.',
+      );
     }
     return fileName;
   }
@@ -133,7 +143,9 @@ class DatabaseHelper {
       }
       if (exists) {
         final existing = await openDatabase(
-          path, readOnly: true, singleInstance: false,
+          path,
+          readOnly: true,
+          singleInstance: false,
         );
         try {
           await _requireScopedDatabaseOwner(existing, actorId, billarId);
@@ -239,7 +251,8 @@ class DatabaseHelper {
       final legacy = await _initDB('integral_pos_v1.db', singleInstance: false);
       try {
         final locking = await legacy.rawQuery('PRAGMA locking_mode=EXCLUSIVE');
-        if (locking.length != 1 || locking.single.values.single != 'exclusive') {
+        if (locking.length != 1 ||
+            locking.single.values.single != 'exclusive') {
           throw StateError('No se pudo bloquear la base local anterior.');
         }
         await legacy.execute('BEGIN EXCLUSIVE');
@@ -248,7 +261,9 @@ class DatabaseHelper {
         requireScope();
         final checkpoint = await legacy.rawQuery('PRAGMA wal_checkpoint(FULL)');
         if (checkpoint.length != 1 || checkpoint.single['busy'] != 0) {
-          throw StateError('No se pudieron consolidar los datos locales anteriores.');
+          throw StateError(
+            'No se pudieron consolidar los datos locales anteriores.',
+          );
         }
         requireScope();
         await _withScopedFileLock(targetPath, () async {
@@ -295,13 +310,17 @@ class DatabaseHelper {
       ['legacy_local_owner'],
     );
     if (tables.isEmpty) {
-      throw StateError('La base local anterior no tiene propietario confirmado.');
+      throw StateError(
+        'La base local anterior no tiene propietario confirmado.',
+      );
     }
     final rows = await db.query('legacy_local_owner', limit: 1);
     if (rows.length != 1 ||
         rows.single['actor_id'] != actorId ||
         rows.single['billar_id'] != billarId) {
-      throw StateError('La base local anterior pertenece a otra cuenta o billar.');
+      throw StateError(
+        'La base local anterior pertenece a otra cuenta o billar.',
+      );
     }
   }
 
@@ -315,7 +334,9 @@ class DatabaseHelper {
       await _requireDatabaseOwner(db, actorId, billarId);
       final result = await db.rawQuery('PRAGMA quick_check');
       if (result.length != 1 || result.single.values.single != 'ok') {
-        throw StateError('La copia de la base local no superó la verificación.');
+        throw StateError(
+          'La copia de la base local no superó la verificación.',
+        );
       }
     } finally {
       await db.close();
@@ -348,7 +369,7 @@ class DatabaseHelper {
     final path = await _databasePath(filePath);
     return await openDatabase(
       path,
-      version: 53,
+      version: 61,
       onCreate: _createDB,
       onUpgrade: _upgradeDB,
       singleInstance: singleInstance,
@@ -356,6 +377,42 @@ class DatabaseHelper {
   }
 
   Future<void> _upgradeDB(Database db, int oldV, int newV) async {
+    if (oldV < 57) {
+      await _createTableSyncConflicts(db);
+    }
+    if (oldV < 55) {
+      await _createStaffTableServiceDrafts(db);
+    }
+    if (oldV < 56 &&
+        !await _hasColumn(
+          db,
+          'staff_table_service_consumptions',
+          'confirmed',
+        )) {
+      await db.execute(
+        'ALTER TABLE staff_table_service_consumptions ADD COLUMN confirmed INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    if (oldV < 58) {
+      await _createStaffTableServiceDrafts(db);
+      if (!await _hasColumn(db, 'staff_table_service_consumptions', 'late')) {
+        await db.execute(
+          'ALTER TABLE staff_table_service_consumptions ADD COLUMN late INTEGER NOT NULL DEFAULT 0 CHECK (late IN (0, 1))',
+        );
+      }
+    }
+    if (oldV < 59) {
+      await _createStaffTableCheckoutOutbox(db);
+    }
+    if (oldV < 60) {
+      await _createStaffTableVisibilityCache(db);
+    }
+    if (oldV < 61) {
+      await _createStaffTableLateAdjustmentOutbox(db);
+    }
+    if (oldV < 54) {
+      await _createPendingCashRequests(db);
+    }
     if (oldV < 53) {
       await _createStaffProviderOperations(db);
     }
@@ -370,7 +427,11 @@ class DatabaseHelper {
     }
     if (oldV < 48) {
       if (oldV >= 46 &&
-          !await _hasColumn(db, 'pending_staff_sales', 'reservation_snapshot')) {
+          !await _hasColumn(
+            db,
+            'pending_staff_sales',
+            'reservation_snapshot',
+          )) {
         await db.execute(
           'ALTER TABLE pending_staff_sales ADD COLUMN reservation_snapshot TEXT',
         );
@@ -408,7 +469,9 @@ class DatabaseHelper {
       await _createPendingStaffRequests(db);
     }
     if (oldV < 37 && !await _hasColumn(db, 'sales_history', 'source_module')) {
-      await db.execute('ALTER TABLE sales_history ADD COLUMN source_module TEXT');
+      await db.execute(
+        'ALTER TABLE sales_history ADD COLUMN source_module TEXT',
+      );
     }
     if (oldV < 36 && !await _hasColumn(db, 'players', 'opponent_8_ball_foul')) {
       await db.execute(
@@ -431,7 +494,9 @@ class DatabaseHelper {
       };
       for (final entry in columns.entries) {
         if (!await _hasColumn(db, 'players', entry.key)) {
-          await db.execute('ALTER TABLE players ADD COLUMN ${entry.key} ${entry.value}');
+          await db.execute(
+            'ALTER TABLE players ADD COLUMN ${entry.key} ${entry.value}',
+          );
         }
       }
       await db.execute('''
@@ -454,7 +519,9 @@ class DatabaseHelper {
       );
     }
     if (oldV < 27 && !await _hasColumn(db, 'players', 'phone')) {
-      await db.execute("ALTER TABLE players ADD COLUMN phone TEXT NOT NULL DEFAULT ''");
+      await db.execute(
+        "ALTER TABLE players ADD COLUMN phone TEXT NOT NULL DEFAULT ''",
+      );
     }
     if (oldV < 28) {
       await db.execute('''
@@ -485,7 +552,9 @@ class DatabaseHelper {
     }
     if (oldV < 29) {
       if (!await _hasColumn(db, 'tournaments', 'race_to')) {
-        await db.execute('ALTER TABLE tournaments ADD COLUMN race_to INTEGER NOT NULL DEFAULT 3');
+        await db.execute(
+          'ALTER TABLE tournaments ADD COLUMN race_to INTEGER NOT NULL DEFAULT 3',
+        );
       }
       if (!await _hasColumn(db, 'tournaments', 'matches_json')) {
         await db.execute(
@@ -507,7 +576,9 @@ class DatabaseHelper {
       };
       for (final entry in columns.entries) {
         if (!await _hasColumn(db, 'tournaments', entry.key)) {
-          await db.execute('ALTER TABLE tournaments ADD COLUMN ${entry.key} ${entry.value}');
+          await db.execute(
+            'ALTER TABLE tournaments ADD COLUMN ${entry.key} ${entry.value}',
+          );
         }
       }
     }
@@ -518,13 +589,17 @@ class DatabaseHelper {
       };
       for (final entry in columns.entries) {
         if (!await _hasColumn(db, 'tournaments', entry.key)) {
-          await db.execute('ALTER TABLE tournaments ADD COLUMN ${entry.key} ${entry.value}');
+          await db.execute(
+            'ALTER TABLE tournaments ADD COLUMN ${entry.key} ${entry.value}',
+          );
         }
       }
     }
     if (oldV < 35) {
       if (!await _hasColumn(db, 'temp_reservations', 'source_key')) {
-        await db.execute("ALTER TABLE temp_reservations ADD COLUMN source_key TEXT");
+        await db.execute(
+          "ALTER TABLE temp_reservations ADD COLUMN source_key TEXT",
+        );
       }
       await db.execute('''
         CREATE TABLE IF NOT EXISTS personal_clients (
@@ -552,7 +627,9 @@ class DatabaseHelper {
         )
       ''');
       if (!await _hasColumn(db, 'sales_history', 'customer_key')) {
-        await db.execute('ALTER TABLE sales_history ADD COLUMN customer_key TEXT');
+        await db.execute(
+          'ALTER TABLE sales_history ADD COLUMN customer_key TEXT',
+        );
       }
       if (!await _hasColumn(db, 'tournaments', 'is_cancelled')) {
         await db.execute(
@@ -578,7 +655,9 @@ class DatabaseHelper {
       ''');
     }
     if (oldV < 21 && !await _hasColumn(db, 'billiard_tables', 'synced')) {
-      await db.execute('ALTER TABLE billiard_tables ADD COLUMN synced INTEGER NOT NULL DEFAULT 1');
+      await db.execute(
+        'ALTER TABLE billiard_tables ADD COLUMN synced INTEGER NOT NULL DEFAULT 1',
+      );
     }
     if (oldV < 20) {
       await db.execute('ALTER TABLE pending_sales ADD COLUMN client_id TEXT');
@@ -587,13 +666,17 @@ class DatabaseHelper {
       // Informe de UTILIDAD (Etapa 4): costo unitario del producto al momento
       // de vender. Permite calcular "costo de lo vendido" histórico real
       // (aunque el costo del producto cambie después).
-      await db.execute("ALTER TABLE sale_details ADD COLUMN cost_at_sale REAL NOT NULL DEFAULT 0");
+      await db.execute(
+        "ALTER TABLE sale_details ADD COLUMN cost_at_sale REAL NOT NULL DEFAULT 0",
+      );
     }
     if (oldV < 18) {
       // Anulación lógica de compras: marca la compra como anulada sin borrarla
       // (para que el pull de la nube no la re-inserte) y descuenta el stock
       // que la compra había sumado. 1 = anulada (excluida de informes/caja).
-      await db.execute("ALTER TABLE purchases ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0");
+      await db.execute(
+        "ALTER TABLE purchases ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0",
+      );
       await db.execute(
         "ALTER TABLE purchase_details ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0",
       );
@@ -602,8 +685,12 @@ class DatabaseHelper {
       // Anulación lógica de ventas: permite marcar una venta como anulada
       // (con contraseña) sin borrarla, para que el pull de la nube no la
       // re-inserte. 1 = anulada (excluida de informes/caja/historial).
-      await db.execute("ALTER TABLE sales_history ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0");
-      await db.execute("ALTER TABLE sale_details ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0");
+      await db.execute(
+        "ALTER TABLE sales_history ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0",
+      );
+      await db.execute(
+        "ALTER TABLE sale_details ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0",
+      );
     }
     if (oldV < 16) {
       // Catálogo de conceptos de retiro/gasto de caja (patrón de categorías).
@@ -618,15 +705,23 @@ class DatabaseHelper {
     if (oldV < 15) {
       // Origen del dinero de la compra (Caja/Cajero/Transferencia/Tarjeta),
       // para el corte de efectivo por turno/cajero.
-      await db.execute("ALTER TABLE purchases ADD COLUMN cash_source TEXT DEFAULT 'caja'");
+      await db.execute(
+        "ALTER TABLE purchases ADD COLUMN cash_source TEXT DEFAULT 'caja'",
+      );
     }
     if (oldV < 14) {
       // Usuario logueado que realizó la compra (para detalle/PDF y cortes por turno)
-      await db.execute("ALTER TABLE purchases ADD COLUMN created_by TEXT DEFAULT ''");
-      await db.execute("ALTER TABLE purchase_details ADD COLUMN created_by TEXT DEFAULT ''");
+      await db.execute(
+        "ALTER TABLE purchases ADD COLUMN created_by TEXT DEFAULT ''",
+      );
+      await db.execute(
+        "ALTER TABLE purchase_details ADD COLUMN created_by TEXT DEFAULT ''",
+      );
     }
     if (oldV < 12) {
-      await db.execute("ALTER TABLE products ADD COLUMN presentation TEXT DEFAULT ''");
+      await db.execute(
+        "ALTER TABLE products ADD COLUMN presentation TEXT DEFAULT ''",
+      );
     }
     if (oldV < 11) {
       // Migrar tabla providers a nueva estructura con más campos
@@ -670,12 +765,18 @@ class DatabaseHelper {
       );
     }
     if (oldV < 2) {
-      await db.execute('ALTER TABLE sales_history ADD COLUMN paid REAL NOT NULL DEFAULT 0');
+      await db.execute(
+        'ALTER TABLE sales_history ADD COLUMN paid REAL NOT NULL DEFAULT 0',
+      );
     }
     if (oldV < 3) {
-      await db.execute('ALTER TABLE sales_history ADD COLUMN synced INTEGER NOT NULL DEFAULT 0');
+      await db.execute(
+        'ALTER TABLE sales_history ADD COLUMN synced INTEGER NOT NULL DEFAULT 0',
+      );
       await db.execute('ALTER TABLE sales_history ADD COLUMN cloud_id TEXT');
-      await db.execute('ALTER TABLE purchases ADD COLUMN synced INTEGER NOT NULL DEFAULT 0');
+      await db.execute(
+        'ALTER TABLE purchases ADD COLUMN synced INTEGER NOT NULL DEFAULT 0',
+      );
       await db.execute('ALTER TABLE purchases ADD COLUMN cloud_id TEXT');
     }
     if (oldV < 4) {
@@ -731,11 +832,15 @@ class DatabaseHelper {
       ''');
     }
     if (oldV < 6) {
-      await db.execute('ALTER TABLE players ADD COLUMN synced INTEGER NOT NULL DEFAULT 0');
+      await db.execute(
+        'ALTER TABLE players ADD COLUMN synced INTEGER NOT NULL DEFAULT 0',
+      );
       await db.execute('ALTER TABLE players ADD COLUMN cloud_id TEXT');
     }
     if (oldV < 7) {
-      await db.execute("ALTER TABLE products ADD COLUMN category TEXT DEFAULT ''");
+      await db.execute(
+        "ALTER TABLE products ADD COLUMN category TEXT DEFAULT ''",
+      );
       await db.execute('''
         CREATE TABLE IF NOT EXISTS categories (
           id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -745,7 +850,9 @@ class DatabaseHelper {
       ''');
     }
     if (oldV < 9) {
-      await db.execute('ALTER TABLE products ADD COLUMN synced INTEGER NOT NULL DEFAULT 0');
+      await db.execute(
+        'ALTER TABLE products ADD COLUMN synced INTEGER NOT NULL DEFAULT 0',
+      );
       await db.execute('ALTER TABLE products ADD COLUMN cloud_id TEXT');
     }
     if (oldV < 8) {
@@ -755,8 +862,12 @@ class DatabaseHelper {
       await db.execute(
         'ALTER TABLE match_results ADD COLUMN opponent_score INTEGER NOT NULL DEFAULT 0',
       );
-      await db.execute('ALTER TABLE match_results ADD COLUMN accuracy REAL NOT NULL DEFAULT 0');
-      await db.execute('ALTER TABLE match_results ADD COLUMN efficiency REAL NOT NULL DEFAULT 0');
+      await db.execute(
+        'ALTER TABLE match_results ADD COLUMN accuracy REAL NOT NULL DEFAULT 0',
+      );
+      await db.execute(
+        'ALTER TABLE match_results ADD COLUMN efficiency REAL NOT NULL DEFAULT 0',
+      );
     }
     if (oldV < 13) {
       await db.execute('''
@@ -822,25 +933,37 @@ class DatabaseHelper {
       ''');
     }
     if (oldV < 23) {
-      await db.execute('ALTER TABLE inventory_movements ADD COLUMN client_id TEXT');
+      await db.execute(
+        'ALTER TABLE inventory_movements ADD COLUMN client_id TEXT',
+      );
       await db.execute(
         'CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_movements_client_id '
         'ON inventory_movements (client_id)',
       );
-      await db.execute('UPDATE inventory_movements SET synced = 0 WHERE cloud_id IS NULL');
+      await db.execute(
+        'UPDATE inventory_movements SET synced = 0 WHERE cloud_id IS NULL',
+      );
     }
     if (oldV < 24) {
-      await db.execute('ALTER TABLE products ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1');
+      await db.execute(
+        'ALTER TABLE products ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1',
+      );
     }
     if (oldV < 38) {
       if (!await _hasColumn(db, 'products', 'stock_revision')) {
-        await db.execute('ALTER TABLE products ADD COLUMN stock_revision INTEGER');
+        await db.execute(
+          'ALTER TABLE products ADD COLUMN stock_revision INTEGER',
+        );
       }
       if (!await _hasColumn(db, 'products', 'local_revision')) {
-        await db.execute('ALTER TABLE products ADD COLUMN local_revision INTEGER NOT NULL DEFAULT 0');
+        await db.execute(
+          'ALTER TABLE products ADD COLUMN local_revision INTEGER NOT NULL DEFAULT 0',
+        );
       }
       if (!await _hasColumn(db, 'products', 'stock_conflict')) {
-        await db.execute('ALTER TABLE products ADD COLUMN stock_conflict INTEGER NOT NULL DEFAULT 0');
+        await db.execute(
+          'ALTER TABLE products ADD COLUMN stock_conflict INTEGER NOT NULL DEFAULT 0',
+        );
       }
       await _createProductRevisionTrigger(db);
     }
@@ -859,7 +982,9 @@ class DatabaseHelper {
       for (final row in pending) {
         await db.update(
           'pending_provider_operations',
-          {'payload': jsonEncode({'request_id': newUuidV4()})},
+          {
+            'payload': jsonEncode({'request_id': newUuidV4()}),
+          },
           where: 'id = ?',
           whereArgs: [row['id']],
         );
@@ -868,12 +993,21 @@ class DatabaseHelper {
     if (oldV < 44 && await _hasColumn(db, 'billiard_tables', 'id')) {
       final columns = await db.rawQuery('PRAGMA table_info(billiard_tables)');
       const expected = {
-        'id', 'billar_id', 'name', 'table_type', 'is_occupied',
-        'start_time', 'orders', 'synced', 'is_deleted',
+        'id',
+        'billar_id',
+        'name',
+        'table_type',
+        'is_occupied',
+        'start_time',
+        'orders',
+        'synced',
+        'is_deleted',
       };
       final actual = columns.map((column) => column['name']).toSet();
       if (actual.length != expected.length || !actual.containsAll(expected)) {
-        throw StateError('La estructura local de mesas requiere revisión antes de migrar.');
+        throw StateError(
+          'La estructura local de mesas requiere revisión antes de migrar.',
+        );
       }
       final tables = await db.rawQuery(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name <> 'billiard_tables'",
@@ -881,8 +1015,12 @@ class DatabaseHelper {
       for (final table in tables) {
         final name = (table['name'] as String).replaceAll('"', '""');
         final keys = await db.rawQuery('PRAGMA foreign_key_list("$name")');
-        if (keys.any((key) => key['table']?.toString().toLowerCase() == 'billiard_tables')) {
-          throw StateError('Hay referencias a mesas que requieren revisión antes de migrar.');
+        if (keys.any(
+          (key) => key['table']?.toString().toLowerCase() == 'billiard_tables',
+        )) {
+          throw StateError(
+            'Hay referencias a mesas que requieren revisión antes de migrar.',
+          );
         }
       }
       final objects = await db.rawQuery(
@@ -898,7 +1036,9 @@ class DatabaseHelper {
         FROM billiard_tables
       ''');
       await db.execute('DROP TABLE billiard_tables');
-      await db.execute('ALTER TABLE billiard_tables_v44 RENAME TO billiard_tables');
+      await db.execute(
+        'ALTER TABLE billiard_tables_v44 RENAME TO billiard_tables',
+      );
       for (final object in objects) {
         await db.execute(object['sql'] as String);
       }
@@ -920,7 +1060,9 @@ class DatabaseHelper {
     };
     for (final entry in columns.entries) {
       if (!await _hasColumn(db, 'purchases', entry.key)) {
-        await db.execute('ALTER TABLE purchases ADD COLUMN ${entry.key} ${entry.value}');
+        await db.execute(
+          'ALTER TABLE purchases ADD COLUMN ${entry.key} ${entry.value}',
+        );
       }
     }
   }
@@ -958,7 +1100,11 @@ class DatabaseHelper {
     ''');
   }
 
-  Future<bool> _hasColumn(Database db, String tableName, String columnName) async {
+  Future<bool> _hasColumn(
+    Database db,
+    String tableName,
+    String columnName,
+  ) async {
     final columns = await db.rawQuery('PRAGMA table_info($tableName)');
     return columns.any((column) => column['name'] == columnName);
   }
@@ -1130,9 +1276,155 @@ class DatabaseHelper {
     ''');
   }
 
+  Future<void> _createPendingCashRequests(Database db) async {
+    await db.execute('''
+    CREATE TABLE IF NOT EXISTS pending_cash_requests (
+      actor_id TEXT NOT NULL,
+      billar_id TEXT NOT NULL,
+      request_id TEXT NOT NULL UNIQUE,
+      operation TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      PRIMARY KEY (actor_id, billar_id)
+    )
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS cash_shared_movement_cache (
+        cloud_id INTEGER PRIMARY KEY,
+        billar_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        amount REAL NOT NULL,
+        payment_method TEXT NOT NULL,
+        description TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    ''');
+  }
+
+  Future<void> _createTableSyncConflicts(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS table_sync_conflicts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor_id TEXT NOT NULL,
+        billar_id TEXT NOT NULL,
+        table_id INTEGER NOT NULL,
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (actor_id, billar_id, table_id, payload)
+      )
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_table_sync_conflict_scope
+      ON table_sync_conflicts (actor_id, billar_id, table_id)
+    ''');
+  }
+
+  Future<void> _createStaffTableServiceDrafts(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS staff_table_service_drafts (
+        service_id TEXT PRIMARY KEY,
+        actor_id TEXT NOT NULL,
+        billar_id TEXT NOT NULL,
+        table_id INTEGER NOT NULL,
+        table_type TEXT NOT NULL CHECK (table_type IN ('Billar', 'Comanda')),
+        opened_at TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'active', 'conflict', 'closed'))
+      )
+    ''');
+    await db.execute('''
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_table_open_draft
+      ON staff_table_service_drafts (actor_id, billar_id, table_id, table_type)
+      WHERE state <> 'closed'
+    ''');
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS staff_table_service_consumptions (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        request_id TEXT NOT NULL UNIQUE,
+        service_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        billar_id TEXT NOT NULL,
+        product_id INTEGER NOT NULL,
+        product_name TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        price REAL NOT NULL,
+        recorded_at TEXT NOT NULL,
+        confirmed INTEGER NOT NULL DEFAULT 0 CHECK (confirmed IN (0, 1)),
+        late INTEGER NOT NULL DEFAULT 0 CHECK (late IN (0, 1))
+      )
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_staff_table_service_consumptions
+      ON staff_table_service_consumptions (actor_id, billar_id, service_id, sequence)
+    ''');
+  }
+
+  Future<void> _createStaffTableCheckoutOutbox(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS staff_table_checkout_outbox (
+        request_id TEXT NOT NULL UNIQUE,
+        actor_id TEXT NOT NULL,
+        billar_id TEXT NOT NULL,
+        service_id TEXT NOT NULL,
+        table_id INTEGER NOT NULL,
+        payload TEXT NOT NULL,
+        receipt TEXT,
+        local_sale_id INTEGER,
+        PRIMARY KEY (actor_id, billar_id, service_id)
+      )
+    ''');
+    await db.execute('''
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_table_checkout_pending
+      ON staff_table_checkout_outbox (actor_id, billar_id)
+      WHERE local_sale_id IS NULL
+    ''');
+  }
+
+  Future<void> _createStaffTableVisibilityCache(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS staff_table_visibility_cache (
+        actor_id TEXT NOT NULL,
+        billar_id TEXT NOT NULL,
+        table_type TEXT NOT NULL CHECK (table_type IN ('Billar', 'Comanda')),
+        payload TEXT NOT NULL,
+        fetched_at TEXT NOT NULL,
+        PRIMARY KEY (actor_id, billar_id, table_type)
+      )
+    ''');
+  }
+
+  Future<void> _createStaffTableLateAdjustmentOutbox(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS staff_table_late_adjustment_outbox (
+        request_id TEXT NOT NULL UNIQUE,
+        actor_id TEXT NOT NULL,
+        billar_id TEXT NOT NULL,
+        service_id TEXT NOT NULL,
+        table_id INTEGER NOT NULL,
+        payload TEXT NOT NULL,
+        receipt TEXT,
+        local_sale_id INTEGER,
+        PRIMARY KEY (request_id)
+      )
+    ''');
+    await db.execute('''
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_table_late_adjustment_pending
+      ON staff_table_late_adjustment_outbox (actor_id, billar_id)
+      WHERE local_sale_id IS NULL
+    ''');
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_staff_table_late_adjustment_service
+      ON staff_table_late_adjustment_outbox (actor_id, billar_id, service_id)
+    ''');
+  }
+
   Future<void> _createDB(Database db, int version) async {
     const billarId = "'BILLAR_001'";
 
+    await _createTableSyncConflicts(db);
+    await _createStaffTableServiceDrafts(db);
+    await _createStaffTableCheckoutOutbox(db);
+    await _createStaffTableVisibilityCache(db);
+    await _createStaffTableLateAdjustmentOutbox(db);
+    await _createPendingCashRequests(db);
     await _createPendingStaffRequests(db);
     await _createPendingProviderOperations(db);
     await _createPendingOwnerTransactions(db);
@@ -1191,7 +1483,9 @@ class DatabaseHelper {
         updated_at TEXT NOT NULL
       )
     ''');
-    await db.execute('CREATE INDEX idx_tournaments_billar ON tournaments(billar_id, is_active)');
+    await db.execute(
+      'CREATE INDEX idx_tournaments_billar ON tournaments(billar_id, is_active)',
+    );
 
     await db.execute('''
       CREATE TABLE pending_product_deletions (

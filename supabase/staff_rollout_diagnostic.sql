@@ -35,12 +35,18 @@ required_functions(name) as (
            ('complete_staff_password_change'), ('list_staff_accounts'),
            ('update_staff_account'), ('apply_staff_provider_operation'),
            ('record_staff_purchase'), ('resolve_staff_purchase_request'),
-           ('staff_business_profile')
+           ('staff_business_profile'), ('staff_purchase_report'), ('staff_read_report'),
+           ('cash_shared_state'), ('cash_shared_apply'), ('cash_shared_request_status')
 ),
 allowed_modules(id) as (
     values ('quick_sale'), ('billiard_tables'), ('dine_in'),
+           ('billiard_tables_open'), ('billiard_tables_consume'),
+           ('billiard_tables_charge'), ('billiard_tables_view_all'),
+           ('dine_in_open'), ('dine_in_consume'),
+           ('dine_in_charge'), ('dine_in_view_all'),
            ('personal_account'), ('inventory'), ('purchases'),
-           ('reports'), ('players'), ('settings')
+           ('reports'), ('reports_purchases'), ('reports_sales'), ('reports_cash_flow'),
+           ('reports_kardex'), ('reports_profit'), ('players'), ('settings')
 ),
 membership_rows as (
     select to_jsonb(membership) as data

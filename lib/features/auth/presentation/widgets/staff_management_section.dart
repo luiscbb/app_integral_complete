@@ -160,9 +160,10 @@ class _StaffManagementSectionState extends State<StaffManagementSection> {
   Future<void> _add() async {
     try {
       final sessionUnchanged = _repository.guardCurrentSession();
+      final roles = _repository.roleTemplatesForCurrentSession();
       final draft = await showDialog<StaffAccountDraft>(
         context: context,
-        builder: (_) => const StaffAccountForm(),
+        builder: (_) => StaffAccountForm(roleTemplates: roles),
       );
       if (draft == null || !mounted) return;
       await _perform(sessionUnchanged, () async {
@@ -189,9 +190,12 @@ class _StaffManagementSectionState extends State<StaffManagementSection> {
   Future<void> _edit(StaffAccount account) async {
     try {
       final guard = _repository.guardCurrentSession();
+      final roles = _repository.roleTemplatesForCurrentSession();
       final draft = await showDialog<StaffAccountDraft>(
         context: context,
-        builder: (_) => StaffAccountForm(initial: account.draft),
+        builder:
+            (_) =>
+                StaffAccountForm(initial: account.draft, roleTemplates: roles),
       );
       if (draft == null || !mounted) return;
       await _perform(guard, () async {

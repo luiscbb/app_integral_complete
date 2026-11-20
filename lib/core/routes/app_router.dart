@@ -7,11 +7,13 @@ import '../../features/auth/presentation/pages/login_page.dart';
 import '../../features/quick_sale/presentation/pages/quick_sale_page.dart';
 import '../../features/auth/presentation/pages/staff_route_gate.dart';
 import '../../features/auth/domain/staff_access.dart';
+import '../../features/auth/data/auth_access_repository.dart';
 import '../../features/sales/presentation/pages/billiard_tables_page.dart';
 import '../../features/sales/presentation/pages/create_promo_page.dart';
 import '../../features/inventory/presentation/pages/inventory_page.dart';
 import '../../features/purchases/presentation/pages/purchases_page.dart';
 import '../../features/reports/presentation/pages/reports_page.dart';
+import '../../features/cash/presentation/pages/cash_operations_page.dart';
 import '../../features/reports/presentation/pages/sales_history_page.dart';
 import '../../features/players/presentation/pages/players_hub_page.dart';
 import '../../features/players/presentation/pages/players_list_page.dart';
@@ -32,34 +34,52 @@ import 'app_routes.dart';
 
 class AppRouter {
   static Route<dynamic> onGenerateRoute(RouteSettings settings) {
-    return generateRoute(settings, enableStaffForIntegration: staffPilotEnabled);
+    return generateRoute(
+      settings,
+      enableStaffForIntegration: staffPilotEnabled,
+    );
   }
 
   static Route<dynamic> generateRoute(
     RouteSettings settings, {
     bool enableStaffForIntegration = false,
   }) {
-    final staff = Supabase.instance.client.auth.currentUser
-        ?.appMetadata['account_type'] == 'staff';
+    final staff =
+        Supabase
+            .instance
+            .client
+            .auth
+            .currentUser
+            ?.appMetadata['account_type'] ==
+        'staff';
     if (settings.name == AppRoutes.staffPortal ||
-        (staff && settings.name != AppRoutes.login && settings.name != AppRoutes.splash)) {
+        (staff &&
+            settings.name != AppRoutes.login &&
+            settings.name != AppRoutes.splash)) {
       return MaterialPageRoute(
         settings: settings,
-        builder: (_) => StaffRouteGate(
-          routeName: settings.name,
-          enableForIntegration: enableStaffForIntegration,
-        ),
+        builder:
+            (_) => StaffRouteGate(
+              routeName: settings.name,
+              enableForIntegration: enableStaffForIntegration,
+            ),
       );
     }
     switch (settings.name) {
       case AppRoutes.splash:
-        return MaterialPageRoute(builder: (_) => SplashPage(
-          enableStaffForIntegration: enableStaffForIntegration,
-        ));
+        return MaterialPageRoute(
+          builder:
+              (_) => SplashPage(
+                enableStaffForIntegration: enableStaffForIntegration,
+              ),
+        );
       case AppRoutes.login:
-        return MaterialPageRoute(builder: (_) => LoginPage(
-          enableStaffForIntegration: enableStaffForIntegration,
-        ));
+        return MaterialPageRoute(
+          builder:
+              (_) => LoginPage(
+                enableStaffForIntegration: enableStaffForIntegration,
+              ),
+        );
       case AppRoutes.initialSetup:
         return MaterialPageRoute(builder: (_) => const InitialSetupPage());
       case AppRoutes.home:
@@ -76,6 +96,21 @@ class AppRouter {
         return MaterialPageRoute(builder: (_) => const PurchasesPage());
       case AppRoutes.reports:
         return MaterialPageRoute(builder: (_) => const ReportsPage());
+      case AppRoutes.cashOperations:
+        final user = Supabase.instance.client.auth.currentUser;
+        if (user == null || requiresManagedAccountAccess(user)) {
+          return MaterialPageRoute(
+            builder:
+                (_) => const Scaffold(
+                  body: Center(
+                    child: Text(
+                      'Caja y turnos solo está disponible para administración.',
+                    ),
+                  ),
+                ),
+          );
+        }
+        return MaterialPageRoute(builder: (_) => const CashOperationsPage());
       case AppRoutes.salesHistory:
         return MaterialPageRoute(builder: (_) => const SalesHistoryPage());
       case AppRoutes.players:
@@ -85,7 +120,9 @@ class AppRouter {
       case AppRoutes.playerDetail:
         final args = settings.arguments;
         if (args is PlayerEntity) {
-          return MaterialPageRoute(builder: (_) => PlayerDetailPage(player: args));
+          return MaterialPageRoute(
+            builder: (_) => PlayerDetailPage(player: args),
+          );
         }
         return MaterialPageRoute(builder: (_) => const PlayersListPage());
       case AppRoutes.playerComparison:

@@ -62,6 +62,13 @@ const homeModules = [
     'Admin',
   ),
   HomeModule(
+    'CAJA Y\nTURNOS',
+    Icons.point_of_sale_rounded,
+    Color(0xFF00897B),
+    AppRoutes.cashOperations,
+    'Admin',
+  ),
+  HomeModule(
     'INFORMES',
     Icons.bar_chart_rounded,
     Color(0xFF8E24AA),

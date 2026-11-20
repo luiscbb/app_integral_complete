@@ -262,8 +262,11 @@ void main() {
           find.widgetWithText(TextFormField, 'Puesto o rol'),
           'Caja',
         );
-        await tester.ensureVisible(find.text('Venta rápida'));
-        await tester.tap(find.text('Venta rápida'));
+        final saleCheckbox = find.byKey(
+          const ValueKey('staff_module_checkbox_quick_sale'),
+        );
+        await tester.ensureVisible(saleCheckbox);
+        await tester.tap(saleCheckbox);
         await tester.tap(find.text('CONTINUAR'));
         await waitFor(tester, find.text('RECUPERAR'));
         expect(createRequests, hasLength(1));
